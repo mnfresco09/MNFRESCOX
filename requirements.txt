@@ -1,5 +1,6 @@
 polars
 optuna
 rich
+numpy
 scipy
 xlsxwriter

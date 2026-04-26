@@ -1,3 +1,3 @@
-from .wrapper import simular_dataframe
+from .wrapper import simular
 
-__all__ = ["simular_dataframe"]
+__all__ = ["simular"]

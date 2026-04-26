@@ -5,6 +5,8 @@ from math import isclose
 
 import polars as pl
 
+from NUCLEO.contexto import CacheDF, cachear_df
+
 
 TOL = 1e-7
 
@@ -106,27 +108,6 @@ def verificar_salidas_custom(df: pl.DataFrame, salidas: pl.Series) -> dict[int, 
         0: int((salidas == 0).sum()),
         1: int((salidas == 1).sum()),
     }
-
-
-@dataclass(frozen=True)
-class CacheDF:
-    """Arrays del DataFrame de simulación precalculados una vez por combinación."""
-    timestamps: list
-    opens: list
-    highs: list
-    lows: list
-    closes: list
-
-
-def cachear_df(df: pl.DataFrame) -> CacheDF:
-    """Convierte las columnas del df a listas Python una sola vez."""
-    return CacheDF(
-        timestamps=_timestamps_us(df),
-        opens=df["open"].cast(pl.Float64).to_list(),
-        highs=df["high"].cast(pl.Float64).to_list(),
-        lows=df["low"].cast(pl.Float64).to_list(),
-        closes=df["close"].cast(pl.Float64).to_list(),
-    )
 
 
 def verificar_resultado(
@@ -259,10 +240,3 @@ def _verificar_ohlc(etapa: str, df: pl.DataFrame) -> None:
     ).height
     if invalidas:
         raise ValueError(f"[INTEGRIDAD] {etapa}: {invalidas:,} velas OHLC incoherentes.")
-
-
-def _timestamps_us(df: pl.DataFrame) -> list[int]:
-    dtype = df.schema["timestamp"]
-    if isinstance(dtype, pl.Datetime):
-        return df.select(pl.col("timestamp").dt.epoch("us")).to_series().to_list()
-    return df["timestamp"].cast(pl.Int64).to_list()

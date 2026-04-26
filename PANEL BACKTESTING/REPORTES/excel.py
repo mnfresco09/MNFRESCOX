@@ -15,7 +15,7 @@ from REPORTES.persistencia import equity_dataframe, resumen_trials_dataframe, tr
 
 # ── Orden de columnas ─────────────────────────────────────────────────────────
 
-ID_ORDER = ["trial", "activo", "timeframe", "estrategia", "salida", "score"]
+ID_ORDER = ["trial", "activo", "timeframe", "timeframe_ejecucion", "estrategia", "salida", "score"]
 METRIC_ORDER = [
     "total_trades",
     "trades_long",
@@ -42,6 +42,7 @@ SUMMARY_NAMES = {
     "trial":             "TRIAL",
     "activo":            "ACTIVO",
     "timeframe":         "TF",
+    "timeframe_ejecucion": "TF EJEC.",
     "estrategia":        "ESTRATEGIA",
     "salida":            "EXIT",
     "score":             "SCORE",

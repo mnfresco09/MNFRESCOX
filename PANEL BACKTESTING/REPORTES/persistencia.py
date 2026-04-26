@@ -125,6 +125,7 @@ def resumen_trials_dataframe(trials: list) -> pl.DataFrame:
             "score": float(trial.score),
             "activo": trial.activo,
             "timeframe": trial.timeframe,
+            "timeframe_ejecucion": getattr(trial, "timeframe_ejecucion", trial.timeframe),
             "estrategia": trial.estrategia_nombre,
             "salida": trial.salida.tipo,
         }
@@ -340,6 +341,7 @@ def _crear_resumen_optimizacion(
         "generado_utc": datetime.now(timezone.utc).isoformat(),
         "activo": activo,
         "timeframe": timeframe,
+        "timeframe_ejecucion_mejor_trial": getattr(mejor, "timeframe_ejecucion", timeframe),
         "estrategia": {
             "id": int(estrategia_id),
             "nombre": estrategia_nombre,

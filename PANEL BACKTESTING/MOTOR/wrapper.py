@@ -15,60 +15,53 @@ MOTOR_DIR = Path(__file__).resolve().parent
 EXTENSION_NAME = "motor_backtesting"
 
 
-def simular_dataframe(
-    df: pl.DataFrame,
+def simular(
+    arrays,
     senales: pl.Series,
     *,
-    saldo_inicial: float,
-    saldo_por_trade: float,
-    apalancamiento: float,
-    saldo_minimo: float,
-    comision_pct: float,
-    comision_lados: int,
-    exit_type: str,
-    exit_sl_pct: float,
-    exit_tp_pct: float,
-    exit_velas: int,
+    sim_cfg,
     salidas_custom: pl.Series | None = None,
 ):
     """
-    Convierte un DataFrame Polars validado al contrato plano que espera Rust.
+    Ejecuta el motor Rust con arrays OHLCV ya precalculados.
     La funcion no filtra ni reordena filas: si algo no encaja, falla.
     """
-    if df.height != len(senales):
+    total = len(arrays)
+    if total != len(senales):
         raise ValueError(
-            f"Filas y senales no coinciden: df={df.height:,}, senales={len(senales):,}."
+            f"Arrays y senales no coinciden: arrays={total:,}, senales={len(senales):,}."
         )
     if salidas_custom is None:
-        salidas_custom = pl.Series([0] * df.height, dtype=pl.Int8)
-    if df.height != len(salidas_custom):
-        raise ValueError(
-            "Filas y salidas_custom no coinciden: "
-            f"df={df.height:,}, salidas_custom={len(salidas_custom):,}."
-        )
+        salidas_lista = arrays.salidas_neutras
+    else:
+        if total != len(salidas_custom):
+            raise ValueError(
+                "Arrays y salidas_custom no coinciden: "
+                f"arrays={total:,}, salidas_custom={len(salidas_custom):,}."
+            )
+        salidas_lista = salidas_custom.cast(pl.Int8).to_list()
 
     motor = cargar_motor()
-    timestamps = _timestamps_us(df)
 
     return motor.simulate_trades(
-        timestamps,
-        df["open"].cast(pl.Float64).to_list(),
-        df["high"].cast(pl.Float64).to_list(),
-        df["low"].cast(pl.Float64).to_list(),
-        df["close"].cast(pl.Float64).to_list(),
-        _volume_list(df),
+        arrays.timestamps,
+        arrays.opens,
+        arrays.highs,
+        arrays.lows,
+        arrays.closes,
+        arrays.volumes,
         senales.cast(pl.Int8).to_list(),
-        salidas_custom.cast(pl.Int8).to_list(),
-        float(saldo_inicial),
-        float(saldo_por_trade),
-        float(apalancamiento),
-        float(saldo_minimo),
-        float(comision_pct),
-        int(comision_lados),
-        str(exit_type),
-        float(exit_sl_pct),
-        float(exit_tp_pct),
-        int(exit_velas),
+        salidas_lista,
+        float(sim_cfg.saldo_inicial),
+        float(sim_cfg.saldo_por_trade),
+        float(sim_cfg.apalancamiento),
+        float(sim_cfg.saldo_minimo),
+        float(sim_cfg.comision_pct),
+        int(sim_cfg.comision_lados),
+        str(sim_cfg.exit_type),
+        float(sim_cfg.exit_sl_pct),
+        float(sim_cfg.exit_tp_pct),
+        int(sim_cfg.exit_velas),
     )
 
 
@@ -133,23 +126,3 @@ def _importar_extension(ruta: Path) -> ModuleType:
     loader.exec_module(modulo)
     sys.modules[EXTENSION_NAME] = modulo
     return modulo
-
-
-def _timestamps_us(df: pl.DataFrame) -> list[int]:
-    dtype = df.schema.get("timestamp")
-    if dtype is None:
-        raise ValueError("El DataFrame no contiene columna 'timestamp'.")
-
-    if isinstance(dtype, pl.Datetime):
-        return df.select(pl.col("timestamp").dt.epoch("us")).to_series().to_list()
-
-    if dtype in (pl.Int64, pl.Int32, pl.UInt64, pl.UInt32):
-        return df["timestamp"].cast(pl.Int64).to_list()
-
-    raise ValueError(f"timestamp debe ser Datetime o entero en microsegundos, no {dtype}.")
-
-
-def _volume_list(df: pl.DataFrame) -> list[float]:
-    if "volume" not in df.columns:
-        return [0.0] * df.height
-    return df["volume"].cast(pl.Float64).fill_null(0.0).to_list()

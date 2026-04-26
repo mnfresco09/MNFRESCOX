@@ -6,16 +6,16 @@ from dataclasses import dataclass
 from threading import Lock
 
 import optuna
-import polars as pl
 
 from CONFIGURACION import config as cfg
 from CONFIGURACION.validador_config import validar as validar_config
 from DATOS.cargador import cargar
 from DATOS.resampleo import inferir_timeframe, resamplear
 from DATOS.validador import validar as validar_datos
-from MOTOR import simular_dataframe
+from MOTOR import simular
 from NUCLEO import integridad
-from NUCLEO.integridad import cachear_df
+from NUCLEO.contexto import ContextoCombinacion, SimConfigMotor, crear_contexto
+from NUCLEO.proyeccion import proyectar_senales_a_base
 from NUCLEO.registro import cargar_estrategias, obtener_estrategia
 from OPTIMIZACION.metricas import calcular_metricas
 from OPTIMIZACION.puntuacion import calcular_score
@@ -46,6 +46,7 @@ class TrialResultado:
     numero: int
     activo: str
     timeframe: str
+    timeframe_ejecucion: str
     estrategia_id: int
     estrategia_nombre: str
     salida: ExitConfig
@@ -99,6 +100,7 @@ def main() -> None:
             integridad.verificar_resampleo(df_base, df_tf, timeframe)
             huella_tf = integridad.huella_dataframe(f"{activo} {timeframe}", df_tf)
             _imprimir_huella(huella_tf)
+            ctx = crear_contexto(df_base=df_base, df_tf=df_tf)
 
             for estrategia in estrategias:
                 for salida in salidas:
@@ -113,7 +115,8 @@ def main() -> None:
                             timeframe=timeframe,
                             estrategia=estrategia,
                             salida_base=salida,
-                            df_tf=df_tf,
+                            ctx=ctx,
+                            timeframe_base=timeframe_base,
                             n_jobs=n_jobs,
                         )
                     except Exception as exc:
@@ -145,7 +148,9 @@ def main() -> None:
 
                     html_paths = generar_htmls(
                         run_dir=run_dir,
-                        df=df_tf,
+                        df=ctx.df_tf,
+                        df_exec=_df_para_reporte(ctx, salida),
+                        df_indicadores=ctx.df_tf,
                         trials=trials,
                         estrategia=estrategia,
                         max_plots=cfg.MAX_PLOTS,
@@ -159,7 +164,7 @@ def main() -> None:
                     del trials, mejor, run_dir, excel_path, html_paths
                     gc.collect()
 
-            del df_tf
+            del df_tf, ctx
             gc.collect()
 
         del df_base
@@ -179,7 +184,8 @@ def _optimizar_combinacion(
     timeframe: str,
     estrategia,
     salida_base: ExitConfig,
-    df_tf,
+    ctx: ContextoCombinacion,
+    timeframe_base: str,
     n_jobs: int,
 ) -> list[TrialResultado]:
     sampler = crear_sampler(cfg.OPTUNA_SAMPLER, cfg.OPTUNA_SEED, cfg.N_TRIALS)
@@ -187,49 +193,50 @@ def _optimizar_combinacion(
     resultados: list[TrialResultado] = []
     lock = Lock()
 
-    # Precalcular arrays del df una sola vez para todos los trials
-    cache_df = cachear_df(df_tf)
-
     def objective(trial: optuna.Trial) -> float:
         params_estrategia = estrategia.espacio_busqueda(trial)
         salida_trial, params_salida = _salida_para_trial(salida_base, trial)
         parametros = {**params_estrategia, **params_salida}
 
-        senales = getattr(estrategia, "generar_señales")(df_tf, params_estrategia)
-        conteo = integridad.verificar_senales(df_tf, senales)
+        senales_tf = getattr(estrategia, "generar_señales")(ctx.df_tf, params_estrategia)
+        conteo = integridad.verificar_senales(ctx.df_tf, senales_tf)
         salidas_custom = _generar_salidas_custom(
             estrategia=estrategia,
-            df_tf=df_tf,
+            df_tf=ctx.df_tf,
             params_estrategia=params_estrategia,
             salida=salida_trial,
         )
         conteo_salidas = (
-            integridad.verificar_salidas_custom(df_tf, salidas_custom)
+            integridad.verificar_salidas_custom(ctx.df_tf, salidas_custom)
             if salidas_custom is not None
             else None
         )
 
-        resultado = simular_dataframe(
-            df_tf,
-            senales,
-            saldo_inicial=cfg.SALDO_INICIAL,
-            saldo_por_trade=cfg.SALDO_USADO_POR_TRADE,
-            apalancamiento=cfg.APALANCAMIENTO,
-            saldo_minimo=cfg.SALDO_MINIMO_OPERATIVO,
-            comision_pct=cfg.COMISION_PCT,
-            comision_lados=cfg.COMISION_LADOS,
-            exit_type=salida_trial.tipo,
-            exit_sl_pct=salida_trial.sl_pct,
-            exit_tp_pct=salida_trial.tp_pct,
-            exit_velas=salida_trial.velas,
+        arrays_exec, df_exec, cache_exec, senales_exec, salidas_exec = _preparar_ejecucion(
+            ctx=ctx,
+            salida=salida_trial,
+            senales_tf=senales_tf,
             salidas_custom=salidas_custom,
         )
+        integridad.verificar_senales(df_exec, senales_exec)
+        timeframe_ejecucion = _timeframe_ejecucion(
+            ctx=ctx,
+            salida=salida_trial,
+            timeframe=timeframe,
+            timeframe_base=timeframe_base,
+        )
+        resultado = simular(
+            arrays_exec,
+            senales_exec,
+            sim_cfg=_sim_config(salida_trial),
+            salidas_custom=salidas_exec,
+        )
         integridad.verificar_resultado(
-            df_tf,
-            senales,
+            df_exec,
+            senales_exec,
             resultado,
-            salidas_custom,
-            _cache=cache_df,
+            salidas_exec,
+            _cache=cache_exec,
         )
         metricas = calcular_metricas(resultado)
         score = calcular_score(metricas)
@@ -241,6 +248,7 @@ def _optimizar_combinacion(
             numero=trial.number,
             activo=activo,
             timeframe=timeframe,
+            timeframe_ejecucion=timeframe_ejecucion,
             estrategia_id=int(estrategia.ID),
             estrategia_nombre=estrategia.NOMBRE,
             salida=salida_trial,
@@ -279,6 +287,57 @@ def _optimizar_combinacion(
 
     _verificar_mejor_de_study(study, resultados)
     return resultados
+
+
+def _preparar_ejecucion(
+    *,
+    ctx: ContextoCombinacion,
+    salida: ExitConfig,
+    senales_tf,
+    salidas_custom,
+):
+    if salida.tipo == "CUSTOM" or ctx.es_min_tf:
+        return ctx.arrays_tf, ctx.df_tf, ctx.cache_tf, senales_tf, salidas_custom
+
+    senales_base = proyectar_senales_a_base(
+        senales_tf,
+        ctx.tf_to_base_idx,
+        ctx.df_base.height,
+    )
+    return ctx.arrays_base, ctx.df_base, ctx.cache_base, senales_base, None
+
+
+def _df_para_reporte(ctx: ContextoCombinacion, salida: ExitConfig):
+    if salida.tipo == "CUSTOM" or ctx.es_min_tf:
+        return ctx.df_tf
+    return ctx.df_base
+
+
+def _timeframe_ejecucion(
+    *,
+    ctx: ContextoCombinacion,
+    salida: ExitConfig,
+    timeframe: str,
+    timeframe_base: str,
+) -> str:
+    if salida.tipo == "CUSTOM" or ctx.es_min_tf:
+        return str(timeframe)
+    return str(timeframe_base)
+
+
+def _sim_config(salida: ExitConfig) -> SimConfigMotor:
+    return SimConfigMotor(
+        saldo_inicial=cfg.SALDO_INICIAL,
+        saldo_por_trade=cfg.SALDO_USADO_POR_TRADE,
+        apalancamiento=cfg.APALANCAMIENTO,
+        saldo_minimo=cfg.SALDO_MINIMO_OPERATIVO,
+        comision_pct=cfg.COMISION_PCT,
+        comision_lados=cfg.COMISION_LADOS,
+        exit_type=salida.tipo,
+        exit_sl_pct=salida.sl_pct,
+        exit_tp_pct=salida.tp_pct,
+        exit_velas=salida.velas,
+    )
 
 
 def _salida_para_trial(salida: ExitConfig, trial: optuna.Trial) -> tuple[ExitConfig, dict]:

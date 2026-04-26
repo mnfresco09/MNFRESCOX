@@ -14,6 +14,8 @@ def generar_htmls(
     *,
     run_dir: Path,
     df: pl.DataFrame,
+    df_exec: pl.DataFrame | None = None,
+    df_indicadores: pl.DataFrame | None = None,
     trials: list,
     estrategia,
     max_plots: int,
@@ -23,6 +25,11 @@ def generar_htmls(
 ) -> list[Path]:
     if max_plots <= 0:
         return []
+    df_indicadores = df if df_indicadores is None else df_indicadores
+    # df_exec es el df sobre el que se ejecutó la simulación (puede ser base 1m).
+    # Se usa solo para resolver los índices de trades a timestamps.
+    # df es siempre el TF de señales y define las velas del gráfico.
+    df_exec_real = df if df_exec is None else df_exec
 
     html_dir = _base_resultados(run_dir) / "GRAFICA"
     html_dir.mkdir(parents=True, exist_ok=True)
@@ -30,9 +37,10 @@ def generar_htmls(
     tv_script = obtener_script_libreria()
 
     df_idx = df.with_row_index("_i_")
+    # idx_to_time resuelve índices del df de ejecución (puede diferir de df del gráfico)
     idx_to_time: dict[int, int] = {
         int(row["_i_"]): int(row["timestamp"].timestamp())
-        for row in df_idx.select(["_i_", "timestamp"]).iter_rows(named=True)
+        for row in df_exec_real.with_row_index("_i_").select(["_i_", "timestamp"]).iter_rows(named=True)
     }
 
     paths = []
@@ -46,6 +54,7 @@ def generar_htmls(
         payload = _crear_payload(
             df=df,
             df_idx=df_idx,
+            df_indicadores=df_indicadores,
             idx_to_time=idx_to_time,
             trial=trial,
             estrategia=estrategia,
@@ -74,6 +83,7 @@ def _crear_payload(
     *,
     df: pl.DataFrame,
     df_idx: pl.DataFrame,
+    df_indicadores: pl.DataFrame,
     idx_to_time: dict[int, int],
     trial,
     estrategia,
@@ -100,7 +110,7 @@ def _crear_payload(
     ]
 
     # Indicadores: calculados sobre el df completo, filtrados al rango visible
-    indicadores_raw = estrategia.indicadores_para_grafica(df, trial.parametros)
+    indicadores_raw = estrategia.indicadores_para_grafica(df_indicadores, trial.parametros)
     indicadores = []
     for ind in indicadores_raw:
         data_rango = [d for d in ind["data"] if ts_min <= d["t"] <= ts_max]

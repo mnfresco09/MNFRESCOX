@@ -62,6 +62,13 @@ PANEL BACKTESTING/
 │   │                                 búsqueda, señales y salidas CUSTOM. Incluye
 │   │                                 helpers de indicadores (SMA, EMA, RSI, ATR,
 │   │                                 Bollinger).
+│   ├── contexto.py                 ← Construye una vez por combinación los arrays
+│   │                                 OHLCV que consume Rust, las cachés de auditoría
+│   │                                 y el contexto timeframe/base reutilizado por trials.
+│   ├── proyeccion.py               ← Proyecta señales de la estrategia al timeframe
+│   │                                 mínimo disponible para salidas FIXED/BARS.
+│   │                                 Garantiza entrada en el open real de la vela
+│   │                                 siguiente sin retrasar la señal.
 │   ├── tipos.py                    ← Tipos de datos compartidos internamente:
 │   │                                 TradeResult, Signal, OHLCVFrame, etc.
 │   └── registro.py                 ← Auto-descubrimiento de estrategias. Escanea
@@ -124,6 +131,11 @@ PANEL BACKTESTING/
 │   ├── runner.py                   ← Coordina el bucle de trials. Gestiona el
 │   │                                 paralelismo (N_JOBS workers). Procesa activos
 │   │                                 y timeframes en secuencial para controlar RAM.
+│   │                                 Las estrategias calculan señales en su timeframe;
+│   │                                 FIXED/BARS ejecuta en el timeframe base y CUSTOM
+│   │                                 ejecuta en el timeframe de la estrategia.
+│   │                                 Los resultados conservan ambos: timeframe de
+│   │                                 estrategia y timeframe_ejecucion.
 │   ├── metricas.py                 ← Calcula métricas derivadas del resultado:
 │   │                                 profit factor, Sharpe, drawdown, ROI, etc.
 │   ├── samplers.py                 ← Crea el sampler según config:
@@ -145,7 +157,7 @@ PANEL BACKTESTING/
 │   │                                 para los mejores trials configurados.
 │                                     Gráfico de velas + indicadores + entradas/salidas
 │                                     con flechas. Usa Lightweight Charts (TradingView).
-│                                     No necesita internet. Pesa < 500 KB por archivo.
+│                                     No necesita internet.
 │   └── persistencia.py             ← Guarda CSV/JSON, verifica que no se pierdan
 │                                     trials/trades/equity en
 │                                     RESULTADOS/ESTRATEGIA/SALIDA/ACTIVO/TF/DATOS/RUN_*
@@ -167,9 +179,12 @@ PANEL BACKTESTING/
 │   └── ema_tendencia.py            ← Estrategia tendencial por cruce de EMAs.
 │
 └── RESULTADOS/                     ← Outputs de cada run.
-    │                                 Estructura: ACTIVO / TIMEFRAME / ESTRATEGIA / EXIT_TYPE /
-    │                                 Ejemplo: RESULTADOS/BTC/1h/RSI_REVERSION/FIXED/
-    │                                 Cada carpeta contiene su Excel y sus HTMLs.
+    │                                 Estructura:
+    │                                 RESULTADOS/ESTRATEGIA/SALIDA/ACTIVO/TIMEFRAME/
+    │                                   ├── DATOS/RUN_*/resumen.json, auditoria.json,
+    │                                   │   trials.csv, trades.csv, equity.csv
+    │                                   ├── EXCEL/RESUMEN *.xlsx y TRIAL * - *.xlsx
+    │                                   └── GRAFICA/TRIAL * - *.html
     │                                 El sistema elimina automáticamente los más antiguos
     │                                 cuando se supera MAX_ARCHIVOS.
     └── .gitkeep
@@ -227,14 +242,17 @@ Todos los parámetros que el usuario puede tocar, agrupados por categoría:
 
 ## Flujo de un trade (cómo funciona el motor)
 
-1. La estrategia detecta señal en la **vela N**
-2. El motor anota la señal pero **no entra todavía**
-3. En la **vela N+1**, entra al precio de **apertura** — el único momento realista
-4. El motor vigila la posición vela a vela hacia adelante
-5. En cada vela comprueba: ¿stop loss tocado? ¿take profit? ¿señal de salida? ¿máximo de velas?
-6. El primero en cumplirse cierra el trade al precio correspondiente
-7. Se calcula resultado, se descuentan comisiones, se actualiza el saldo
-8. Si hay señales mientras el trade está abierto, se ignoran
+1. La estrategia detecta señal en la **vela N** de su timeframe.
+2. Si la salida es FIXED o BARS y la estrategia usa un timeframe mayor que el mínimo disponible, la señal se proyecta al timeframe base.
+3. El motor anota la señal pero **no entra todavía**.
+4. En la **vela N+1**, entra al precio de **apertura** — el único momento realista.
+5. El motor vigila la posición vela a vela hacia adelante.
+6. En cada vela comprueba: ¿stop loss tocado? ¿take profit? ¿señal de salida? ¿máximo de velas?
+7. El primero en cumplirse cierra el trade al precio correspondiente.
+8. Se calcula resultado, se descuentan comisiones, se actualiza el saldo.
+9. Si hay señales mientras el trade está abierto, se ignoran.
+
+**Regla de salidas:** `FIXED` y `BARS` se ejecutan sobre el menor timeframe disponible del activo para no retrasar SL/TP o cierres en movimientos rápidos. `CUSTOM` se mantiene en el timeframe de la estrategia porque la lógica de cierre pertenece a la propia estrategia.
 
 **Regla absoluta:** nunca se usa el precio de cierre de la vela actual para decidir entrar en esa misma vela. El sistema lo garantiza por construcción en el motor Rust, no por disciplina del usuario.
 

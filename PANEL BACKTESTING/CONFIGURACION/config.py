@@ -26,7 +26,7 @@ MERCADO_24_7 = {
 # ---------------------------------------------------------------------------
 # El sistema resamplea desde 1m automáticamente.
 # Opciones: "1m" "5m" "15m" "30m" "1h" "4h" "1d"
-TIMEFRAMES = ["1m"]
+TIMEFRAMES = ["15m"]
 
 # ---------------------------------------------------------------------------
 # FECHAS
@@ -63,7 +63,7 @@ EXIT_TYPE = "FIXED"
 # OPTIMIZACIÓN (OPTUNA)
 # ---------------------------------------------------------------------------
 # Potencias de 2 recomendadas para QMC: 64, 128, 256, 512
-N_TRIALS = 128
+N_TRIALS = 64
 
 # "QMC"    → Exploración uniforme (secuencias Sobol). Bueno para primera pasada.
 # "TPE"    → Guiado por resultados anteriores. Bueno para refinar.
