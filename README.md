@@ -134,19 +134,21 @@ PANEL BACKTESTING/
 │                                     Diseñada para sustituirse sin tocar nada más.
 │
 ├── REPORTES/                       ← Un reporter por tipo de output. Independientes.
-│   ├── terminal.py                 ← Muestra con Rich el progreso trial a trial:
-│   │                                 panel con score, ROI, win rate, drawdown y
-│   │                                 parámetros del trial en tiempo real.
-│   ├── excel.py                    ← Genera el Excel de resultados con tres pestañas:
-│   │                                 RESUMEN (un trial por fila, ordenado por score),
-│   │                                 TRADES (todas las operaciones del mejor trial),
-│   │                                 EQUITY (curva de capital del mejor trial).
-│   ├── html.py                     ← Genera archivos HTML standalone por trial.
+│   ├── rich.py                     ← Muestra con Rich el progreso trial a trial:
+│   │                                 panel institucional con performance, finanzas,
+│   │                                 parámetros y estado del mejor trial.
+│   ├── excel.py                    ← Genera EXCEL/RESUMEN *.xlsx
+│   │                                 con todos los trials y EXCEL/TRIAL * - *.xlsx
+│   │                                 para los 5 mejores scores.
+│   ├── html.py                     ← Genera GRAFICA/TRIAL * - *.html
+│   │                                 para los mejores trials configurados.
 │                                     Gráfico de velas + indicadores + entradas/salidas
 │                                     con flechas. Usa Lightweight Charts (TradingView).
 │                                     No necesita internet. Pesa < 500 KB por archivo.
 │   └── persistencia.py             ← Guarda CSV/JSON, verifica que no se pierdan
-│                                     trials/trades/equity y rota runs antiguos.
+│                                     trials/trades/equity en
+│                                     RESULTADOS/ESTRATEGIA/SALIDA/ACTIVO/TF/DATOS/RUN_*
+│                                     y rota runs antiguos.
 │
 ├── ESTRATEGIAS/                    ← Las estrategias del usuario.
 │   │                                 REGLA: un archivo = una estrategia.

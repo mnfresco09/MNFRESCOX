@@ -8,22 +8,32 @@ def calcular_metricas(resultado) -> dict[str, float | int | bool]:
     pnls = [float(t.pnl) for t in trades]
     rois = [float(t.roi) for t in trades]
     duraciones = [int(t.duracion_velas) for t in trades]
+    equity = [float(v) for v in resultado.equity_curve]
 
+    total_trades = len(trades)
+    trades_ganadores = sum(1 for pnl in pnls if pnl > 0)
+    trades_perdedores = total_trades - trades_ganadores
+    win_rate = trades_ganadores / total_trades if total_trades else 0.0
+    pnl_total = sum(pnls)
+    pnl_promedio = pnl_total / total_trades if total_trades else 0.0
+    saldo_inicial = float(resultado.saldo_inicial)
+    saldo_final = float(resultado.saldo_final)
+    roi_total = pnl_total / saldo_inicial if saldo_inicial else 0.0
     ganancias = sum(p for p in pnls if p > 0)
     perdidas = abs(sum(p for p in pnls if p < 0))
     profit_factor = _ratio_seguro(ganancias, perdidas)
 
     return {
-        "saldo_inicial": float(resultado.saldo_inicial),
-        "saldo_final": float(resultado.saldo_final),
-        "total_trades": int(resultado.total_trades),
-        "trades_ganadores": int(resultado.trades_ganadores),
-        "trades_perdedores": int(resultado.trades_perdedores),
-        "win_rate": float(resultado.win_rate),
-        "roi_total": float(resultado.roi_total),
-        "pnl_total": float(resultado.pnl_total),
-        "pnl_promedio": float(resultado.pnl_promedio),
-        "max_drawdown": float(resultado.max_drawdown),
+        "saldo_inicial": saldo_inicial,
+        "saldo_final": saldo_final,
+        "total_trades": int(total_trades),
+        "trades_ganadores": int(trades_ganadores),
+        "trades_perdedores": int(trades_perdedores),
+        "win_rate": float(win_rate),
+        "roi_total": float(roi_total),
+        "pnl_total": float(pnl_total),
+        "pnl_promedio": float(pnl_promedio),
+        "max_drawdown": float(_max_drawdown(equity)),
         "profit_factor": float(profit_factor),
         "sharpe_ratio": float(_sharpe_simple(rois)),
         "duracion_media_velas": float(sum(duraciones) / len(duraciones)) if duraciones else 0.0,
@@ -48,3 +58,20 @@ def _sharpe_simple(retornos: list[float]) -> float:
         return 0.0
 
     return (media / desviacion) * sqrt(len(retornos))
+
+
+def _max_drawdown(equity: list[float]) -> float:
+    if not equity:
+        return 0.0
+
+    max_equity = equity[0]
+    max_dd = 0.0
+    for valor in equity:
+        if valor > max_equity:
+            max_equity = valor
+        if max_equity <= 0:
+            continue
+        dd = (max_equity - valor) / max_equity
+        if dd > max_dd:
+            max_dd = dd
+    return max_dd

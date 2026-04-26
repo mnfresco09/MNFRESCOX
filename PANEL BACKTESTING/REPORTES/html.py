@@ -7,7 +7,6 @@ from pathlib import Path
 
 import polars as pl
 
-from REPORTES.persistencia import slug
 from REPORTES.tv_library import obtener_script_libreria
 
 
@@ -25,9 +24,9 @@ def generar_htmls(
     if max_plots <= 0:
         return []
 
-    html_dir = run_dir / "html"
-    html_dir.mkdir(exist_ok=True)
-    mejores = sorted(trials, key=lambda t: t.score, reverse=True)[:max_plots]
+    html_dir = _base_resultados(run_dir) / "GRAFICA"
+    html_dir.mkdir(parents=True, exist_ok=True)
+    mejores = sorted(trials, key=lambda t: t.score, reverse=True)[: min(max_plots, 5)]
     tv_script = obtener_script_libreria()
 
     df_idx = df.with_row_index("_i_")
@@ -38,7 +37,12 @@ def generar_htmls(
 
     paths = []
     for trial in mejores:
-        path = html_dir / f"trial_{trial.numero:04d}_{slug(trial.salida.tipo)}.html"
+        path = _unique_path(
+            html_dir
+            / (
+                f"TRIAL {int(trial.numero)} - {_score_nombre(trial.score)}.html"
+            )
+        )
         payload = _crear_payload(
             df=df,
             df_idx=df_idx,
@@ -197,6 +201,30 @@ def _restar_meses(fecha: date, meses: int) -> date:
         mes += 12
         anno -= 1
     return date(anno, mes, min(fecha.day, 28))
+
+
+def _base_resultados(run_dir: Path) -> Path:
+    run_dir = Path(run_dir)
+    if run_dir.parent.name.upper() == "DATOS":
+        return run_dir.parent.parent
+    return run_dir
+
+
+def _score_nombre(score: float) -> str:
+    valor = f"{abs(float(score)):.6f}".rstrip("0").rstrip(".")
+    return f"NEG {valor}" if float(score) < 0 else valor
+
+
+def _unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    for idx in range(2, 10_000):
+        candidate = path.with_name(f"{stem}_{idx:02d}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"[HTML] No se pudo crear nombre unico para {path}.")
 
 
 def _render_html(payload: dict, tv_script: str) -> str:

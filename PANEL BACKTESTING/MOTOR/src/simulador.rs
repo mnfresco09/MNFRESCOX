@@ -32,7 +32,7 @@ struct CierreTrade {
 /// Ejecuta la simulación completa vela a vela.
 ///
 /// Recibe las velas OHLCV, las señales generadas por la estrategia y la config.
-/// Devuelve un SimResult con todos los trades y métricas.
+/// Devuelve un SimResult con todos los datos base de la simulación.
 pub fn simular(
     velas: &[Vela],
     señales: &[i8],
@@ -187,36 +187,10 @@ pub fn simular(
         }
     }
 
-    // --- Calcular métricas resumen ---
-    let total = trades.len();
-    let ganadores = trades.iter().filter(|t| t.pnl > 0.0).count();
-    let perdedores = total - ganadores;
-    let win_rate = if total > 0 {
-        ganadores as f64 / total as f64
-    } else {
-        0.0
-    };
-    let pnl_total: f64 = trades.iter().map(|t| t.pnl).sum();
-    let pnl_promedio = if total > 0 {
-        pnl_total / total as f64
-    } else {
-        0.0
-    };
-    let roi_total = pnl_total / config.saldo_inicial;
-    let max_dd = calcular_max_drawdown(&equity_curve);
-
     SimResult {
         trades,
         saldo_final: saldo,
         saldo_inicial: config.saldo_inicial,
-        total_trades: total,
-        trades_ganadores: ganadores,
-        trades_perdedores: perdedores,
-        win_rate,
-        roi_total,
-        pnl_total,
-        pnl_promedio,
-        max_drawdown: max_dd,
         equity_curve,
         parado_por_saldo,
     }
@@ -346,23 +320,6 @@ fn evaluar_salida(
     None
 }
 
-/// Calcula el máximo drawdown a partir de la curva de equity.
-fn calcular_max_drawdown(equity: &[f64]) -> f64 {
-    let mut max_equity = equity[0];
-    let mut max_dd = 0.0_f64;
-
-    for &valor in equity.iter() {
-        if valor > max_equity {
-            max_equity = valor;
-        }
-        let dd = (max_equity - valor) / max_equity;
-        if dd > max_dd {
-            max_dd = dd;
-        }
-    }
-    max_dd
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,7 +375,7 @@ mod tests {
         let cfg = config_fixed();
         let result = simular(&velas, &señales, &salidas, &cfg);
 
-        assert_eq!(result.total_trades, 1);
+        assert_eq!(result.trades.len(), 1);
         assert_eq!(result.trades[0].idx_señal, 0);
         assert_eq!(result.trades[0].idx_entrada, 1);
         assert!((result.trades[0].precio_entrada - 103.0).abs() < 1e-10);
@@ -439,16 +396,8 @@ mod tests {
         let result = simular(&velas, &señales, &salidas, &cfg);
 
         // Solo un trade, la señal SHORT fue ignorada
-        assert_eq!(result.total_trades, 1);
+        assert_eq!(result.trades.len(), 1);
         assert_eq!(result.trades[0].direccion, 1); // LONG
-    }
-
-    #[test]
-    fn test_max_drawdown_simple() {
-        let equity = vec![10_000.0, 10_500.0, 9_500.0, 10_200.0];
-        let dd = calcular_max_drawdown(&equity);
-        // Peak 10,500, valley 9,500 → DD = 1000/10500 ≈ 0.09524
-        assert!((dd - 1000.0 / 10500.0).abs() < 1e-10);
     }
 
     #[test]
@@ -462,7 +411,7 @@ mod tests {
         let salidas = sin_salidas(velas.len());
         let result = simular(&velas, &señales, &salidas, &config_fixed());
 
-        assert_eq!(result.total_trades, 1);
+        assert_eq!(result.trades.len(), 1);
         assert_eq!(result.trades[0].idx_salida, 2);
         assert_eq!(result.trades[0].motivo_salida, "END");
         assert!((result.trades[0].precio_salida - 101.5).abs() < 1e-10);
@@ -479,7 +428,7 @@ mod tests {
         let salidas = sin_salidas(velas.len());
         let result = simular(&velas, &señales, &salidas, &config_fixed());
 
-        assert_eq!(result.total_trades, 1);
+        assert_eq!(result.trades.len(), 1);
         assert_eq!(result.trades[0].motivo_salida, "SL");
         assert!((result.trades[0].precio_salida - 95.0).abs() < 1e-10);
     }
@@ -495,7 +444,7 @@ mod tests {
         let salidas = sin_salidas(velas.len());
         let result = simular(&velas, &señales, &salidas, &config_fixed());
 
-        assert_eq!(result.total_trades, 1);
+        assert_eq!(result.trades.len(), 1);
         assert_eq!(result.trades[0].motivo_salida, "SL");
         assert!((result.trades[0].precio_salida - 105.0).abs() < 1e-10);
     }
@@ -517,7 +466,7 @@ mod tests {
 
         let result = simular(&velas, &señales, &salidas, &cfg);
 
-        assert_eq!(result.total_trades, 1);
+        assert_eq!(result.trades.len(), 1);
         assert_eq!(result.trades[0].idx_salida, 2);
         assert_eq!(result.trades[0].motivo_salida, "BARS");
     }
@@ -535,7 +484,7 @@ mod tests {
 
         let result = simular(&velas, &señales, &salidas, &config_custom());
 
-        assert_eq!(result.total_trades, 1);
+        assert_eq!(result.trades.len(), 1);
         assert_eq!(result.trades[0].idx_salida, 2);
         assert_eq!(result.trades[0].motivo_salida, "CUSTOM");
         assert!((result.trades[0].precio_salida - 101.5).abs() < 1e-10);
@@ -553,7 +502,7 @@ mod tests {
 
         let result = simular(&velas, &señales, &salidas, &config_custom());
 
-        assert_eq!(result.total_trades, 1);
+        assert_eq!(result.trades.len(), 1);
         assert_eq!(result.trades[0].motivo_salida, "SL");
     }
 }

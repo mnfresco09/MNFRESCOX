@@ -114,18 +114,13 @@ def verificar_resultado(
     resultado,
     salidas_custom: pl.Series | None = None,
 ) -> None:
-    total_trades = int(resultado.total_trades)
     trades = list(resultado.trades)
-    if total_trades != len(trades):
-        raise ValueError("[INTEGRIDAD] total_trades no coincide con len(trades).")
+    total_trades = len(trades)
 
     if len(resultado.equity_curve) != total_trades + 1:
         raise ValueError("[INTEGRIDAD] equity_curve debe tener saldo inicial + un punto por trade.")
 
     pnl_total = sum(float(t.pnl) for t in trades)
-    if not isclose(float(resultado.pnl_total), pnl_total, rel_tol=TOL, abs_tol=TOL):
-        raise ValueError("[INTEGRIDAD] pnl_total no coincide con la suma de trades.")
-
     saldo_esperado = float(resultado.saldo_inicial) + pnl_total
     if not isclose(float(resultado.saldo_final), saldo_esperado, rel_tol=TOL, abs_tol=TOL):
         raise ValueError("[INTEGRIDAD] saldo_final no coincide con saldo_inicial + pnl_total.")

@@ -1,6 +1,6 @@
-def calcular_score(resultado) -> float:
+def calcular_score(metricas: dict) -> float:
     """
     Funcion de puntuacion inicial definida por la guia.
     Version 1: el score es el ROI total del backtest.
     """
-    return float(resultado.roi_total)
+    return float(metricas["roi_total"])

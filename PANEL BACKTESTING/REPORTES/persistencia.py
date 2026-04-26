@@ -92,27 +92,31 @@ def crear_run_dir(
 ) -> Path:
     base = (
         carpeta_resultados
-        / slug(activo)
-        / slug(timeframe)
-        / slug(estrategia_nombre)
-        / slug(exit_type)
+        / slug(estrategia_nombre).upper()
+        / slug(exit_type).upper()
+        / slug(activo).upper()
+        / slug(timeframe).upper()
     )
-    base.mkdir(parents=True, exist_ok=True)
+    datos_dir = base / "DATOS"
+    datos_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    run_dir = base / f"run_{timestamp}"
+    run_dir = datos_dir / f"RUN_{timestamp}"
     contador = 1
     while run_dir.exists():
         contador += 1
-        run_dir = base / f"run_{timestamp}_{contador:02d}"
+        run_dir = datos_dir / f"RUN_{timestamp}_{contador:02d}"
 
     run_dir.mkdir()
-    _rotar_runs(base, max_archivos=max_archivos)
+    _rotar_runs(datos_dir, max_archivos=max_archivos)
     return run_dir
 
 
 def resumen_trials_dataframe(trials: list) -> pl.DataFrame:
-    param_keys = sorted({k for trial in trials for k in trial.parametros.keys()})
+    param_keys = sorted(
+        {k for trial in trials for k in trial.parametros.keys()}
+        | {"exit_type", "exit_sl_pct", "exit_tp_pct", "exit_velas"}
+    )
     filas = []
 
     for trial in sorted(trials, key=lambda t: t.score, reverse=True):
@@ -125,8 +129,17 @@ def resumen_trials_dataframe(trials: list) -> pl.DataFrame:
             "salida": trial.salida.tipo,
         }
         fila.update(_normalizar_metricas(trial.metricas))
+        parametros = dict(trial.parametros)
+        parametros.update(
+            {
+                "exit_type": trial.salida.tipo,
+                "exit_sl_pct": trial.salida.sl_pct,
+                "exit_tp_pct": trial.salida.tp_pct,
+                "exit_velas": trial.salida.velas,
+            }
+        )
         for key in param_keys:
-            fila[f"param_{key}"] = trial.parametros.get(key)
+            fila[f"param_{key}"] = parametros.get(key)
         filas.append(fila)
 
     return pl.DataFrame(filas)
@@ -243,7 +256,7 @@ def verificar_optimizacion(
     equity_df = pl.read_csv(equity_path)
 
     total_trials = len(trials)
-    total_trades = int(mejor.resultado.total_trades)
+    total_trades = len(list(mejor.resultado.trades))
     if int(resumen["optimizacion"]["total_trials"]) != total_trials:
         raise ValueError("[REPORTES] resumen.json no conserva total_trials.")
     if trials_df.height != total_trials:
@@ -344,6 +357,7 @@ def _crear_auditoria(
     resultado,
     total_trials: int,
 ) -> dict:
+    total_trades = len(list(resultado.trades))
     auditoria = {
         "generado_utc": datetime.now(timezone.utc).isoformat(),
         "datos_base": _huella_dict(huella_base),
@@ -355,8 +369,8 @@ def _crear_auditoria(
             "total": int(sum(conteo_senales.values())),
         },
         "resultado_mejor_trial": {
-            "trades_csv_filas_esperadas": int(resultado.total_trades),
-            "equity_csv_filas_esperadas": int(resultado.total_trades) + 1,
+            "trades_csv_filas_esperadas": int(total_trades),
+            "equity_csv_filas_esperadas": int(total_trades) + 1,
             "total_trials_esperados": int(total_trials),
             "checks": [
                 "timestamps ordenados y sin duplicados",
@@ -413,7 +427,7 @@ def _write_json(path: Path, data: dict) -> None:
 
 def _rotar_runs(base: Path, *, max_archivos: int) -> None:
     runs = sorted(
-        [p for p in base.iterdir() if p.is_dir() and p.name.startswith("run_")],
+        [p for p in base.iterdir() if p.is_dir() and p.name.startswith("RUN_")],
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -423,7 +437,7 @@ def _rotar_runs(base: Path, *, max_archivos: int) -> None:
 
 
 def _verificar_rotacion(base: Path, *, max_archivos: int) -> None:
-    runs = [p for p in base.iterdir() if p.is_dir() and p.name.startswith("run_")]
+    runs = [p for p in base.iterdir() if p.is_dir() and p.name.startswith("RUN_")]
     if len(runs) > int(max_archivos):
         raise ValueError(
             "[REPORTES] Rotacion incompleta: "

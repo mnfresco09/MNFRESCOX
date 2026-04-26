@@ -21,7 +21,7 @@ from OPTIMIZACION.samplers import crear_sampler
 from REPORTES.excel import generar_excel
 from REPORTES.html import generar_htmls
 from REPORTES.persistencia import guardar_optimizacion
-from REPORTES.terminal import MonitorOptimizacion
+from REPORTES.rich import MonitorOptimizacion
 
 
 @dataclass(frozen=True)
@@ -223,7 +223,7 @@ def _optimizar_combinacion(
         )
         integridad.verificar_resultado(df_tf, senales, resultado, salidas_custom)
         metricas = calcular_metricas(resultado)
-        score = calcular_score(resultado)
+        score = calcular_score(metricas)
         trial.set_user_attr("metricas", metricas)
         trial.set_user_attr("conteo_senales", conteo)
         trial.set_user_attr("conteo_salidas", conteo_salidas)
@@ -248,7 +248,7 @@ def _optimizar_combinacion(
             trial_number=trial.number,
             score=float(score),
             metricas=metricas,
-            params=parametros,
+            params=_params_para_monitor(parametros, salida_trial),
         )
         return float(score)
 
@@ -312,6 +312,19 @@ def _generar_salidas_custom(
     if salida.tipo != "CUSTOM":
         return None
     return getattr(estrategia, "generar_salidas")(df_tf, params_estrategia)
+
+
+def _params_para_monitor(parametros: dict, salida: ExitConfig) -> dict:
+    params = dict(parametros)
+    params.update(
+        {
+            "__exit_type": salida.tipo,
+            "__exit_sl_pct": salida.sl_pct,
+            "__exit_tp_pct": salida.tp_pct,
+            "__exit_velas": salida.velas,
+        }
+    )
+    return params
 
 
 def _salidas_a_ejecutar():

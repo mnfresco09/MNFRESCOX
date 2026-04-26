@@ -139,6 +139,6 @@ El sistema verifica por cada trial:
 - Salidas custom alineadas con las velas cuando aplica.
 - Entradas siempre en `open` de `N+1`.
 - Cierres por `SL`, `TP`, `BARS`, `CUSTOM` o `END` en precios coherentes.
-- `pnl_total`, `saldo_final` y `equity_curve` consistentes.
+- PnL agregado desde trades, `saldo_final` y `equity_curve` consistentes.
 
 Si cualquiera de estos puntos falla, el run debe parar con error explicito.

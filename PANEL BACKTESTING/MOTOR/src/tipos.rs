@@ -144,7 +144,10 @@ pub struct TradeResult {
     pub duracion_velas: usize,
 }
 
-/// Resultado completo de una simulación. Contiene todos los trades y métricas resumen.
+/// Resultado completo de una simulación.
+///
+/// El motor solo devuelve datos base. Las métricas públicas del sistema
+/// se calculan en Python, en OPTIMIZACION/metricas.py.
 #[derive(Debug, Clone)]
 #[pyclass(skip_from_py_object)]
 pub struct SimResult {
@@ -157,30 +160,6 @@ pub struct SimResult {
     /// Saldo inicial de la simulación
     #[pyo3(get)]
     pub saldo_inicial: f64,
-    /// Total de trades ejecutados
-    #[pyo3(get)]
-    pub total_trades: usize,
-    /// Trades ganadores (PnL > 0)
-    #[pyo3(get)]
-    pub trades_ganadores: usize,
-    /// Trades perdedores (PnL <= 0)
-    #[pyo3(get)]
-    pub trades_perdedores: usize,
-    /// Win rate como fracción decimal
-    #[pyo3(get)]
-    pub win_rate: f64,
-    /// ROI total sobre el capital inicial
-    #[pyo3(get)]
-    pub roi_total: f64,
-    /// PnL neto total (USD)
-    #[pyo3(get)]
-    pub pnl_total: f64,
-    /// PnL promedio por trade (USD)
-    #[pyo3(get)]
-    pub pnl_promedio: f64,
-    /// Máximo drawdown como fracción decimal
-    #[pyo3(get)]
-    pub max_drawdown: f64,
     /// Curva de equity: saldo después de cada trade
     #[pyo3(get)]
     pub equity_curve: Vec<f64>,

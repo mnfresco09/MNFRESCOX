@@ -18,7 +18,7 @@ use tipos::{Direccion, ExitType, SimConfig, SimResult, TradeResult, Vela};
 /// Recibe las columnas OHLCV como listas, las señales como lista de i8,
 /// y todos los parámetros de configuración como argumentos individuales.
 ///
-/// Devuelve un SimResult con todos los trades y métricas.
+/// Devuelve un SimResult con todos los datos base de la simulación.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 #[pyo3(signature = (
