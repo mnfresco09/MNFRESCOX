@@ -10,15 +10,23 @@ CARPETA_RESULTADOS = RAIZ / "RESULTADOS"
 # ---------------------------------------------------------------------------
 # ACTIVOS Y DATOS
 # ---------------------------------------------------------------------------
-ACTIVOS = ["BTC"]                  # Un activo o lista: ["BTC", "GOLD"]
+ACTIVOS = ["BTC", "GOLD"]          # Un activo o lista: ["BTC", "GOLD"]
 FORMATO_DATOS = "feather"          # "feather" | "parquet" | "csv"
+
+# True = activo continuo 24/7: cualquier hueco temporal es error.
+# False = activo con cierre de mercado: se permiten saltos entre sesiones
+#         siempre conservando orden, duplicados, OHLC y trazabilidad.
+MERCADO_24_7 = {
+    "BTC": True,
+    "GOLD": False,
+}
 
 # ---------------------------------------------------------------------------
 # TIMEFRAMES
 # ---------------------------------------------------------------------------
 # El sistema resamplea desde 1m automáticamente.
 # Opciones: "1m" "5m" "15m" "30m" "1h" "4h" "1d"
-TIMEFRAMES = ["1h"]
+TIMEFRAMES = ["1h", "4h"]
 
 # ---------------------------------------------------------------------------
 # FECHAS
@@ -30,7 +38,7 @@ FECHA_FIN    = "2024-12-31"
 # ESTRATEGIAS
 # ---------------------------------------------------------------------------
 # ID numérico, lista de IDs, o "all" para ejecutar todas.
-ESTRATEGIA_ID = 1
+ESTRATEGIA_ID = "all"
 
 # ---------------------------------------------------------------------------
 # CAPITAL Y COMISIONES
@@ -47,7 +55,8 @@ COMISION_LADOS         = 2          # 1 = solo apertura | 2 = apertura y cierre
 # ---------------------------------------------------------------------------
 # "FIXED" → Stop Loss y Take Profit fijos       → parámetros en SALIDAS/fijo.py
 # "BARS"  → Cierre por número máximo de velas   → parámetros en SALIDAS/velas.py
-# "ALL"   → Ejecuta ambos por separado y guarda cada resultado
+# "CUSTOM"→ Cierre por generar_salidas()         → parámetros en SALIDAS/personalizada.py
+# "ALL"   → Ejecuta todos por separado y guarda cada resultado
 EXIT_TYPE = "FIXED"
 
 # ---------------------------------------------------------------------------
@@ -83,6 +92,6 @@ MAX_ARCHIVOS = 20       # Máximo de archivos por carpeta antes de rotar los má
 # "all"    → muestra todo el período del trial en el gráfico HTML
 # "3m"     → muestra los últimos 3 meses
 # "custom" → usa GRAFICA_DESDE y GRAFICA_HASTA
-GRAFICA_RANGO = "all"
+GRAFICA_RANGO = "3m"
 GRAFICA_DESDE = "2024-01-01"    # Solo si GRAFICA_RANGO = "custom"
 GRAFICA_HASTA = "2024-12-31"    # Solo si GRAFICA_RANGO = "custom"

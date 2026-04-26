@@ -33,6 +33,7 @@ impl Direccion {
 pub enum ExitType {
     Fixed,
     Bars,
+    Custom,
 }
 
 impl ExitType {
@@ -40,8 +41,9 @@ impl ExitType {
         match val {
             "FIXED" => Ok(ExitType::Fixed),
             "BARS" => Ok(ExitType::Bars),
+            "CUSTOM" => Ok(ExitType::Custom),
             _ => Err(format!(
-                "EXIT_TYPE inválido: '{val}'. Opciones soportadas por el motor: FIXED, BARS."
+                "EXIT_TYPE inválido: '{val}'. Opciones soportadas por el motor: FIXED, BARS, CUSTOM."
             )),
         }
     }
@@ -134,7 +136,7 @@ pub struct TradeResult {
     /// Saldo después de cerrar este trade (USD)
     #[pyo3(get)]
     pub saldo_post: f64,
-    /// Motivo de cierre: "SL", "TP", "BARS", "END"
+    /// Motivo de cierre: "SL", "TP", "BARS", "CUSTOM", "END"
     #[pyo3(get)]
     pub motivo_salida: String,
     /// Número de velas que duró el trade
@@ -198,8 +200,13 @@ mod tests {
     }
 
     #[test]
+    fn test_exit_type_acepta_custom() {
+        assert_eq!(ExitType::from_str("CUSTOM").unwrap(), ExitType::Custom);
+    }
+
+    #[test]
     fn test_exit_type_rechaza_valor_invalido() {
-        let err = ExitType::from_str("CUSTOM").unwrap_err();
+        let err = ExitType::from_str("INVALIDO").unwrap_err();
         assert!(err.contains("EXIT_TYPE inválido"));
     }
 }

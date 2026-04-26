@@ -50,3 +50,17 @@ class RSIReversion(BaseEstrategia):
         señales = señales.scatter(señal_short.arg_true(), Señal.SHORT)
 
         return señales
+
+    def generar_salidas(self, df: pl.DataFrame, params: dict) -> pl.Series:
+        periodo = params["rsi_periodo"]
+
+        rsi = self.rsi(df["close"], periodo)
+        rsi_prev = rsi.shift(1)
+
+        salida_long = ((rsi_prev < 50) & (rsi >= 50)).fill_null(False)
+        salida_short = ((rsi_prev > 50) & (rsi <= 50)).fill_null(False)
+
+        salidas = pl.Series([0] * len(df), dtype=pl.Int8)
+        salidas = salidas.scatter(salida_long.arg_true(), 1)
+        salidas = salidas.scatter(salida_short.arg_true(), -1)
+        return salidas

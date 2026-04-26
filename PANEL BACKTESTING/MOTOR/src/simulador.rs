@@ -18,8 +18,9 @@ struct TradeAbierto {
     tamaño_posicion: f64,
     comision_total: f64,
     precio_sl: f64,
-    precio_tp: f64,   // 0.0 si no aplica (BARS sin TP)
-    max_velas: usize, // 0 si no aplica (FIXED)
+    precio_tp: f64,    // 0.0 si no aplica (BARS/CUSTOM sin TP)
+    max_velas: usize,  // 0 si no aplica (FIXED/CUSTOM)
+    usar_custom: bool, // true si la estrategia decide el cierre
 }
 
 struct CierreTrade {
@@ -32,12 +33,22 @@ struct CierreTrade {
 ///
 /// Recibe las velas OHLCV, las señales generadas por la estrategia y la config.
 /// Devuelve un SimResult con todos los trades y métricas.
-pub fn simular(velas: &[Vela], señales: &[i8], config: &SimConfig) -> SimResult {
+pub fn simular(
+    velas: &[Vela],
+    señales: &[i8],
+    salidas_custom: &[i8],
+    config: &SimConfig,
+) -> SimResult {
     let n = velas.len();
     assert_eq!(
         n,
         señales.len(),
         "El número de velas y señales debe coincidir"
+    );
+    assert_eq!(
+        n,
+        salidas_custom.len(),
+        "El número de velas y salidas custom debe coincidir"
     );
 
     let mut saldo = config.saldo_inicial;
@@ -99,6 +110,7 @@ pub fn simular(velas: &[Vela], señales: &[i8], config: &SimConfig) -> SimResult
                 } else {
                     0
                 };
+                let usar_custom = config.exit_type == ExitType::Custom;
 
                 trade_abierto = Some(TradeAbierto {
                     idx_señal,
@@ -111,6 +123,7 @@ pub fn simular(velas: &[Vela], señales: &[i8], config: &SimConfig) -> SimResult
                     precio_sl,
                     precio_tp,
                     max_velas,
+                    usar_custom,
                 });
             }
         }
@@ -120,7 +133,8 @@ pub fn simular(velas: &[Vela], señales: &[i8], config: &SimConfig) -> SimResult
             let vela = &velas[i];
             let velas_transcurridas = i - trade.idx_entrada + 1;
 
-            if let Some((precio_salida, motivo)) = evaluar_salida(trade, vela, velas_transcurridas)
+            if let Some((precio_salida, motivo)) =
+                evaluar_salida(trade, vela, velas_transcurridas, salidas_custom[i])
             {
                 saldo = cerrar_trade(
                     trade,
@@ -259,21 +273,43 @@ fn cerrar_trade(
 ///
 /// Orden de prioridad dentro de la misma vela:
 ///   1. Stop Loss (usa precio worst-case: low para LONG, high para SHORT)
-///   2. Take Profit (usa precio best-case: high para LONG, low para SHORT)
-///   3. Máximo de velas (BARS) → cierra al close de la vela
+///   2. Salida CUSTOM de la estrategia -> cierra al close de la vela
+///   3. Take Profit (usa precio best-case: high para LONG, low para SHORT)
+///   4. Máximo de velas (BARS) → cierra al close de la vela
 fn evaluar_salida(
     trade: &TradeAbierto,
     vela: &Vela,
     velas_transcurridas: usize,
+    salida_custom: i8,
 ) -> Option<(f64, String)> {
     // --- Stop Loss ---
     if trade.precio_sl > 0.0 {
         match trade.direccion {
             Direccion::Long if vela.low <= trade.precio_sl => {
-                return Some((trade.precio_sl, "SL".to_string()));
+                let precio = if vela.open < trade.precio_sl {
+                    vela.open
+                } else {
+                    trade.precio_sl
+                };
+                return Some((precio, "SL".to_string()));
             }
             Direccion::Short if vela.high >= trade.precio_sl => {
-                return Some((trade.precio_sl, "SL".to_string()));
+                let precio = if vela.open > trade.precio_sl {
+                    vela.open
+                } else {
+                    trade.precio_sl
+                };
+                return Some((precio, "SL".to_string()));
+            }
+            _ => {}
+        }
+    }
+
+    // --- Salida CUSTOM ---
+    if trade.usar_custom {
+        match (trade.direccion, salida_custom) {
+            (Direccion::Long, 1) | (Direccion::Short, -1) => {
+                return Some((vela.close, "CUSTOM".to_string()));
             }
             _ => {}
         }
@@ -283,10 +319,20 @@ fn evaluar_salida(
     if trade.precio_tp > 0.0 {
         match trade.direccion {
             Direccion::Long if vela.high >= trade.precio_tp => {
-                return Some((trade.precio_tp, "TP".to_string()));
+                let precio = if vela.open > trade.precio_tp {
+                    vela.open
+                } else {
+                    trade.precio_tp
+                };
+                return Some((precio, "TP".to_string()));
             }
             Direccion::Short if vela.low <= trade.precio_tp => {
-                return Some((trade.precio_tp, "TP".to_string()));
+                let precio = if vela.open < trade.precio_tp {
+                    vela.open
+                } else {
+                    trade.precio_tp
+                };
+                return Some((precio, "TP".to_string()));
             }
             _ => {}
         }
@@ -336,6 +382,14 @@ mod tests {
         }
     }
 
+    fn config_custom() -> SimConfig {
+        let mut cfg = config_fixed();
+        cfg.exit_type = ExitType::Custom;
+        cfg.exit_tp_pct = 0.0;
+        cfg.exit_velas = 0;
+        cfg
+    }
+
     fn vela(ts: i64, o: f64, h: f64, l: f64, c: f64) -> Vela {
         Vela {
             timestamp: ts,
@@ -347,6 +401,10 @@ mod tests {
         }
     }
 
+    fn sin_salidas(n: usize) -> Vec<i8> {
+        vec![0; n]
+    }
+
     #[test]
     fn test_entrada_en_vela_siguiente() {
         // Señal en vela 0, entrada debe ser en vela 1 al open
@@ -356,8 +414,9 @@ mod tests {
             vela(3, 108.0, 200.0, 100.0, 150.0), // TP aquí
         ];
         let señales = vec![1, 0, 0];
+        let salidas = sin_salidas(velas.len());
         let cfg = config_fixed();
-        let result = simular(&velas, &señales, &cfg);
+        let result = simular(&velas, &señales, &salidas, &cfg);
 
         assert_eq!(result.total_trades, 1);
         assert_eq!(result.trades[0].idx_señal, 0);
@@ -375,8 +434,9 @@ mod tests {
             vela(4, 105.0, 200.0, 100.0, 150.0), // TP aquí
         ];
         let señales = vec![1, 0, -1, 0];
+        let salidas = sin_salidas(velas.len());
         let cfg = config_fixed();
-        let result = simular(&velas, &señales, &cfg);
+        let result = simular(&velas, &señales, &salidas, &cfg);
 
         // Solo un trade, la señal SHORT fue ignorada
         assert_eq!(result.total_trades, 1);
@@ -399,12 +459,45 @@ mod tests {
             vela(3, 101.0, 102.0, 100.0, 101.5),
         ];
         let señales = vec![1, 0, 0];
-        let result = simular(&velas, &señales, &config_fixed());
+        let salidas = sin_salidas(velas.len());
+        let result = simular(&velas, &señales, &salidas, &config_fixed());
 
         assert_eq!(result.total_trades, 1);
         assert_eq!(result.trades[0].idx_salida, 2);
         assert_eq!(result.trades[0].motivo_salida, "END");
         assert!((result.trades[0].precio_salida - 101.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_gap_long_ejecuta_sl_en_open_si_salta_el_stop() {
+        let velas = vec![
+            vela(1, 100.0, 101.0, 99.0, 100.0),
+            vela(2, 100.0, 101.0, 99.0, 100.5),
+            vela(3, 95.0, 97.0, 94.0, 96.0),
+        ];
+        let señales = vec![1, 0, 0];
+        let salidas = sin_salidas(velas.len());
+        let result = simular(&velas, &señales, &salidas, &config_fixed());
+
+        assert_eq!(result.total_trades, 1);
+        assert_eq!(result.trades[0].motivo_salida, "SL");
+        assert!((result.trades[0].precio_salida - 95.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_gap_short_ejecuta_sl_en_open_si_salta_el_stop() {
+        let velas = vec![
+            vela(1, 100.0, 101.0, 99.0, 100.0),
+            vela(2, 100.0, 101.0, 99.0, 100.5),
+            vela(3, 105.0, 106.0, 104.0, 105.5),
+        ];
+        let señales = vec![-1, 0, 0];
+        let salidas = sin_salidas(velas.len());
+        let result = simular(&velas, &señales, &salidas, &config_fixed());
+
+        assert_eq!(result.total_trades, 1);
+        assert_eq!(result.trades[0].motivo_salida, "SL");
+        assert!((result.trades[0].precio_salida - 105.0).abs() < 1e-10);
     }
 
     #[test]
@@ -416,15 +509,51 @@ mod tests {
             vela(4, 102.0, 103.0, 101.0, 102.5),
         ];
         let señales = vec![1, 0, 0, 0];
+        let salidas = sin_salidas(velas.len());
         let mut cfg = config_fixed();
         cfg.exit_type = ExitType::Bars;
         cfg.exit_tp_pct = 0.0;
         cfg.exit_velas = 2;
 
-        let result = simular(&velas, &señales, &cfg);
+        let result = simular(&velas, &señales, &salidas, &cfg);
 
         assert_eq!(result.total_trades, 1);
         assert_eq!(result.trades[0].idx_salida, 2);
         assert_eq!(result.trades[0].motivo_salida, "BARS");
+    }
+
+    #[test]
+    fn test_custom_cierra_long_al_close_de_la_vela() {
+        let velas = vec![
+            vela(1, 100.0, 101.0, 99.0, 100.0),
+            vela(2, 100.0, 101.0, 99.0, 100.5),
+            vela(3, 101.0, 102.0, 100.0, 101.5),
+            vela(4, 102.0, 103.0, 101.0, 102.5),
+        ];
+        let señales = vec![1, 0, 0, 0];
+        let salidas = vec![0, 0, 1, 0];
+
+        let result = simular(&velas, &señales, &salidas, &config_custom());
+
+        assert_eq!(result.total_trades, 1);
+        assert_eq!(result.trades[0].idx_salida, 2);
+        assert_eq!(result.trades[0].motivo_salida, "CUSTOM");
+        assert!((result.trades[0].precio_salida - 101.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_custom_mantiene_prioridad_de_sl() {
+        let velas = vec![
+            vela(1, 100.0, 101.0, 99.0, 100.0),
+            vela(2, 100.0, 101.0, 99.0, 100.5),
+            vela(3, 100.0, 101.0, 95.0, 99.0),
+        ];
+        let señales = vec![1, 0, 0];
+        let salidas = vec![0, 0, 1];
+
+        let result = simular(&velas, &señales, &salidas, &config_custom());
+
+        assert_eq!(result.total_trades, 1);
+        assert_eq!(result.trades[0].motivo_salida, "SL");
     }
 }

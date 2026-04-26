@@ -1,9 +1,10 @@
 from pathlib import Path
+import importlib
 import sys
 
 TIMEFRAMES_VALIDOS = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
 FORMATOS_VALIDOS   = {"feather", "parquet", "csv"}
-EXIT_TYPES_VALIDOS = {"FIXED", "BARS", "ALL"}
+EXIT_TYPES_VALIDOS = {"FIXED", "BARS", "CUSTOM", "ALL"}
 SAMPLERS_VALIDOS   = {"QMC", "TPE", "HYBRID"}
 EXTENSIONES        = {"feather": ".feather", "parquet": ".parquet", "csv": ".csv"}
 
@@ -31,6 +32,16 @@ def validar(cfg) -> None:
                 f"en {cfg.CARPETA_HISTORICO}"
             )
 
+    mercado_24_7 = getattr(cfg, "MERCADO_24_7", {})
+    if not isinstance(mercado_24_7, dict):
+        errores.append("MERCADO_24_7 debe ser un dict, por ejemplo {'BTC': True, 'GOLD': False}.")
+    else:
+        for activo in activos:
+            if activo not in mercado_24_7:
+                errores.append(f"MERCADO_24_7 no define si '{activo}' es 24/7.")
+            elif not isinstance(mercado_24_7[activo], bool):
+                errores.append(f"MERCADO_24_7['{activo}'] debe ser True o False.")
+
     # --- Timeframes ---
     tfs = cfg.TIMEFRAMES if isinstance(cfg.TIMEFRAMES, list) else [cfg.TIMEFRAMES]
     for tf in tfs:
@@ -42,8 +53,8 @@ def validar(cfg) -> None:
         from datetime import date
         inicio = date.fromisoformat(cfg.FECHA_INICIO)
         fin    = date.fromisoformat(cfg.FECHA_FIN)
-        if inicio >= fin:
-            errores.append(f"FECHA_INICIO ({cfg.FECHA_INICIO}) debe ser anterior a FECHA_FIN ({cfg.FECHA_FIN}).")
+        if inicio > fin:
+            errores.append(f"FECHA_INICIO ({cfg.FECHA_INICIO}) no puede ser posterior a FECHA_FIN ({cfg.FECHA_FIN}).")
     except ValueError as e:
         errores.append(f"Formato de fecha incorrecto: {e}. Usa 'AAAA-MM-DD'.")
 
@@ -66,21 +77,27 @@ def validar(cfg) -> None:
     # --- Salidas ---
     if cfg.EXIT_TYPE not in EXIT_TYPES_VALIDOS:
         errores.append(f"EXIT_TYPE '{cfg.EXIT_TYPE}' no válido. Opciones: {EXIT_TYPES_VALIDOS}")
-
-    # Los parámetros específicos de cada tipo (SL, TP, velas) se validan
-    # en sus propios módulos: SALIDAS/fijo.py y SALIDAS/velas.py
+    else:
+        _validar_modulos_salida(cfg.EXIT_TYPE, errores)
 
     # --- Optuna ---
     if cfg.OPTUNA_SAMPLER not in SAMPLERS_VALIDOS:
         errores.append(f"OPTUNA_SAMPLER '{cfg.OPTUNA_SAMPLER}' no válido. Opciones: {SAMPLERS_VALIDOS}")
     if cfg.N_TRIALS < 1:
         errores.append("N_TRIALS debe ser >= 1.")
+    if cfg.N_JOBS == 0:
+        errores.append("N_JOBS no puede ser 0. Usa 1, -1 o -2.")
 
     # --- Resultados ---
+    if not isinstance(cfg.USAR_EXCEL, bool):
+        errores.append("USAR_EXCEL debe ser True o False.")
     if cfg.MAX_PLOTS < 0:
         errores.append("MAX_PLOTS debe ser >= 0.")
     if cfg.MAX_ARCHIVOS < 1:
         errores.append("MAX_ARCHIVOS debe ser >= 1.")
+    rango = str(cfg.GRAFICA_RANGO).lower()
+    if rango != "all" and rango != "custom" and not (rango.endswith("m") and rango[:-1].isdigit()):
+        errores.append("GRAFICA_RANGO debe ser 'all', 'custom' o un texto como '3m'.")
 
     # --- Reporte final ---
     if errores:
@@ -89,3 +106,71 @@ def validar(cfg) -> None:
             print(f"  ✗ {e}")
         print()
         sys.exit(1)
+
+
+def _validar_modulos_salida(exit_type: str, errores: list[str]) -> None:
+    if exit_type in {"FIXED", "ALL"}:
+        fijo = _importar_salida("fijo", errores)
+        if fijo is not None:
+            _validar_mayor_cero(fijo, "EXIT_SL_PCT", errores)
+            _validar_mayor_cero(fijo, "EXIT_TP_PCT", errores)
+            if bool(getattr(fijo, "OPTIMIZAR_SALIDAS", False)):
+                _validar_rango(fijo, "EXIT_SL_MIN", "EXIT_SL_MAX", errores)
+                _validar_rango(fijo, "EXIT_TP_MIN", "EXIT_TP_MAX", errores)
+
+    if exit_type in {"BARS", "ALL"}:
+        velas = _importar_salida("velas", errores)
+        if velas is not None:
+            _validar_mayor_cero(velas, "EXIT_SL_PCT", errores)
+            _validar_entero_mayor_cero(velas, "EXIT_VELAS", errores)
+            if bool(getattr(velas, "OPTIMIZAR_SALIDAS", False)):
+                _validar_rango(velas, "EXIT_SL_MIN", "EXIT_SL_MAX", errores)
+                _validar_rango(velas, "EXIT_VELAS_MIN", "EXIT_VELAS_MAX", errores)
+
+    if exit_type in {"CUSTOM", "ALL"}:
+        personalizada = _importar_salida("personalizada", errores)
+        if personalizada is not None:
+            _validar_mayor_cero(personalizada, "EXIT_SL_PCT", errores)
+            if bool(getattr(personalizada, "OPTIMIZAR_SALIDAS", False)):
+                _validar_rango(personalizada, "EXIT_SL_MIN", "EXIT_SL_MAX", errores)
+
+
+def _importar_salida(nombre: str, errores: list[str]):
+    try:
+        return importlib.import_module(f"SALIDAS.{nombre}")
+    except Exception as exc:
+        errores.append(f"No se pudo importar SALIDAS/{nombre}.py: {exc}")
+        return None
+
+
+def _validar_mayor_cero(modulo, atributo: str, errores: list[str]) -> None:
+    try:
+        valor = float(getattr(modulo, atributo))
+    except Exception:
+        errores.append(f"{modulo.__name__}.{atributo} debe existir y ser numérico.")
+        return
+    if valor <= 0:
+        errores.append(f"{modulo.__name__}.{atributo} debe ser mayor que 0.")
+
+
+def _validar_entero_mayor_cero(modulo, atributo: str, errores: list[str]) -> None:
+    try:
+        valor = int(getattr(modulo, atributo))
+    except Exception:
+        errores.append(f"{modulo.__name__}.{atributo} debe existir y ser entero.")
+        return
+    if valor <= 0:
+        errores.append(f"{modulo.__name__}.{atributo} debe ser mayor que 0.")
+
+
+def _validar_rango(modulo, minimo: str, maximo: str, errores: list[str]) -> None:
+    try:
+        valor_min = float(getattr(modulo, minimo))
+        valor_max = float(getattr(modulo, maximo))
+    except Exception:
+        errores.append(f"{modulo.__name__}.{minimo}/{maximo} deben existir y ser numéricos.")
+        return
+    if valor_min <= 0 or valor_max <= 0:
+        errores.append(f"{modulo.__name__}.{minimo}/{maximo} deben ser mayores que 0.")
+    if valor_min > valor_max:
+        errores.append(f"{modulo.__name__}.{minimo} no puede ser mayor que {maximo}.")

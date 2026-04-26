@@ -22,7 +22,7 @@ use tipos::{Direccion, ExitType, SimConfig, SimResult, TradeResult, Vela};
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 #[pyo3(signature = (
-    timestamps, opens, highs, lows, closes, volumes, señales,
+    timestamps, opens, highs, lows, closes, volumes, señales, salidas_custom,
     saldo_inicial, saldo_por_trade, apalancamiento, saldo_minimo,
     comision_pct, comision_lados,
     exit_type, exit_sl_pct, exit_tp_pct, exit_velas
@@ -35,6 +35,7 @@ fn simulate_trades(
     closes: Vec<f64>,
     volumes: Vec<f64>,
     señales: Vec<i8>,
+    salidas_custom: Vec<i8>,
     saldo_inicial: f64,
     saldo_por_trade: f64,
     apalancamiento: f64,
@@ -55,6 +56,7 @@ fn simulate_trades(
         || n != closes.len()
         || n != volumes.len()
         || n != señales.len()
+        || n != salidas_custom.len()
     {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "Todas las columnas deben tener el mismo número de filas.",
@@ -67,7 +69,15 @@ fn simulate_trades(
         ));
     }
 
-    validar_columnas(&opens, &highs, &lows, &closes, &volumes, &señales)?;
+    validar_columnas(
+        &opens,
+        &highs,
+        &lows,
+        &closes,
+        &volumes,
+        &señales,
+        &salidas_custom,
+    )?;
     let exit_type = validar_config(
         saldo_inicial,
         saldo_por_trade,
@@ -108,7 +118,7 @@ fn simulate_trades(
     };
 
     // Ejecutar simulación
-    let resultado = simulador::simular(&velas, &señales, &config);
+    let resultado = simulador::simular(&velas, &señales, &salidas_custom, &config);
 
     Ok(resultado)
 }
@@ -120,6 +130,7 @@ fn validar_columnas(
     closes: &[f64],
     volumes: &[f64],
     señales: &[i8],
+    salidas_custom: &[i8],
 ) -> PyResult<()> {
     for i in 0..opens.len() {
         let open = opens[i];
@@ -147,6 +158,10 @@ fn validar_columnas(
         }
         if señales[i] != 0 {
             Direccion::from_signal(señales[i]).map_err(pyo3::exceptions::PyValueError::new_err)?;
+        }
+        if salidas_custom[i] != 0 {
+            Direccion::from_signal(salidas_custom[i])
+                .map_err(pyo3::exceptions::PyValueError::new_err)?;
         }
     }
 
@@ -209,6 +224,17 @@ fn validar_config(
         ExitType::Bars => {
             if exit_velas == 0 {
                 return value_error("BARS requiere exit_velas mayor que 0.");
+            }
+        }
+        ExitType::Custom => {
+            if exit_sl_pct <= 0.0 {
+                return value_error("CUSTOM requiere exit_sl_pct mayor que 0.");
+            }
+            if exit_tp_pct > 0.0 {
+                return value_error("CUSTOM no usa exit_tp_pct; debe ser 0.");
+            }
+            if exit_velas != 0 {
+                return value_error("CUSTOM no usa exit_velas; debe ser 0.");
             }
         }
     }

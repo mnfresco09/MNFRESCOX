@@ -29,6 +29,7 @@ def simular_dataframe(
     exit_sl_pct: float,
     exit_tp_pct: float,
     exit_velas: int,
+    salidas_custom: pl.Series | None = None,
 ):
     """
     Convierte un DataFrame Polars validado al contrato plano que espera Rust.
@@ -37,6 +38,13 @@ def simular_dataframe(
     if df.height != len(senales):
         raise ValueError(
             f"Filas y senales no coinciden: df={df.height:,}, senales={len(senales):,}."
+        )
+    if salidas_custom is None:
+        salidas_custom = pl.Series([0] * df.height, dtype=pl.Int8)
+    if df.height != len(salidas_custom):
+        raise ValueError(
+            "Filas y salidas_custom no coinciden: "
+            f"df={df.height:,}, salidas_custom={len(salidas_custom):,}."
         )
 
     motor = cargar_motor()
@@ -50,6 +58,7 @@ def simular_dataframe(
         df["close"].cast(pl.Float64).to_list(),
         _volume_list(df),
         senales.cast(pl.Int8).to_list(),
+        salidas_custom.cast(pl.Int8).to_list(),
         float(saldo_inicial),
         float(saldo_por_trade),
         float(apalancamiento),
@@ -65,7 +74,7 @@ def simular_dataframe(
 
 def cargar_motor() -> ModuleType:
     ruta = _ruta_extension()
-    if not ruta.exists():
+    if not ruta.exists() or _extension_obsoleta(ruta):
         _compilar_motor()
 
     try:
@@ -97,6 +106,16 @@ def _compilar_motor() -> None:
         env=env,
         check=True,
     )
+
+
+def _extension_obsoleta(ruta: Path) -> bool:
+    if not ruta.exists():
+        return True
+
+    compilado = ruta.stat().st_mtime
+    fuentes = [MOTOR_DIR / "Cargo.toml", MOTOR_DIR / "Cargo.lock", MOTOR_DIR / "build.rs"]
+    fuentes.extend((MOTOR_DIR / "src").glob("*.rs"))
+    return any(path.exists() and path.stat().st_mtime > compilado for path in fuentes)
 
 
 def _importar_extension(ruta: Path) -> ModuleType:

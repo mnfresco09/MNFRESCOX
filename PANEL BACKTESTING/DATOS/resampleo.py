@@ -64,7 +64,7 @@ def resamplear(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
 
     df_resampled = (
         df.sort("timestamp")
-        .group_by_dynamic("timestamp", every=duracion, closed="left")
+        .group_by_dynamic("timestamp", every=duracion, closed="left", start_by="datapoint")
         .agg(aggs)
         .sort("timestamp")
     )

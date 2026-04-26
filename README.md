@@ -10,7 +10,7 @@ Sistema modular para un trader individual que integra backtesting, seguimiento d
 
 | Fase | Panel | Estado |
 |------|-------|--------|
-| 1–7 | PANEL_BACKTESTING | **En construcción — prioridad absoluta** |
+| 1–7 | PANEL BACKTESTING | **En construcción — prioridad absoluta** |
 | 8 | PANEL_PORTFOLIO | Pendiente |
 | 8 | PANEL_SCANNER | Pendiente |
 | 8 | PANEL_ANALISIS | Pendiente |
@@ -26,7 +26,7 @@ MNFRESCO/
 ├── run.py                  ← Punto de entrada único. Ejecuta el backtesting completo.
 ├── README.md               ← Este archivo.
 │
-├── PANEL_BACKTESTING/      ← Laboratorio de estrategias. Prioridad nº 1.
+├── PANEL BACKTESTING/      ← Laboratorio de estrategias. Prioridad nº 1.
 ├── PANEL_PORTFOLIO/        ← Seguimiento del capital real. (Pendiente)
 ├── PANEL_SCANNER/          ← Vigilancia automática de activos. (Pendiente)
 ├── PANEL_ANALISIS/         ← Gráfico interactivo y decisiones de trading. (Pendiente)
@@ -35,26 +35,22 @@ MNFRESCO/
 
 ---
 
-## PANEL_BACKTESTING
+## PANEL BACKTESTING
 
 El laboratorio donde se prueban las estrategias en datos históricos antes de arriesgar dinero real. Le dices qué activo, qué período, qué estrategia y qué parámetros quieres probar, y el sistema simula qué habría pasado operando con esa estrategia. Lo hace miles de veces variando parámetros para encontrar cuáles funcionan mejor.
 
 **Punto de entrada:** `run.py` en la raíz del proyecto.
-**Configuración:** `PANEL_BACKTESTING/config.py` — el único archivo que el usuario edita.
+**Configuración:** `PANEL BACKTESTING/CONFIGURACION/config.py` — el único archivo que el usuario edita.
 
 ### Árbol completo
 
 ```
-PANEL_BACKTESTING/
+PANEL BACKTESTING/
 │
 ├── CONFIGURACION/                  ← Todo lo relacionado con la configuración de un run.
 │   ├── config.py                   ← El ÚNICO archivo que el usuario edita.
 │   │                                 Contiene: activo, fechas, timeframe, capital,
 │   │                                 comisiones, tipo de salida y parámetros de Optuna.
-│   ├── config_ejemplo.py           ← Plantilla de referencia con todos los parámetros
-│   │                                 documentados y valores típicos reales.
-│   │                                 Nunca se modifica: sirve de consulta y punto
-│   │                                 de partida para nuevas configuraciones.
 │   └── validador_config.py         ← Comprueba config.py antes de arrancar el run:
 │                                     tipos correctos, fechas coherentes, que el activo
 │                                     existe en HISTORICO/, que EXIT_TYPE es válido, etc.
@@ -63,8 +59,9 @@ PANEL_BACKTESTING/
 ├── NUCLEO/                         ← La base de la que depende todo lo demás.
 │   ├── base_estrategia.py          ← Clase abstracta madre de todas las estrategias.
 │   │                                 Define el contrato: ID, nombre, espacio de
-│   │                                 búsqueda y función de señales. Incluye helpers
-│   │                                 de indicadores (SMA, EMA, RSI, ATR, Bollinger).
+│   │                                 búsqueda, señales y salidas CUSTOM. Incluye
+│   │                                 helpers de indicadores (SMA, EMA, RSI, ATR,
+│   │                                 Bollinger).
 │   ├── tipos.py                    ← Tipos de datos compartidos internamente:
 │   │                                 TradeResult, Signal, OHLCVFrame, etc.
 │   └── registro.py                 ← Auto-descubrimiento de estrategias. Escanea
@@ -126,6 +123,8 @@ PANEL_BACKTESTING/
 │   ├── runner.py                   ← Coordina el bucle de trials. Gestiona el
 │   │                                 paralelismo (N_JOBS workers). Procesa activos
 │   │                                 y timeframes en secuencial para controlar RAM.
+│   ├── metricas.py                 ← Calcula métricas derivadas del resultado:
+│   │                                 profit factor, Sharpe, drawdown, ROI, etc.
 │   ├── samplers.py                 ← Crea el sampler según config:
 │   │                                 QMC (exploración uniforme, secuencias Sobol),
 │   │                                 TPE (guiado por resultados anteriores),
@@ -142,10 +141,12 @@ PANEL_BACKTESTING/
 │   │                                 RESUMEN (un trial por fila, ordenado por score),
 │   │                                 TRADES (todas las operaciones del mejor trial),
 │   │                                 EQUITY (curva de capital del mejor trial).
-│   └── html.py                     ← Genera archivos HTML standalone por trial.
+│   ├── html.py                     ← Genera archivos HTML standalone por trial.
 │                                     Gráfico de velas + indicadores + entradas/salidas
 │                                     con flechas. Usa Lightweight Charts (TradingView).
 │                                     No necesita internet. Pesa < 500 KB por archivo.
+│   └── persistencia.py             ← Guarda CSV/JSON, verifica que no se pierdan
+│                                     trials/trades/equity y rota runs antiguos.
 │
 ├── ESTRATEGIAS/                    ← Las estrategias del usuario.
 │   │                                 REGLA: un archivo = una estrategia.
@@ -156,8 +157,11 @@ PANEL_BACKTESTING/
 │   │                                   - Nombre
 │   │                                   - espacio_busqueda(): define parámetros y rangos
 │   │                                   - generar_señales(): recibe datos, devuelve señales
-│   └── rsi_reversion.py            ← Estrategia de ejemplo: cruce de RSI.
-│                                     Sirve de plantilla para crear estrategias nuevas.
+│   │                                   - generar_salidas(): obligatorio para CUSTOM
+│   ├── GUIA_ESTRATEGIAS.md         ← Contrato serio para crear estrategias:
+│   │                                 anti-lookahead, salidas custom, checklist y auditoría.
+│   ├── rsi_reversion.py            ← Estrategia de reversión a la media por cruce de RSI.
+│   └── ema_tendencia.py            ← Estrategia tendencial por cruce de EMAs.
 │
 └── RESULTADOS/                     ← Outputs de cada run.
     │                                 Estructura: ACTIVO / TIMEFRAME / ESTRATEGIA / EXIT_TYPE /
@@ -176,10 +180,10 @@ Todos los parámetros que el usuario puede tocar, agrupados por categoría:
 
 | Categoría | Parámetro | Descripción |
 |-----------|-----------|-------------|
-| **Datos** | `ACTIVO` | Activo o lista: `'BTC'` o `['BTC', 'GOLD']` |
-| | `CARPETA_DATOS` | Ruta a HISTORICO/. Por defecto: `'PANEL_BACKTESTING/HISTORICO'` |
+| **Datos** | `ACTIVOS` | Activo o lista: `'BTC'` o `['BTC', 'GOLD']` |
 | | `FORMATO_DATOS` | `'parquet'` (recomendado), `'csv'` o `'feather'` |
-| **Timeframes** | `TIMEFRAME` | `'1m'`, `'5m'`, `'15m'`, `'30m'`, `'1h'`, `'4h'`, `'1d'` |
+| | `MERCADO_24_7` | Dict por activo. `True` exige continuidad total; `False` permite cierres de mercado sin rellenar datos. |
+| **Timeframes** | `TIMEFRAMES` | Timeframe o lista: `'1h'` o `['1h', '4h']` |
 | **Fechas** | `FECHA_INICIO` | Inicio del período: `'AAAA-MM-DD'` |
 | | `FECHA_FIN` | Fin del período: `'AAAA-MM-DD'` |
 | **Estrategia** | `ESTRATEGIA_ID` | ID numérico, lista de IDs o `'all'` |
@@ -190,10 +194,9 @@ Todos los parámetros que el usuario puede tocar, agrupados por categoría:
 | | `COMISION_PCT` | Comisión como decimal: `0.0005` = 0.05% |
 | | `COMISION_LADOS` | `1` = solo apertura. `2` = apertura y cierre |
 | **Salidas** | `EXIT_TYPE` | `'FIXED'`, `'BARS'`, `'CUSTOM'` o `'ALL'` |
-| | `EXIT_SL_PCT` | Stop Loss como % del colateral |
-| | `EXIT_TP_PCT` | Take Profit como % del colateral |
-| | `EXIT_VELAS` | Nº máximo de velas (solo para `BARS`) |
-| | `OPTIMIZAR_SALIDAS` | Si `True`, Optuna también busca SL y TP óptimos |
+| | `SALIDAS/fijo.py` | Parámetros de `FIXED`: SL, TP y rangos opcionales |
+| | `SALIDAS/velas.py` | Parámetros de `BARS`: velas máximas, SL y rangos opcionales |
+| | `SALIDAS/personalizada.py` | Parámetros de `CUSTOM`: SL de seguridad y rango opcional |
 | **Optuna** | `N_TRIALS` | Nº de combinaciones a probar. Usar potencias de 2 |
 | | `OPTUNA_SAMPLER` | `'QMC'`, `'TPE'` o `'HYBRID'` (recomendado) |
 | | `OPTUNA_SEED` | Semilla para reproducibilidad. `None` = aleatorio |
@@ -201,7 +204,7 @@ Todos los parámetros que el usuario puede tocar, agrupados por categoría:
 | **Resultados** | `USAR_EXCEL` | `True` genera el Excel al terminar |
 | | `MAX_PLOTS` | Nº de HTMLs a generar (los mejores N por score) |
 | | `MAX_ARCHIVOS` | Máximo de archivos por carpeta antes de rotar |
-| | `GRAFICA_RANGO` | `'all'`, `'2m'` (últimos 2 meses) o `'custom'` |
+| | `GRAFICA_RANGO` | `'all'`, `'3m'` (últimos 3 meses) o `'custom'` |
 
 ---
 
@@ -234,7 +237,7 @@ Todos los parámetros que el usuario puede tocar, agrupados por categoría:
 
 ---
 
-## Fases de construcción de PANEL_BACKTESTING
+## Fases de construcción de PANEL BACKTESTING
 
 | Fase | Objetivo | Criterio de avance |
 |------|----------|--------------------|

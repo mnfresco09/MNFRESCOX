@@ -18,6 +18,7 @@ def validar(
     activo: str,
     estrategia_columnas: set[str] | None = None,
     timeframe: str | None = None,
+    permitir_huecos: bool = False,
 ) -> None:
     """
     Comprueba la integridad del DataFrame antes de cualquier operación.
@@ -67,10 +68,17 @@ def validar(
         deltas = ts_us.diff().drop_nulls()
         huecos = deltas.filter(deltas != delta_esperado).len()
         if huecos > 0:
-            errores.append(
+            mensaje = (
                 f"Hay {huecos:,} saltos temporales distintos de {timeframe}; "
                 "los datos tienen huecos o velas irregulares."
             )
+            if permitir_huecos:
+                print(
+                    f"[DATOS] {activo}: {mensaje} "
+                    "Permitido por configuracion de mercado no 24/7."
+                )
+            else:
+                errores.append(mensaje)
 
     # --- Precios coherentes (high >= low, precios > 0) ---
     if {"high", "low"}.issubset(presentes):

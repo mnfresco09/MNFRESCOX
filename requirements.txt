@@ -1,0 +1,5 @@
+polars
+optuna
+rich
+scipy
+xlsxwriter

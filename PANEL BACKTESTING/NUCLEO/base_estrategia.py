@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 import polars as pl
-from NUCLEO.tipos import Señal
 
 
 class BaseEstrategia(ABC):
@@ -12,10 +11,20 @@ class BaseEstrategia(ABC):
       - NOMBRE : texto descriptivo
       - espacio_busqueda(trial) → dict con los parámetros del trial
       - generar_señales(df, params) → pl.Series de Señal (por vela)
+      - generar_salidas(df, params) → pl.Series Int8 si se usa EXIT_TYPE="CUSTOM"
 
     REGLA ABSOLUTA: generar_señales solo puede usar datos de velas
     anteriores a la actual. La entrada siempre ocurre en el open
     de la vela siguiente a la señal — esto lo garantiza el motor.
+
+    Para salidas CUSTOM, generar_salidas usa el mismo histórico OHLCV y
+    devuelve:
+      0  → no cerrar
+      1  → cerrar LONG abierto
+     -1  → cerrar SHORT abierto
+
+    La salida CUSTOM se ejecuta al close de la vela donde aparece la
+    condición. El SL de seguridad sigue teniendo prioridad dentro del motor.
     """
 
     ID: int
@@ -45,6 +54,22 @@ class BaseEstrategia(ABC):
           1  → señal LONG
          -1  → señal SHORT
         """
+
+    def generar_salidas(self, df: pl.DataFrame, params: dict) -> pl.Series:
+        """
+        Contrato opcional para EXIT_TYPE="CUSTOM".
+
+        Debe devolver una pl.Series Int8 con la misma longitud que df:
+          0  → no cerrar
+          1  → cerrar LONG abierto
+         -1  → cerrar SHORT abierto
+
+        Igual que las señales, no puede usar información futura. Si una
+        estrategia no implementa este método, no puede ejecutarse con CUSTOM.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} no define generar_salidas para EXIT_TYPE='CUSTOM'."
+        )
 
     # ------------------------------------------------------------------
     # Indicadores vectorizados (disponibles para todas las estrategias)

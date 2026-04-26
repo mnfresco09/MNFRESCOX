@@ -12,7 +12,7 @@ if VENV_PYTHON.exists() and Path(sys.executable).resolve() != VENV_PYTHON.resolv
 PANEL_DIR = RAIZ / "PANEL BACKTESTING"
 sys.path.insert(0, str(PANEL_DIR))
 
-from NUCLEO.runner_fijo import main
+from OPTIMIZACION.runner import main
 
 
 if __name__ == "__main__":

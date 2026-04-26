@@ -16,3 +16,9 @@ EXIT_SL_PCT = 20
 # Si True, Optuna también buscará el número óptimo de velas y el SL
 # en lugar de usar los valores fijos definidos arriba.
 OPTIMIZAR_SALIDAS = False
+
+# Rangos usados solo cuando OPTIMIZAR_SALIDAS = True.
+EXIT_VELAS_MIN = 6
+EXIT_VELAS_MAX = 240
+EXIT_SL_MIN = 5
+EXIT_SL_MAX = 50

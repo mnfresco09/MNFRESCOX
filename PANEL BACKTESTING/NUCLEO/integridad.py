@@ -87,7 +87,33 @@ def verificar_senales(df: pl.DataFrame, senales: pl.Series) -> dict[int, int]:
     }
 
 
-def verificar_resultado(df: pl.DataFrame, senales: pl.Series, resultado) -> None:
+def verificar_salidas_custom(df: pl.DataFrame, salidas: pl.Series) -> dict[int, int]:
+    if len(salidas) != df.height:
+        raise ValueError(
+            "[INTEGRIDAD] Longitud de salidas custom incorrecta: "
+            f"{len(salidas):,} != {df.height:,}."
+        )
+    if salidas.null_count() > 0:
+        raise ValueError("[INTEGRIDAD] Las salidas custom contienen nulos.")
+
+    valores = set(salidas.cast(pl.Int8).unique().to_list())
+    invalidos = valores - {-1, 0, 1}
+    if invalidos:
+        raise ValueError(f"[INTEGRIDAD] Salidas custom invalidas: {sorted(invalidos)}.")
+
+    return {
+        -1: int((salidas == -1).sum()),
+        0: int((salidas == 0).sum()),
+        1: int((salidas == 1).sum()),
+    }
+
+
+def verificar_resultado(
+    df: pl.DataFrame,
+    senales: pl.Series,
+    resultado,
+    salidas_custom: pl.Series | None = None,
+) -> None:
     total_trades = int(resultado.total_trades)
     trades = list(resultado.trades)
     if total_trades != len(trades):
@@ -115,9 +141,24 @@ def verificar_resultado(df: pl.DataFrame, senales: pl.Series, resultado) -> None
     lows = df["low"].cast(pl.Float64).to_list()
     closes = df["close"].cast(pl.Float64).to_list()
     senales_lista = senales.cast(pl.Int8).to_list()
+    salidas_custom_lista = (
+        salidas_custom.cast(pl.Int8).to_list()
+        if salidas_custom is not None
+        else None
+    )
 
     for n, trade in enumerate(trades, start=1):
-        _verificar_trade(n, trade, timestamps, opens, highs, lows, closes, senales_lista)
+        _verificar_trade(
+            n,
+            trade,
+            timestamps,
+            opens,
+            highs,
+            lows,
+            closes,
+            senales_lista,
+            salidas_custom_lista,
+        )
 
 
 def _verificar_trade(
@@ -129,6 +170,7 @@ def _verificar_trade(
     lows: list[float],
     closes: list[float],
     senales: list[int],
+    salidas_custom: list[int] | None,
 ) -> None:
     total = len(timestamps)
     idx_senal = int(trade.idx_señal)
@@ -152,9 +194,16 @@ def _verificar_trade(
 
     precio_salida = float(trade.precio_salida)
     motivo = str(trade.motivo_salida)
-    if motivo in {"END", "BARS"}:
+    if motivo in {"END", "BARS", "CUSTOM"}:
         if not isclose(precio_salida, closes[idx_salida], rel_tol=TOL, abs_tol=TOL):
             raise ValueError(f"[INTEGRIDAD] Trade {n}: salida {motivo} no usa close.")
+        if motivo == "CUSTOM":
+            if salidas_custom is None:
+                raise ValueError(f"[INTEGRIDAD] Trade {n}: salida CUSTOM sin serie auditada.")
+            if int(salidas_custom[idx_salida]) != int(trade.direccion):
+                raise ValueError(
+                    f"[INTEGRIDAD] Trade {n}: salida CUSTOM no coincide con la direccion."
+                )
     elif motivo in {"SL", "TP"}:
         if precio_salida < lows[idx_salida] - TOL or precio_salida > highs[idx_salida] + TOL:
             raise ValueError(f"[INTEGRIDAD] Trade {n}: salida {motivo} fuera del rango de vela.")
