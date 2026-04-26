@@ -146,6 +146,7 @@ def main() -> None:
                         run_dir=run_dir,
                         df=df_tf,
                         trials=trials,
+                        estrategia=estrategia,
                         max_plots=cfg.MAX_PLOTS,
                         grafica_rango=cfg.GRAFICA_RANGO,
                         grafica_desde=cfg.GRAFICA_DESDE,

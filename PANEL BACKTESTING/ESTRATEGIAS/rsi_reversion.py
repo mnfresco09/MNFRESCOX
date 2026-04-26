@@ -51,6 +51,30 @@ class RSIReversion(BaseEstrategia):
 
         return señales
 
+    def indicadores_para_grafica(self, df: pl.DataFrame, params: dict) -> list[dict]:
+        periodo    = int(params.get("rsi_periodo", 14))
+        sobreventa  = float(params.get("sobreventa", 30))
+        sobrecompra = float(params.get("sobrecompra", 70))
+        rsi = self.rsi(df["close"], periodo)
+        timestamps = df["timestamp"].to_list()
+        data = []
+        for ts, v in zip(timestamps, rsi.to_list()):
+            if v is not None:
+                data.append({"t": int(ts.timestamp()), "v": round(float(v), 4)})
+        return [{
+            "nombre": f"RSI({periodo})",
+            "tipo": "pane",
+            "color": "#818cf8",
+            "data": data,
+            "niveles": [
+                {"valor": sobrecompra, "color": "#ef535066"},
+                {"valor": 50,          "color": "#64748b88"},
+                {"valor": sobreventa,  "color": "#26a69a66"},
+            ],
+            "min": 0,
+            "max": 100,
+        }]
+
     def generar_salidas(self, df: pl.DataFrame, params: dict) -> pl.Series:
         periodo = params["rsi_periodo"]
 

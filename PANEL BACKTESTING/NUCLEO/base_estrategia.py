@@ -131,3 +131,23 @@ class BaseEstrategia(ABC):
             media,
             media - desviaciones * std,
         )
+
+    def indicadores_para_grafica(self, df: pl.DataFrame, params: dict) -> list[dict]:
+        """
+        Indicadores que se dibujan en el reporte HTML.
+        Sobrescribir en cada estrategia. Por defecto no dibuja nada.
+
+        Cada elemento de la lista:
+          {
+            "nombre": str,
+            "tipo":   "overlay"   <- linea sobre el grafico de precio
+                    | "pane",     <- panel separado debajo del precio
+            "color": str,         <- hex, ej. "#f59e0b"
+            "data":  [{"t": int, "v": float}, ...],  # t = Unix segundos UTC
+            # solo para tipo "pane":
+            "niveles": [{"valor": float, "color": str}, ...],
+            "min": float,
+            "max": float,
+          }
+        """
+        return []

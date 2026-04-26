@@ -43,6 +43,25 @@ class EMATendencia(BaseEstrategia):
         señales = señales.scatter(señal_short.arg_true(), Señal.SHORT)
         return señales
 
+    def indicadores_para_grafica(self, df: pl.DataFrame, params: dict) -> list[dict]:
+        r = int(params.get("ema_rapida", 21))
+        l = int(params.get("ema_lenta", 89))
+        ema_r = self.ema(df["close"], r)
+        ema_l = self.ema(df["close"], l)
+        timestamps = df["timestamp"].to_list()
+
+        def _serie(vals, color, nombre):
+            data = []
+            for ts, v in zip(timestamps, vals.to_list()):
+                if v is not None:
+                    data.append({"t": int(ts.timestamp()), "v": round(float(v), 6)})
+            return {"nombre": nombre, "tipo": "overlay", "color": color, "data": data}
+
+        return [
+            _serie(ema_r, "#f59e0b", f"EMA({r})"),
+            _serie(ema_l, "#818cf8", f"EMA({l})"),
+        ]
+
     def generar_salidas(self, df: pl.DataFrame, params: dict) -> pl.Series:
         ema_rapida = self.ema(df["close"], int(params["ema_rapida"]))
         ema_lenta = self.ema(df["close"], int(params["ema_lenta"]))
