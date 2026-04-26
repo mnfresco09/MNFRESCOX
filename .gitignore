@@ -1,0 +1,25 @@
+# Entornos virtuales
+.venv/
+venv/
+ENV/
+
+# Caches de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Datos historicos pesados del panel de backtesting.
+# Se mantiene el .gitkeep para conservar la estructura de carpeta.
+PANEL BACKTESTING/HISTORICO/*
+!PANEL BACKTESTING/HISTORICO/.gitkeep
+PANEL_BACKTESTING/HISTORICO/*
+!PANEL_BACKTESTING/HISTORICO/.gitkeep
+
+# Carpeta temporal usada solo como referencia local
+github TEMPORAL/
+github temporal/
+
+# Archivos del sistema/editor
+.DS_Store
+.idea/
+.vscode/
