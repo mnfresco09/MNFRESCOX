@@ -148,6 +148,9 @@ def resumen_trials_dataframe(trials: list) -> pl.DataFrame:
 def trades_dataframe(resultado) -> pl.DataFrame:
     filas = []
     for trade in resultado.trades:
+        pnl_neto = float(trade.pnl)
+        comision = float(trade.comision_total)
+        dur_seg = max(0, int(trade.ts_salida - trade.ts_entrada)) / 1_000_000
         filas.append(
             {
                 "idx_senal": int(getattr(trade, "idx_señal")),
@@ -160,14 +163,16 @@ def trades_dataframe(resultado) -> pl.DataFrame:
                 "direccion_txt": "LONG" if int(trade.direccion) == 1 else "SHORT",
                 "precio_entrada": float(trade.precio_entrada),
                 "precio_salida": float(trade.precio_salida),
-                "colateral": float(trade.colateral),
+                "saldo_apertura": float(trade.colateral),
                 "tamano_posicion": float(getattr(trade, "tamaño_posicion")),
-                "comision_total": float(trade.comision_total),
-                "pnl": float(trade.pnl),
+                "comision_total": float(comision),
+                "pnl_bruto": float(pnl_neto + comision),
+                "pnl": float(pnl_neto),
                 "roi": float(trade.roi),
                 "saldo_post": float(trade.saldo_post),
                 "motivo_salida": str(trade.motivo_salida),
                 "duracion_velas": int(trade.duracion_velas),
+                "duracion_seg": float(dur_seg),
             }
         )
 
@@ -184,14 +189,16 @@ def trades_dataframe(resultado) -> pl.DataFrame:
             "direccion_txt": pl.String,
             "precio_entrada": pl.Float64,
             "precio_salida": pl.Float64,
-            "colateral": pl.Float64,
+            "saldo_apertura": pl.Float64,
             "tamano_posicion": pl.Float64,
             "comision_total": pl.Float64,
+            "pnl_bruto": pl.Float64,
             "pnl": pl.Float64,
             "roi": pl.Float64,
             "saldo_post": pl.Float64,
             "motivo_salida": pl.String,
             "duracion_velas": pl.Int64,
+            "duracion_seg": pl.Float64,
         },
     )
 

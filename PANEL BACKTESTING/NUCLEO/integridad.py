@@ -108,11 +108,33 @@ def verificar_salidas_custom(df: pl.DataFrame, salidas: pl.Series) -> dict[int, 
     }
 
 
+@dataclass(frozen=True)
+class CacheDF:
+    """Arrays del DataFrame de simulación precalculados una vez por combinación."""
+    timestamps: list
+    opens: list
+    highs: list
+    lows: list
+    closes: list
+
+
+def cachear_df(df: pl.DataFrame) -> CacheDF:
+    """Convierte las columnas del df a listas Python una sola vez."""
+    return CacheDF(
+        timestamps=_timestamps_us(df),
+        opens=df["open"].cast(pl.Float64).to_list(),
+        highs=df["high"].cast(pl.Float64).to_list(),
+        lows=df["low"].cast(pl.Float64).to_list(),
+        closes=df["close"].cast(pl.Float64).to_list(),
+    )
+
+
 def verificar_resultado(
     df: pl.DataFrame,
     senales: pl.Series,
     resultado,
     salidas_custom: pl.Series | None = None,
+    _cache: CacheDF | None = None,
 ) -> None:
     trades = list(resultado.trades)
     total_trades = len(trades)
@@ -130,14 +152,15 @@ def verificar_resultado(
     if not isclose(float(resultado.equity_curve[-1]), float(resultado.saldo_final), abs_tol=TOL):
         raise ValueError("[INTEGRIDAD] equity_curve no termina en saldo_final.")
 
-    timestamps = _timestamps_us(df)
-    opens = df["open"].cast(pl.Float64).to_list()
-    highs = df["high"].cast(pl.Float64).to_list()
-    lows = df["low"].cast(pl.Float64).to_list()
-    closes = df["close"].cast(pl.Float64).to_list()
-    senales_lista = senales.cast(pl.Int8).to_list()
-    salidas_custom_lista = (
-        salidas_custom.cast(pl.Int8).to_list()
+    cache = _cache if _cache is not None else cachear_df(df)
+
+    # Extraer solo los índices necesarios de forma vectorizada
+    idxs_senal  = [int(t.idx_señal)  for t in trades]
+    idxs_salida = [int(t.idx_salida) for t in trades]
+
+    senales_en_senal = senales.cast(pl.Int8).gather(idxs_senal).to_list()
+    salidas_en_salida = (
+        salidas_custom.cast(pl.Int8).gather(idxs_salida).to_list()
         if salidas_custom is not None
         else None
     )
@@ -146,26 +169,28 @@ def verificar_resultado(
         _verificar_trade(
             n,
             trade,
-            timestamps,
-            opens,
-            highs,
-            lows,
-            closes,
-            senales_lista,
-            salidas_custom_lista,
+            cache.timestamps,
+            cache.opens,
+            cache.highs,
+            cache.lows,
+            cache.closes,
+            senales_en_senal,
+            salidas_en_salida,
+            n - 1,  # posición en las listas de gather
         )
 
 
 def _verificar_trade(
     n: int,
     trade,
-    timestamps: list[int],
-    opens: list[float],
-    highs: list[float],
-    lows: list[float],
-    closes: list[float],
-    senales: list[int],
-    salidas_custom: list[int] | None,
+    timestamps: list,
+    opens: list,
+    highs: list,
+    lows: list,
+    closes: list,
+    senales_en_senal: list,
+    salidas_en_salida: list | None,
+    pos: int,
 ) -> None:
     total = len(timestamps)
     idx_senal = int(trade.idx_señal)
@@ -176,7 +201,7 @@ def _verificar_trade(
         raise ValueError(f"[INTEGRIDAD] Trade {n}: indices fuera de orden.")
     if idx_entrada != idx_senal + 1:
         raise ValueError(f"[INTEGRIDAD] Trade {n}: entrada no ocurre en vela N+1.")
-    if int(trade.direccion) != int(senales[idx_senal]):
+    if int(trade.direccion) != int(senales_en_senal[pos]):
         raise ValueError(f"[INTEGRIDAD] Trade {n}: direccion no coincide con la senal.")
     if int(trade.ts_señal) != timestamps[idx_senal]:
         raise ValueError(f"[INTEGRIDAD] Trade {n}: timestamp de senal no coincide.")
@@ -193,9 +218,9 @@ def _verificar_trade(
         if not isclose(precio_salida, closes[idx_salida], rel_tol=TOL, abs_tol=TOL):
             raise ValueError(f"[INTEGRIDAD] Trade {n}: salida {motivo} no usa close.")
         if motivo == "CUSTOM":
-            if salidas_custom is None:
+            if salidas_en_salida is None:
                 raise ValueError(f"[INTEGRIDAD] Trade {n}: salida CUSTOM sin serie auditada.")
-            if int(salidas_custom[idx_salida]) != int(trade.direccion):
+            if int(salidas_en_salida[pos]) != int(trade.direccion):
                 raise ValueError(
                     f"[INTEGRIDAD] Trade {n}: salida CUSTOM no coincide con la direccion."
                 )

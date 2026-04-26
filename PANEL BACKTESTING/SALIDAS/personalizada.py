@@ -1,6 +1,7 @@
 # ---------------------------------------------------------------------------
 # Parametros del tipo de salida CUSTOM
 # La condicion de cierre la define cada estrategia en generar_salidas().
+# Se evalua en el mismo timeframe de la estrategia.
 # ---------------------------------------------------------------------------
 
 # Stop Loss de seguridad activo en paralelo.

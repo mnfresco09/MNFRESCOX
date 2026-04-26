@@ -26,7 +26,7 @@ MERCADO_24_7 = {
 # ---------------------------------------------------------------------------
 # El sistema resamplea desde 1m automáticamente.
 # Opciones: "1m" "5m" "15m" "30m" "1h" "4h" "1d"
-TIMEFRAMES = ["1h", "4h"]
+TIMEFRAMES = ["1m"]
 
 # ---------------------------------------------------------------------------
 # FECHAS
@@ -38,7 +38,7 @@ FECHA_FIN    = "2024-12-31"
 # ESTRATEGIAS
 # ---------------------------------------------------------------------------
 # ID numérico, lista de IDs, o "all" para ejecutar todas.
-ESTRATEGIA_ID = "all"
+ESTRATEGIA_ID = 1
 
 # ---------------------------------------------------------------------------
 # CAPITAL Y COMISIONES

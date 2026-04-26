@@ -17,7 +17,7 @@ class BaseEstrategia(ABC):
     anteriores a la actual. La entrada siempre ocurre en el open
     de la vela siguiente a la señal — esto lo garantiza el motor.
 
-    Para salidas CUSTOM, generar_salidas usa el mismo histórico OHLCV y
+    Para salidas CUSTOM, generar_salidas usa el mismo histórico OHLCV de la estrategia y
     devuelve:
       0  → no cerrar
       1  → cerrar LONG abierto
@@ -25,6 +25,11 @@ class BaseEstrategia(ABC):
 
     La salida CUSTOM se ejecuta al close de la vela donde aparece la
     condición. El SL de seguridad sigue teniendo prioridad dentro del motor.
+
+    Para salidas FIXED o BARS, el sistema ejecuta los cierres en el timeframe
+    más bajo disponible en HISTORICO. La señal sigue naciendo en el timeframe
+    de estrategia y la entrada se mantiene en el open de la siguiente vela de
+    estrategia.
     """
 
     ID: int

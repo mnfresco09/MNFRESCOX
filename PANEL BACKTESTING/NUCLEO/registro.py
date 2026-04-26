@@ -56,19 +56,51 @@ def cargar_estrategias() -> dict[int, BaseEstrategia]:
 def obtener_estrategia(registro: dict, estrategia_id) -> list[BaseEstrategia]:
     """
     Devuelve la lista de estrategias a ejecutar según config.ESTRATEGIA_ID.
-    Acepta un int, una lista de ints o el string 'all'.
+    Acepta cualquier forma: "all", 1, "1", [1, 2], "1,2", "1, 2", etc.
     """
-    if estrategia_id == "all":
-        return list(registro.values())
-
-    ids = estrategia_id if isinstance(estrategia_id, list) else [estrategia_id]
+    ids_int = _normalizar_ids(estrategia_id, sorted(registro.keys()))
     resultado = []
-    for id_ in ids:
+    for id_ in ids_int:
         if id_ not in registro:
-            disponibles = sorted(registro.keys())
             raise ValueError(
                 f"Estrategia con ID {id_} no encontrada. "
-                f"IDs disponibles: {disponibles}"
+                f"IDs disponibles: {sorted(registro.keys())}"
             )
         resultado.append(registro[id_])
     return resultado
+
+
+def _normalizar_ids(valor, disponibles: list[int]) -> list[int]:
+    """Convierte cualquier variante de ESTRATEGIA_ID a lista de ints."""
+    # "all" o "ALL" en cualquier forma
+    if isinstance(valor, str):
+        limpio = valor.strip().lower()
+        if limpio == "all":
+            return list(disponibles)
+        # "1" o "1,2" o "1, 2"
+        partes = [p.strip() for p in limpio.split(",") if p.strip()]
+        try:
+            return [int(p) for p in partes]
+        except ValueError:
+            raise ValueError(
+                f"ESTRATEGIA_ID '{valor}' no es válido. "
+                f"Usa un entero, lista de enteros o 'all'."
+            )
+
+    if isinstance(valor, int):
+        return [valor]
+
+    if isinstance(valor, (list, tuple)):
+        result = []
+        for item in valor:
+            result.extend(_normalizar_ids(item, disponibles))
+        return result
+
+    # Cualquier otro numérico (float accidental, etc.)
+    try:
+        return [int(valor)]
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"ESTRATEGIA_ID '{valor}' no es válido. "
+            f"Usa un entero, lista de enteros o 'all'."
+        )

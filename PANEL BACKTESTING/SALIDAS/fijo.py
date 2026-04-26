@@ -1,6 +1,7 @@
 # ---------------------------------------------------------------------------
 # Parámetros del tipo de salida FIXED
 # Stop Loss y Take Profit definidos como porcentaje del colateral.
+# Se evalúan en el timeframe de ejecucion mas bajo disponible en HISTORICO.
 # ---------------------------------------------------------------------------
 
 # Porcentaje de pérdida sobre el colateral que cierra el trade.

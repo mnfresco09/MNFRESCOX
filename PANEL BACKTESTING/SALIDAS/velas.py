@@ -4,6 +4,8 @@
 # ---------------------------------------------------------------------------
 
 # Número máximo de velas que puede durar un trade.
+# Se mide en el timeframe de ejecucion mas bajo disponible en HISTORICO,
+# no necesariamente en el timeframe de la estrategia.
 # Cuando se alcanza, se cierra al precio de cierre de esa vela.
 EXIT_VELAS = 48
 

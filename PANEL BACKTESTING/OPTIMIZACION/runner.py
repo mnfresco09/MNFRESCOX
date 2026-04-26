@@ -6,14 +6,16 @@ from dataclasses import dataclass
 from threading import Lock
 
 import optuna
+import polars as pl
 
 from CONFIGURACION import config as cfg
 from CONFIGURACION.validador_config import validar as validar_config
 from DATOS.cargador import cargar
-from DATOS.resampleo import resamplear
+from DATOS.resampleo import inferir_timeframe, resamplear
 from DATOS.validador import validar as validar_datos
 from MOTOR import simular_dataframe
 from NUCLEO import integridad
+from NUCLEO.integridad import cachear_df
 from NUCLEO.registro import cargar_estrategias, obtener_estrategia
 from OPTIMIZACION.metricas import calcular_metricas
 from OPTIMIZACION.puntuacion import calcular_score
@@ -74,11 +76,12 @@ def main() -> None:
     for activo in activos:
         permitir_huecos = not _es_mercado_24_7(activo)
         df_base = cargar(activo, cfg)
+        timeframe_base = inferir_timeframe(df_base)
         validar_datos(
             df_base,
             activo,
             columnas_requeridas,
-            timeframe="1m",
+            timeframe=timeframe_base,
             permitir_huecos=permitir_huecos,
         )
         huella_base = integridad.huella_dataframe(f"{activo} carga", df_base)
@@ -111,8 +114,6 @@ def main() -> None:
                             estrategia=estrategia,
                             salida_base=salida,
                             df_tf=df_tf,
-                            huella_base=huella_base,
-                            huella_tf=huella_tf,
                             n_jobs=n_jobs,
                         )
                     except Exception as exc:
@@ -179,14 +180,15 @@ def _optimizar_combinacion(
     estrategia,
     salida_base: ExitConfig,
     df_tf,
-    huella_base,
-    huella_tf,
     n_jobs: int,
 ) -> list[TrialResultado]:
     sampler = crear_sampler(cfg.OPTUNA_SAMPLER, cfg.OPTUNA_SEED, cfg.N_TRIALS)
     study = optuna.create_study(direction="maximize", sampler=sampler)
     resultados: list[TrialResultado] = []
     lock = Lock()
+
+    # Precalcular arrays del df una sola vez para todos los trials
+    cache_df = cachear_df(df_tf)
 
     def objective(trial: optuna.Trial) -> float:
         params_estrategia = estrategia.espacio_busqueda(trial)
@@ -206,6 +208,7 @@ def _optimizar_combinacion(
             if salidas_custom is not None
             else None
         )
+
         resultado = simular_dataframe(
             df_tf,
             senales,
@@ -221,7 +224,13 @@ def _optimizar_combinacion(
             exit_velas=salida_trial.velas,
             salidas_custom=salidas_custom,
         )
-        integridad.verificar_resultado(df_tf, senales, resultado, salidas_custom)
+        integridad.verificar_resultado(
+            df_tf,
+            senales,
+            resultado,
+            salidas_custom,
+            _cache=cache_df,
+        )
         metricas = calcular_metricas(resultado)
         score = calcular_score(metricas)
         trial.set_user_attr("metricas", metricas)

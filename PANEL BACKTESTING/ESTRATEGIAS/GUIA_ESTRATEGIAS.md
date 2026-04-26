@@ -37,6 +37,12 @@ La salida CUSTOM cierra al `close` de la vela donde aparece la condicion. El
 Stop Loss de seguridad se evalua antes que la salida CUSTOM. Si una vela toca el
 SL y tambien aparece una salida custom, el trade cierra por `SL`.
 
+Las salidas `FIXED` y `BARS` se ejecutan en el timeframe mas bajo disponible en
+`HISTORICO`, aunque la estrategia opere en un timeframe superior. La señal sigue
+naciendo en la vela de estrategia y la entrada se mantiene en el `open` de la
+siguiente vela de estrategia. `CUSTOM` no usa este cambio: se queda en el mismo
+timeframe de la estrategia porque la logica de salida pertenece a la estrategia.
+
 ## Regla anti-lookahead
 
 La estrategia no puede usar informacion futura. En la practica:

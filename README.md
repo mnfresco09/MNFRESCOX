@@ -71,13 +71,14 @@ PANEL BACKTESTING/
 ├── DATOS/                          ← Todo lo relacionado con datos de precio.
 │   │                                 Solo código. Los archivos reales van en HISTORICO/.
 │   ├── cargador.py                 ← Lee archivos Parquet, CSV y Feather desde
-│   │                                 HISTORICO/. Aplica el filtro de fechas de config.
+│   │                                 HISTORICO/. Usa el menor timeframe disponible
+│   │                                 como base y aplica el filtro de fechas de config.
 │   ├── validador.py                ← Comprueba antes de cualquier run:
 │   │                                 columnas mínimas (timestamp, open, high, low,
 │   │                                 close), orden cronológico, huecos, duplicados
 │   │                                 y columnas extra que requiere la estrategia.
 │   │                                 Si algo falla: para y explica exactamente qué.
-│   └── resampleo.py                ← Construye timeframes mayores desde velas de 1m.
+│   └── resampleo.py                ← Construye timeframes mayores desde el timeframe base.
 │                                     Reglas: open=primera, high=max, low=min,
 │                                     close=última, volume=suma. Solo permite ir
 │                                     hacia timeframes más grandes, nunca más pequeños.
@@ -85,7 +86,7 @@ PANEL BACKTESTING/
 ├── HISTORICO/                      ← Archivos de datos de mercado del usuario.
 │   │                                 Formato preferido: Parquet.
 │   │                                 Convención de nombres: ACTIVO_TIMEFRAME
-│   │                                 Ejemplos: BTC_1m.parquet, GOLD_1m.parquet
+│   │                                 Ejemplos: BTC_ohlcv_1m.feather, GOLD_ohlcv_5m.parquet
 │   └── .gitkeep                    ← Carpeta vacía en repo. Los datos van fuera de git.
 │
 ├── MOTOR/                          ← Motor de simulación escrito en Rust.

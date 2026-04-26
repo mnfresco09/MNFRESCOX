@@ -2,6 +2,8 @@ import polars as pl
 from pathlib import Path
 from datetime import date, timedelta
 
+from DATOS.resampleo import TIMEFRAMES_ORDENADOS
+
 
 _LECTORES = {
     "feather":  lambda p: pl.read_ipc(p, memory_map=False),
@@ -12,7 +14,7 @@ _LECTORES = {
 
 def cargar(activo: str, cfg) -> pl.DataFrame:
     """
-    Localiza y carga el archivo de datos de 1m para el activo dado.
+    Localiza y carga el archivo de menor timeframe disponible para el activo dado.
     Devuelve un DataFrame con timestamp en UTC microsegundos y
     el rango de fechas ya filtrado según config.
     """
@@ -30,16 +32,21 @@ def cargar(activo: str, cfg) -> pl.DataFrame:
 
 def _buscar_archivo(activo: str, cfg) -> Path:
     ext = {"feather": ".feather", "parquet": ".parquet", "csv": ".csv"}[cfg.FORMATO_DATOS]
-    patron = f"{activo}_*_1m{ext}"
-    encontrados = sorted(cfg.CARPETA_HISTORICO.glob(patron))
+    encontrados_por_tf = []
+    for timeframe in TIMEFRAMES_ORDENADOS:
+        patron = f"{activo}_*_{timeframe}{ext}"
+        encontrados = sorted(cfg.CARPETA_HISTORICO.glob(patron))
+        if encontrados:
+            encontrados_por_tf.append((timeframe, patron, encontrados))
 
-    if not encontrados:
+    if not encontrados_por_tf:
         raise FileNotFoundError(
-            f"No se encontró ningún archivo para '{activo}' con patrón '{patron}'\n"
+            f"No se encontró ningún archivo para '{activo}' en timeframes soportados.\n"
             f"  Buscando en: {cfg.CARPETA_HISTORICO}\n"
             f"  Archivos presentes: {[f.name for f in cfg.CARPETA_HISTORICO.iterdir() if not f.name.startswith('.')]}"
         )
 
+    _timeframe, patron, encontrados = encontrados_por_tf[0]
     if len(encontrados) > 1:
         raise ValueError(
             f"Se encontraron varios archivos para '{activo}' con patrón '{patron}':\n"
