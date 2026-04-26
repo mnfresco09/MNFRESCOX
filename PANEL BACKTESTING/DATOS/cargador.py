@@ -1,5 +1,6 @@
 import polars as pl
 from pathlib import Path
+from datetime import date, timedelta
 
 
 _LECTORES = {
@@ -72,11 +73,12 @@ def _normalizar_timestamp(df: pl.DataFrame) -> pl.DataFrame:
 
 def _filtrar_fechas(df: pl.DataFrame, fecha_inicio: str, fecha_fin: str) -> pl.DataFrame:
     inicio = pl.lit(fecha_inicio).str.to_datetime(format="%Y-%m-%d", time_unit="us").dt.replace_time_zone("UTC")
-    fin    = pl.lit(fecha_fin).str.to_datetime(format="%Y-%m-%d", time_unit="us").dt.replace_time_zone("UTC")
+    fin_exclusivo = (date.fromisoformat(fecha_fin) + timedelta(days=1)).isoformat()
+    fin = pl.lit(fin_exclusivo).str.to_datetime(format="%Y-%m-%d", time_unit="us").dt.replace_time_zone("UTC")
 
     df = df.filter(
         (pl.col("timestamp") >= inicio) &
-        (pl.col("timestamp") <= fin)
+        (pl.col("timestamp") < fin)
     )
 
     if df.is_empty():

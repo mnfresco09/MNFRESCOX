@@ -2,9 +2,23 @@ import polars as pl
 import sys
 
 COLUMNAS_MINIMAS = {"timestamp", "open", "high", "low", "close"}
+_TIMEFRAME_US = {
+    "1m": 60_000_000,
+    "5m": 5 * 60_000_000,
+    "15m": 15 * 60_000_000,
+    "30m": 30 * 60_000_000,
+    "1h": 60 * 60_000_000,
+    "4h": 4 * 60 * 60_000_000,
+    "1d": 24 * 60 * 60_000_000,
+}
 
 
-def validar(df: pl.DataFrame, activo: str, estrategia_columnas: set[str] | None = None) -> None:
+def validar(
+    df: pl.DataFrame,
+    activo: str,
+    estrategia_columnas: set[str] | None = None,
+    timeframe: str | None = None,
+) -> None:
     """
     Comprueba la integridad del DataFrame antes de cualquier operación.
     Para si encuentra algún problema y explica exactamente qué falla.
@@ -46,6 +60,18 @@ def validar(df: pl.DataFrame, activo: str, estrategia_columnas: set[str] | None 
     if duplicados > 0:
         errores.append(f"Hay {duplicados:,} timestamps duplicados.")
 
+    # --- Huecos temporales ---
+    if timeframe is not None and timeframe in _TIMEFRAME_US and df.height > 1:
+        ts_us = _timestamp_us(df)
+        delta_esperado = _TIMEFRAME_US[timeframe]
+        deltas = ts_us.diff().drop_nulls()
+        huecos = deltas.filter(deltas != delta_esperado).len()
+        if huecos > 0:
+            errores.append(
+                f"Hay {huecos:,} saltos temporales distintos de {timeframe}; "
+                "los datos tienen huecos o velas irregulares."
+            )
+
     # --- Precios coherentes (high >= low, precios > 0) ---
     if {"high", "low"}.issubset(presentes):
         invalidos = df.filter(pl.col("high") < pl.col("low")).height
@@ -69,3 +95,10 @@ def _reportar(activo: str, errores: list[str]) -> None:
         print(f"  ✗ {e}")
     print()
     sys.exit(1)
+
+
+def _timestamp_us(df: pl.DataFrame) -> pl.Series:
+    dtype = df.schema["timestamp"]
+    if isinstance(dtype, pl.Datetime):
+        return df.select(pl.col("timestamp").dt.epoch("us")).to_series()
+    return df["timestamp"].cast(pl.Int64)

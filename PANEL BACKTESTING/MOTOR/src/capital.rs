@@ -28,7 +28,7 @@ pub fn calcular_pnl_bruto(
     precio_salida: f64,
 ) -> f64 {
     match direccion {
-        Direccion::Long  => tamaño_posicion * (precio_salida - precio_entrada),
+        Direccion::Long => tamaño_posicion * (precio_salida - precio_entrada),
         Direccion::Short => tamaño_posicion * (precio_entrada - precio_salida),
     }
 }
@@ -42,7 +42,7 @@ pub fn calcular_precio_sl(
 ) -> f64 {
     let mov = sl_pct / 100.0 / apalancamiento;
     match direccion {
-        Direccion::Long  => precio_entrada * (1.0 - mov),
+        Direccion::Long => precio_entrada * (1.0 - mov),
         Direccion::Short => precio_entrada * (1.0 + mov),
     }
 }
@@ -56,7 +56,7 @@ pub fn calcular_precio_tp(
 ) -> f64 {
     let mov = tp_pct / 100.0 / apalancamiento;
     match direccion {
-        Direccion::Long  => precio_entrada * (1.0 + mov),
+        Direccion::Long => precio_entrada * (1.0 + mov),
         Direccion::Short => precio_entrada * (1.0 - mov),
     }
 }

@@ -1,6 +1,6 @@
 import polars as pl
-from PANEL_BACKTESTING.NUCLEO.base_estrategia import BaseEstrategia
-from PANEL_BACKTESTING.NUCLEO.tipos import Señal
+from NUCLEO.base_estrategia import BaseEstrategia
+from NUCLEO.tipos import Señal
 
 
 class RSIReversion(BaseEstrategia):
@@ -15,6 +15,14 @@ class RSIReversion(BaseEstrategia):
 
     ID     = 1
     NOMBRE = "RSI Reversión"
+    COLUMNAS_REQUERIDAS = set()
+
+    def parametros_por_defecto(self) -> dict:
+        return {
+            "rsi_periodo": 14,
+            "sobreventa": 30,
+            "sobrecompra": 70,
+        }
 
     def espacio_busqueda(self, trial) -> dict:
         return {

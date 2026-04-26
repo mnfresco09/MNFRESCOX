@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 import polars as pl
-from PANEL_BACKTESTING.NUCLEO.tipos import Señal
+from NUCLEO.tipos import Señal
 
 
 class BaseEstrategia(ABC):
@@ -20,6 +20,7 @@ class BaseEstrategia(ABC):
 
     ID: int
     NOMBRE: str
+    COLUMNAS_REQUERIDAS: set[str] = set()
 
     @abstractmethod
     def espacio_busqueda(self, trial) -> dict:
@@ -27,6 +28,13 @@ class BaseEstrategia(ABC):
         Define los parámetros y sus rangos para Optuna.
         Recibe un optuna.Trial y devuelve un dict {nombre: valor}.
         """
+
+    def parametros_por_defecto(self) -> dict:
+        """
+        Parametros fijos para una ejecucion simple sin Optuna.
+        Las estrategias pueden sobrescribirlo para la fase de prueba end-to-end.
+        """
+        return {}
 
     @abstractmethod
     def generar_señales(self, df: pl.DataFrame, params: dict) -> pl.Series:

@@ -15,6 +15,10 @@ PANEL BACKTESTING/HISTORICO/*
 PANEL_BACKTESTING/HISTORICO/*
 !PANEL_BACKTESTING/HISTORICO/.gitkeep
 
+# Resultados generados por ejecuciones locales.
+PANEL BACKTESTING/RESULTADOS/*
+!PANEL BACKTESTING/RESULTADOS/.gitkeep
+
 # Carpeta temporal usada solo como referencia local
 github TEMPORAL/
 github temporal/

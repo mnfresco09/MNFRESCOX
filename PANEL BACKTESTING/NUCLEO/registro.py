@@ -1,7 +1,7 @@
 import importlib
 import inspect
 from pathlib import Path
-from PANEL_BACKTESTING.NUCLEO.base_estrategia import BaseEstrategia
+from NUCLEO.base_estrategia import BaseEstrategia
 
 
 def cargar_estrategias() -> dict[int, BaseEstrategia]:
@@ -19,7 +19,7 @@ def cargar_estrategias() -> dict[int, BaseEstrategia]:
         if archivo.name.startswith("_"):
             continue
 
-        modulo_nombre = f"PANEL_BACKTESTING.ESTRATEGIAS.{archivo.stem}"
+        modulo_nombre = f"ESTRATEGIAS.{archivo.stem}"
         try:
             modulo = importlib.import_module(modulo_nombre)
         except Exception as e:

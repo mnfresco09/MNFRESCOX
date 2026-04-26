@@ -17,13 +17,32 @@ pub enum Direccion {
 
 impl Direccion {
     /// Convierte el valor entero de la señal Python al enum Rust.
-    /// Panic si recibe un valor distinto de 1 o -1 (nunca debería llegar aquí
-    /// porque el filtro de señales en el simulador descarta los 0).
-    pub fn from_signal(val: i8) -> Self {
+    pub fn from_signal(val: i8) -> Result<Self, String> {
         match val {
-            1 => Direccion::Long,
-            -1 => Direccion::Short,
-            _ => panic!("Señal inválida: {}. Solo se aceptan 1 (LONG) o -1 (SHORT).", val),
+            1 => Ok(Direccion::Long),
+            -1 => Ok(Direccion::Short),
+            _ => Err(format!(
+                "Señal inválida: {val}. Solo se aceptan 0, 1 (LONG) o -1 (SHORT)."
+            )),
+        }
+    }
+}
+
+/// Tipo de salida soportado por el motor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ExitType {
+    Fixed,
+    Bars,
+}
+
+impl ExitType {
+    pub fn from_str(val: &str) -> Result<Self, String> {
+        match val {
+            "FIXED" => Ok(ExitType::Fixed),
+            "BARS" => Ok(ExitType::Bars),
+            _ => Err(format!(
+                "EXIT_TYPE inválido: '{val}'. Opciones soportadas por el motor: FIXED, BARS."
+            )),
         }
     }
 }
@@ -43,8 +62,8 @@ pub struct SimConfig {
     pub comision_pct: f64,
     /// 1 = solo apertura, 2 = apertura y cierre
     pub comision_lados: u8,
-    /// Tipo de salida: "FIXED" o "BARS"
-    pub exit_type: String,
+    /// Tipo de salida
+    pub exit_type: ExitType,
     /// Stop Loss como % del colateral (ej: 20.0 = 20%)
     pub exit_sl_pct: f64,
     /// Take Profit como % del colateral (ej: 40.0 = 40%)
@@ -115,7 +134,7 @@ pub struct TradeResult {
     /// Saldo después de cerrar este trade (USD)
     #[pyo3(get)]
     pub saldo_post: f64,
-    /// Motivo de cierre: "SL", "TP", "BARS", "CUSTOM"
+    /// Motivo de cierre: "SL", "TP", "BARS", "END"
     #[pyo3(get)]
     pub motivo_salida: String,
     /// Número de velas que duró el trade
@@ -166,4 +185,21 @@ pub struct SimResult {
     /// Si el backtest fue detenido por saldo insuficiente
     #[pyo3(get)]
     pub parado_por_saldo: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_direccion_rechaza_senal_invalida() {
+        let err = Direccion::from_signal(2).unwrap_err();
+        assert!(err.contains("Señal inválida"));
+    }
+
+    #[test]
+    fn test_exit_type_rechaza_valor_invalido() {
+        let err = ExitType::from_str("CUSTOM").unwrap_err();
+        assert!(err.contains("EXIT_TYPE inválido"));
+    }
 }
