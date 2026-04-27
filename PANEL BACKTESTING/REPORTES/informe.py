@@ -229,6 +229,7 @@ const METRIC_LABELS={
 const PCT_METRICS=new Set(['roi_total','expectancy','win_rate','max_drawdown']);
 const MONEY_METRICS=new Set(['pnl_bruto_total','pnl_total','pnl_promedio','saldo_inicial','saldo_final']);
 const INT_METRICS=new Set(['total_trades','trades_long','trades_short','trades_ganadores','trades_perdedores','trades_neutros']);
+const DURATION_METRICS=new Set(['duracion_media_seg']);
 const MIN_BETTER=new Set(['max_drawdown','parado_por_saldo','duracion_media_seg']);
 
 function metricLabel(k){return METRIC_LABELS[k]||k.toUpperCase().replace(/_/g,' ')}
@@ -240,10 +241,23 @@ function fmtMetric(k,v){
   if(PCT_METRICS.has(k))return (v*100).toFixed(2)+'%';
   if(MONEY_METRICS.has(k))return '$'+v.toLocaleString(undefined,{maximumFractionDigits:2});
   if(INT_METRICS.has(k))return Math.round(v).toLocaleString();
+  if(DURATION_METRICS.has(k))return fmtDuration(v);
   if(k==='score')return v.toFixed(6);
   if(k==='profit_factor'||k==='sharpe_ratio')return v.toFixed(3);
   if(typeof v==='number')return Number.isInteger(v)?String(v):v.toFixed(4);
   return String(v);
+}
+
+function fmtDuration(seconds){
+  if(seconds==null||isNaN(seconds)||seconds<=0)return '—';
+  const total=Math.round(seconds);
+  const days=Math.floor(total/86400);
+  const hours=Math.floor((total%86400)/3600);
+  const mins=Math.floor((total%3600)/60);
+  if(days)return days+'d '+String(hours).padStart(2,'0')+'h';
+  if(hours)return hours+'h '+String(mins).padStart(2,'0')+'m';
+  if(mins)return mins+'m';
+  return total+'s';
 }
 
 function trialValue(t,key){

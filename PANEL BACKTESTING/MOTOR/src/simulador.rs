@@ -25,7 +25,14 @@ struct TradeAbierto {
     precio_entrada: f64,
     colateral: f64,
     tamano_posicion: f64,
-    comision_total: f64,
+    /// Comisión cobrada al abrir (sobre nocional de entrada). Es fija y
+    /// se conoce nada más entrar.
+    comision_entrada: f64,
+    /// % de comisión por lado. Se guarda para poder cobrar el lado de
+    /// salida sobre su nocional real cuando el trade cierre.
+    comision_pct: f64,
+    /// 1 = sólo apertura, 2 = apertura + cierre.
+    comision_lados: u8,
     precio_sl: f64,
     precio_tp: f64,
     max_velas: usize,
@@ -287,12 +294,8 @@ fn simular_core<F>(
                     config.apalancamiento,
                     precio_entrada,
                 );
-                let comision = capital::calcular_comision(
-                    colateral,
-                    config.apalancamiento,
-                    config.comision_pct,
-                    config.comision_lados,
-                );
+                let comision_entrada =
+                    capital::comision_lado(tamano, precio_entrada, config.comision_pct);
                 let precio_sl = if config.exit_sl_pct > 0.0 {
                     capital::calcular_precio_sl(
                         direccion,
@@ -327,7 +330,9 @@ fn simular_core<F>(
                     precio_entrada,
                     colateral,
                     tamano_posicion: tamano,
-                    comision_total: comision,
+                    comision_entrada,
+                    comision_pct: config.comision_pct,
+                    comision_lados: config.comision_lados,
                     precio_sl,
                     precio_tp,
                     max_velas,
@@ -394,13 +399,24 @@ fn construir_evento(
     motivo: u8,
     saldo_previo: f64,
 ) -> TradeEvent {
+    // Comisión de salida sobre el nocional REAL de salida (precio_salida).
+    // En long con beneficio el nocional sube → la comisión sube; en pérdida baja.
+    // Esto elimina el sesgo que tenía la versión que cobraba ambos lados con el
+    // nocional de entrada.
+    let comision_salida = if trade.comision_lados == 2 {
+        capital::comision_lado(trade.tamano_posicion, precio_salida, trade.comision_pct)
+    } else {
+        0.0
+    };
+    let comision_total = trade.comision_entrada + comision_salida;
+
     let pnl_bruto = capital::calcular_pnl_bruto(
         trade.direccion,
         trade.tamano_posicion,
         trade.precio_entrada,
         precio_salida,
     );
-    let pnl_neto = pnl_bruto - trade.comision_total;
+    let pnl_neto = pnl_bruto - comision_total;
     let saldo_post = saldo_previo + pnl_neto;
     let roi = if trade.colateral != 0.0 {
         pnl_neto / trade.colateral
@@ -419,7 +435,7 @@ fn construir_evento(
         precio_salida,
         colateral: trade.colateral,
         tamano_posicion: trade.tamano_posicion,
-        comision_total: trade.comision_total,
+        comision_total,
         pnl: pnl_neto,
         roi,
         saldo_post,
@@ -618,6 +634,65 @@ mod tests {
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.motivo_salida[0], motivo::CUSTOM);
         assert!((r.precio_salida[0] - 101.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_comision_salida_usa_nocional_real() {
+        // Trade que termina al close de la última vela (motivo END), ganador.
+        // Nocional entrada: tamaño × 100 ; nocional salida: tamaño × 110.
+        // Con apalancamiento=1, colateral=100, tamaño = 1.0, comision_pct=1%:
+        //   comisión entrada = 1.0 × 100 × 0.01 = 1.0
+        //   comisión salida  = 1.0 × 110 × 0.01 = 1.1
+        //   total            = 2.1   (no 2.0 como con la versión sesgada)
+        //   pnl_bruto        = 1.0 × (110 - 100) = 10.0
+        //   pnl_neto         = 10.0 - 2.1 = 7.9
+        let ts = [1, 2, 3];
+        let o = [100.0, 100.0, 110.0];
+        let h = [101.0, 101.0, 110.0];
+        let l = [99.0, 99.0, 100.0];
+        let c = [100.0, 100.0, 110.0];
+        let velas = build_soa(&ts, &o, &h, &l, &c);
+        let cfg = SimConfig {
+            saldo_inicial: 1_000.0,
+            saldo_por_trade: 100.0,
+            apalancamiento: 1.0,
+            saldo_minimo: 0.0,
+            comision_pct: 0.01,
+            comision_lados: 2,
+            exit_type: ExitType::Fixed,
+            exit_sl_pct: 50.0,
+            exit_tp_pct: 50.0,
+            exit_velas: 0,
+        };
+        let r = simular_full(velas, &[1i8, 0, 0], &[0i8, 0, 0], &cfg);
+        assert_eq!(r.metricas.total_trades, 1);
+        assert!((r.comision_total[0] - 2.1).abs() < 1e-10);
+        assert!((r.pnl[0] - 7.9).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_comision_lados_uno_no_cobra_salida() {
+        let ts = [1, 2, 3];
+        let o = [100.0, 100.0, 110.0];
+        let h = [101.0, 101.0, 110.0];
+        let l = [99.0, 99.0, 100.0];
+        let c = [100.0, 100.0, 110.0];
+        let velas = build_soa(&ts, &o, &h, &l, &c);
+        let cfg = SimConfig {
+            saldo_inicial: 1_000.0,
+            saldo_por_trade: 100.0,
+            apalancamiento: 1.0,
+            saldo_minimo: 0.0,
+            comision_pct: 0.01,
+            comision_lados: 1,
+            exit_type: ExitType::Fixed,
+            exit_sl_pct: 50.0,
+            exit_tp_pct: 50.0,
+            exit_velas: 0,
+        };
+        let r = simular_full(velas, &[1i8, 0, 0], &[0i8, 0, 0], &cfg);
+        assert!((r.comision_total[0] - 1.0).abs() < 1e-10);
+        assert!((r.pnl[0] - 9.0).abs() < 1e-10);
     }
 
     #[test]

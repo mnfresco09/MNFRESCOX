@@ -1,5 +1,17 @@
 // ---------------------------------------------------------------------------
 // capital.rs — Cálculos de capital, comisiones y niveles de salida.
+//
+// REGLA DE COMISIONES:
+//   La comisión es un porcentaje del NOCIONAL = tamaño_posición × precio.
+//   El nocional de entrada y el de salida son distintos cuando el precio
+//   se mueve, así que cada lado se calcula con su propio precio:
+//
+//       comisión_entrada = tamaño × precio_entrada × comision_pct
+//       comisión_salida  = tamaño × precio_salida  × comision_pct  (si lados==2)
+//
+//   `comision_lados`:
+//     1 → sólo se cobra apertura.
+//     2 → se cobra apertura y cierre (ambos sobre su nocional real).
 // ---------------------------------------------------------------------------
 
 use crate::tipos::Direccion;
@@ -9,15 +21,12 @@ pub fn calcular_tamano_posicion(colateral: f64, apalancamiento: f64, precio_entr
     (colateral * apalancamiento) / precio_entrada
 }
 
+/// Comisión de un único lado (apertura o cierre) sobre su nocional real.
+///
+/// nocional = tamaño_posición × precio_lado.
 #[inline]
-pub fn calcular_comision(
-    colateral: f64,
-    apalancamiento: f64,
-    comision_pct: f64,
-    comision_lados: u8,
-) -> f64 {
-    let nocional = colateral * apalancamiento;
-    nocional * comision_pct * comision_lados as f64
+pub fn comision_lado(tamano_posicion: f64, precio: f64, comision_pct: f64) -> f64 {
+    tamano_posicion * precio * comision_pct
 }
 
 #[inline]
@@ -72,9 +81,19 @@ mod tests {
     }
 
     #[test]
-    fn test_comision_dos_lados() {
-        let c = calcular_comision(500.0, 10.0, 0.0005, 2);
-        assert!((c - 5.0).abs() < 1e-10);
+    fn test_comision_lado_es_pct_del_nocional() {
+        // tamaño 0.1 BTC × precio 50_000 × 0.05% = 2.5 USD por lado
+        let c = comision_lado(0.1, 50_000.0, 0.0005);
+        assert!((c - 2.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_comision_salida_mayor_si_precio_sube() {
+        // Long: precio sube → nocional de salida mayor → comisión mayor.
+        let c_in = comision_lado(0.1, 50_000.0, 0.0005);
+        let c_out = comision_lado(0.1, 75_000.0, 0.0005);
+        assert!(c_out > c_in);
+        assert!((c_out - 3.75).abs() < 1e-10);
     }
 
     #[test]

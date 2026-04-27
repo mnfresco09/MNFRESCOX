@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 
 from MOTOR.wrapper import MOTIVOS
+from REPORTES.formatos import formatear_duracion
 from REPORTES.tv_library import obtener_script_libreria
 
 
@@ -137,7 +138,12 @@ def _crear_payload(
         roi = float(cols["roi"][i])
         precio_e = float(cols["precio_entrada"][i])
         precio_s = float(cols["precio_salida"][i])
-        duracion = int(cols["duracion_velas"][i])
+        duracion_velas = int(cols["duracion_velas"][i])
+        duracion_seg = _segundos_entre_us(
+            int(cols["ts_entrada"][i]),
+            int(cols["ts_salida"][i]),
+        )
+        duracion_txt = formatear_duracion(duracion_seg, duracion_velas)
         motivo = motivos_lookup[int(cols["motivo_salida"][i])]
         n = i + 1
 
@@ -150,33 +156,36 @@ def _crear_payload(
             "precio_salida":  precio_s,
             "pnl":            pnl,
             "roi":            roi,
-            "duracion":       duracion,
+            "duracion":       duracion_velas,
+            "duracion_txt":   duracion_txt,
             "motivo":         motivo,
         })
 
         if t_e and ts_min <= t_e <= ts_max:
             markers.append({
-                "trade":     n,
-                "tipo":      "entrada",
-                "time":      t_e,
-                "direccion": direccion,
-                "precio":    precio_e,
-                "pnl":       pnl,
-                "roi":       roi,
-                "duracion":  duracion,
-                "motivo":    motivo,
+                "trade":        n,
+                "tipo":         "entrada",
+                "time":         t_e,
+                "direccion":    direccion,
+                "precio":       precio_e,
+                "pnl":          pnl,
+                "roi":          roi,
+                "duracion":     duracion_velas,
+                "duracion_txt": duracion_txt,
+                "motivo":       motivo,
             })
         if t_s and ts_min <= t_s <= ts_max:
             markers.append({
-                "trade":     n,
-                "tipo":      "salida",
-                "time":      t_s,
-                "direccion": direccion,
-                "precio":    precio_s,
-                "pnl":       pnl,
-                "roi":       roi,
-                "duracion":  duracion,
-                "motivo":    motivo,
+                "trade":        n,
+                "tipo":         "salida",
+                "time":         t_s,
+                "direccion":    direccion,
+                "precio":       precio_s,
+                "pnl":          pnl,
+                "roi":          roi,
+                "duracion":     duracion_velas,
+                "duracion_txt": duracion_txt,
+                "motivo":       motivo,
             })
 
     return {
@@ -224,6 +233,10 @@ def _restar_meses(fecha: date, meses: int) -> date:
         mes += 12
         anno -= 1
     return date(anno, mes, min(fecha.day, 28))
+
+
+def _segundos_entre_us(inicio_us: int, fin_us: int) -> int:
+    return max(0, int((fin_us - inicio_us) / 1_000_000))
 
 
 def _base_resultados(run_dir: Path) -> Path:
@@ -315,7 +328,7 @@ header{{padding:12px 18px;background:#131722;border-bottom:1px solid #2a2e39;dis
           <th>Entrada</th><th>P.Entrada</th>
           <th>Salida</th><th>P.Salida</th>
           <th>PnL ($)</th><th>ROI</th>
-          <th>Velas</th><th>Motivo</th>
+          <th>Duración</th><th>Motivo</th>
         </tr>
       </thead>
       <tbody id="trade-tbody"></tbody>
@@ -330,6 +343,21 @@ header{{padding:12px 18px;background:#131722;border-bottom:1px solid #2a2e39;dis
 const D={data_json};
 
 // ── Métricas ─────────────────────────────────────────────────────────────────
+function fmtDuration(seconds,candles){{
+  if(seconds==null||isNaN(seconds)||seconds<=0){{
+    if(candles!=null&&!isNaN(candles))return String(candles)+' '+(candles===1?'vela':'velas');
+    return '-';
+  }}
+  const total=Math.round(seconds);
+  const days=Math.floor(total/86400);
+  const hours=Math.floor((total%86400)/3600);
+  const mins=Math.floor((total%3600)/60);
+  if(days)return days+'d '+String(hours).padStart(2,'0')+'h';
+  if(hours)return hours+'h '+String(mins).padStart(2,'0')+'m';
+  if(mins)return mins+'m';
+  return total+'s';
+}}
+
 const metricDefs=[
   ['Score',       D.score,                  v=>v.toFixed(6),           false],
   ['ROI',         D.metricas.roi_total,     v=>(v*100).toFixed(2)+'%', true],
@@ -338,6 +366,7 @@ const metricDefs=[
   ['PF',          D.metricas.profit_factor, v=>v.toFixed(3),           true],
   ['Sharpe',      D.metricas.sharpe_ratio,  v=>v.toFixed(3),           true],
   ['Max DD',      D.metricas.max_drawdown,  v=>(v*100).toFixed(2)+'%', true],
+  ['Dur. media',  D.metricas.duracion_media_seg, v=>fmtDuration(v,D.metricas.duracion_media_velas), false],
   ['Trades/día',  D.metricas.trades_por_dia,v=>v.toFixed(4),           false],
   ['Trades',      D.metricas.total_trades,  v=>v.toLocaleString(),     false],
 ];
@@ -492,7 +521,7 @@ mainChart.subscribeCrosshairMove(param=>{{
       return `${{sep}}<div class="tt-head">SALIDA #${{m.trade}} — ${{m.motivo}}</div>
         <div class="tt-row"><span>Precio</span><b>${{m.precio.toFixed(2)}}</b></div>
         <div class="tt-row"><span>PnL</span><b style="color:${{pColor}}">${{pnlStr}} (${{roiStr}})</b></div>
-        <div class="tt-row"><span>Duración</span><b>${{m.duracion}} velas</b></div>`;
+        <div class="tt-row"><span>Duración</span><b>${{m.duracion_txt||fmtDuration(null,m.duracion)}}</b></div>`;
     }}
   }}).join('');
 
@@ -521,7 +550,7 @@ const tbody=document.getElementById('trade-tbody');
     <td>${{t.precio_salida.toFixed(2)}}</td>
     <td class="${{t.pnl>=0?'pos':'neg'}}">${{pnlStr}}</td>
     <td class="${{t.pnl>=0?'pos':'neg'}}">${{roiStr}}</td>
-    <td>${{t.duracion}}</td>
+    <td>${{t.duracion_txt||fmtDuration(null,t.duracion)}}</td>
     <td>${{t.motivo}}</td>`;
   tbody.appendChild(tr);
 }});

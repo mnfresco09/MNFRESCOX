@@ -17,6 +17,9 @@ PANEL BACKTESTING/HISTORICO/*
 PANEL BACKTESTING/RESULTADOS/*
 !PANEL BACKTESTING/RESULTADOS/.gitkeep
 
+# ZIPs y CSVs temporales del descargador (se regeneran en cada ejecución).
+DESCARGADOR/tmp/
+
 # Artefactos generados por Cargo/Rust.
 PANEL BACKTESTING/MOTOR/target/
 

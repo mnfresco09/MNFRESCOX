@@ -10,7 +10,7 @@ CARPETA_RESULTADOS = RAIZ / "RESULTADOS"
 # ---------------------------------------------------------------------------
 # ACTIVOS Y DATOS
 # ---------------------------------------------------------------------------
-ACTIVOS = ["BTC", "GOLD"]          # Un activo o lista: ["BTC", "GOLD"]
+ACTIVOS = ["BTC"]          # Un activo o lista: ["BTC", "GOLD"]
 FORMATO_DATOS = "feather"          # "feather" | "parquet" | "csv"
 
 # True = activo continuo 24/7: cualquier hueco temporal es error.
@@ -29,7 +29,7 @@ MERCADO_24_7 = {
 TIMEFRAMES = ["15m"]
 
 # ---------------------------------------------------------------------------
-# FECHAS
+# FECHAS 2020-01-01 hasta 2025-12-31
 # ---------------------------------------------------------------------------
 FECHA_INICIO = "2022-01-01"
 FECHA_FIN    = "2024-12-31"

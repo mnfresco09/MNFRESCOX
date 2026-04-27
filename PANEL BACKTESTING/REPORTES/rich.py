@@ -13,6 +13,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from REPORTES.formatos import formatear_duracion
+
 
 @dataclass(frozen=True)
 class Theme:
@@ -47,6 +49,7 @@ class Metricas:
         "max_drawdown": ("max_drawdown", "drawdown", "dd", "mdd"),
         "profit_factor": ("profit_factor", "pf"),
         "sharpe_ratio": ("sharpe_ratio", "sharpe", "sr"),
+        "duracion_media_seg": ("duracion_media_seg", "avg_duration_sec"),
         "duracion_media_velas": ("duracion_media_velas", "avg_duration"),
     }
 
@@ -241,7 +244,7 @@ def _panel_performance(metricas: dict[str, Any]) -> Panel:
     grid.add_row("MAX DD", _fmt_pct(Metricas.get(metricas, "max_drawdown"), invert=True))
     grid.add_row("TRADES/DIA", _fmt_num(Metricas.get(metricas, "trades_por_dia"), 3))
     grid.add_row("TRADES", str(Metricas.get_int(metricas, "total_trades")))
-    grid.add_row("DUR MEDIA", f"{Metricas.get(metricas, 'duracion_media_velas'):.1f} velas")
+    grid.add_row("DUR MEDIA", _fmt_duracion_media(metricas))
     return Panel(
         grid,
         title=f"[{THEME.MUTED}]PERFORMANCE[/]",
@@ -332,6 +335,12 @@ def _fmt_num(value: float, decimals: int) -> str:
     if not isfinite(value):
         return "inf"
     return f"{value:.{decimals}f}"
+
+
+def _fmt_duracion_media(metricas: dict[str, Any]) -> str:
+    segundos = Metricas.get(metricas, "duracion_media_seg")
+    velas = Metricas.get(metricas, "duracion_media_velas")
+    return formatear_duracion(segundos, velas)
 
 
 def _fmt_param(value: Any) -> str:
