@@ -41,6 +41,8 @@ class Metricas:
         "total_trades": ("total_trades", "trades", "n_trades"),
         "win_rate": ("win_rate", "winrate", "wr"),
         "roi_total": ("roi_total", "roi", "return_pct"),
+        "expectancy": ("expectancy", "expectancy_per_trade"),
+        "trades_por_dia": ("trades_por_dia", "trades_per_day", "tpd"),
         "pnl_total": ("pnl_total", "pnl", "pnl_neto"),
         "max_drawdown": ("max_drawdown", "drawdown", "dd", "mdd"),
         "profit_factor": ("profit_factor", "pf"),
@@ -233,9 +235,11 @@ def _score_line(
 def _panel_performance(metricas: dict[str, Any]) -> Panel:
     grid = _grid(14, 12)
     grid.add_row("WIN RATE", _fmt_pct(Metricas.get(metricas, "win_rate")))
+    grid.add_row("EXPECT.", _fmt_pct(Metricas.get(metricas, "expectancy")))
     grid.add_row("PROFIT F", _fmt_num(Metricas.get(metricas, "profit_factor"), 2))
     grid.add_row("SHARPE", _fmt_num(Metricas.get(metricas, "sharpe_ratio"), 2))
     grid.add_row("MAX DD", _fmt_pct(Metricas.get(metricas, "max_drawdown"), invert=True))
+    grid.add_row("TRADES/DIA", _fmt_num(Metricas.get(metricas, "trades_por_dia"), 3))
     grid.add_row("TRADES", str(Metricas.get_int(metricas, "total_trades")))
     grid.add_row("DUR MEDIA", f"{Metricas.get(metricas, 'duracion_media_velas'):.1f} velas")
     return Panel(

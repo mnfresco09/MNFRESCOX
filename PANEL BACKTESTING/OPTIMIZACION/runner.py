@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import os
 from dataclasses import dataclass
+from datetime import date
 from threading import Lock
 
 import optuna
@@ -22,6 +23,7 @@ from OPTIMIZACION.puntuacion import calcular_score
 from OPTIMIZACION.samplers import crear_sampler
 from REPORTES.excel import generar_excel
 from REPORTES.html import generar_htmls
+from REPORTES.informe import generar_informe
 from REPORTES.persistencia import guardar_optimizacion
 from REPORTES.rich import MonitorOptimizacion
 
@@ -62,6 +64,8 @@ def main() -> None:
     print("[RUN] Fase 7: salidas CUSTOM + guia de estrategias + auditoria reforzada")
     validar_config(cfg)
     optuna.logging.set_verbosity(optuna.logging.WARNING)
+    fecha_inicio = _fecha_config(cfg.FECHA_INICIO, "FECHA_INICIO")
+    fecha_fin = _fecha_config(cfg.FECHA_FIN, "FECHA_FIN")
 
     registro = cargar_estrategias()
     estrategias = obtener_estrategia(registro, cfg.ESTRATEGIA_ID)
@@ -118,6 +122,8 @@ def main() -> None:
                             ctx=ctx,
                             timeframe_base=timeframe_base,
                             n_jobs=n_jobs,
+                            fecha_inicio=fecha_inicio,
+                            fecha_fin=fecha_fin,
                         )
                     except Exception as exc:
                         contexto = (
@@ -158,10 +164,18 @@ def main() -> None:
                         grafica_desde=cfg.GRAFICA_DESDE,
                         grafica_hasta=cfg.GRAFICA_HASTA,
                     )
+                    informe_path = generar_informe(
+                        run_dir=run_dir,
+                        trials=trials,
+                        estrategia=estrategia,
+                        activo=activo,
+                        timeframe=timeframe,
+                        salida_tipo=salida.tipo,
+                    )
 
-                    _imprimir_resumen_run(mejor, run_dir, excel_path, html_paths)
+                    _imprimir_resumen_run(mejor, run_dir, excel_path, html_paths, informe_path)
                     total_runs += 1
-                    del trials, mejor, run_dir, excel_path, html_paths
+                    del trials, mejor, run_dir, excel_path, html_paths, informe_path
                     gc.collect()
 
             del df_tf, ctx
@@ -187,6 +201,8 @@ def _optimizar_combinacion(
     ctx: ContextoCombinacion,
     timeframe_base: str,
     n_jobs: int,
+    fecha_inicio: date,
+    fecha_fin: date,
 ) -> list[TrialResultado]:
     sampler = crear_sampler(cfg.OPTUNA_SAMPLER, cfg.OPTUNA_SEED, cfg.N_TRIALS)
     study = optuna.create_study(direction="maximize", sampler=sampler)
@@ -238,7 +254,7 @@ def _optimizar_combinacion(
             salidas_exec,
             _cache=cache_exec,
         )
-        metricas = calcular_metricas(resultado)
+        metricas = calcular_metricas(resultado, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
         score = calcular_score(metricas)
         trial.set_user_attr("metricas", metricas)
         trial.set_user_attr("conteo_senales", conteo)
@@ -458,6 +474,15 @@ def _normalizar_jobs(valor: int) -> int:
     return max(1, int(valor))
 
 
+def _fecha_config(valor, nombre: str) -> date:
+    if isinstance(valor, date):
+        return valor
+    try:
+        return date.fromisoformat(str(valor))
+    except ValueError as exc:
+        raise ValueError(f"[CONFIG] {nombre} debe tener formato YYYY-MM-DD: {valor!r}.") from exc
+
+
 def _es_mercado_24_7(activo: str) -> bool:
     return bool(getattr(cfg, "MERCADO_24_7", {}).get(activo, True))
 
@@ -481,7 +506,7 @@ def _imprimir_huella(huella: integridad.HuellaDatos) -> None:
     )
 
 
-def _imprimir_resumen_run(mejor: TrialResultado, run_dir, excel_path, html_paths) -> None:
+def _imprimir_resumen_run(mejor: TrialResultado, run_dir, excel_path, html_paths, informe_path) -> None:
     metricas = mejor.metricas
     excel_txt = str(excel_path) if excel_path is not None else "desactivado"
     print(
@@ -491,12 +516,15 @@ def _imprimir_resumen_run(mejor: TrialResultado, run_dir, excel_path, html_paths
         f"mejor_trial={mejor.numero} "
         f"score={mejor.score:.6f} "
         f"roi={metricas['roi_total']:.2%} "
+        f"expectancy={metricas['expectancy']:.2%} "
         f"win_rate={metricas['win_rate']:.2%} "
         f"profit_factor={metricas['profit_factor']:.4f} "
         f"sharpe={metricas['sharpe_ratio']:.4f} "
         f"max_dd={metricas['max_drawdown']:.2%} "
+        f"trades_dia={metricas['trades_por_dia']:.4f} "
         f"trades={metricas['total_trades']:,} "
         f"excel={excel_txt} "
         f"htmls={len(html_paths)} "
+        f"informe={informe_path} "
         f"dir={run_dir}"
     )

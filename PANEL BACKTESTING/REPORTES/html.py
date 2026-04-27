@@ -320,10 +320,12 @@ const D={data_json};
 const metricDefs=[
   ['Score',       D.score,                  v=>v.toFixed(6),           false],
   ['ROI',         D.metricas.roi_total,     v=>(v*100).toFixed(2)+'%', true],
+  ['Expect.',     D.metricas.expectancy,    v=>(v*100).toFixed(2)+'%', true],
   ['Win Rate',    D.metricas.win_rate,      v=>(v*100).toFixed(2)+'%', true],
   ['PF',          D.metricas.profit_factor, v=>v.toFixed(3),           true],
   ['Sharpe',      D.metricas.sharpe_ratio,  v=>v.toFixed(3),           true],
   ['Max DD',      D.metricas.max_drawdown,  v=>(v*100).toFixed(2)+'%', true],
+  ['Trades/día',  D.metricas.trades_por_dia,v=>v.toFixed(4),           false],
   ['Trades',      D.metricas.total_trades,  v=>v.toLocaleString(),     false],
 ];
 const metricsEl=document.getElementById('metrics');

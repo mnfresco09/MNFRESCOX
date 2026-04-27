@@ -22,11 +22,14 @@ METRIC_ORDER = [
     "trades_short",
     "trades_ganadores",
     "trades_perdedores",
+    "trades_neutros",
     "win_rate",
     "roi_total",
+    "expectancy",
     "max_drawdown",
     "profit_factor",
     "sharpe_ratio",
+    "trades_por_dia",
     "pnl_bruto_total",
     "pnl_total",
     "pnl_promedio",
@@ -51,11 +54,14 @@ SUMMARY_NAMES = {
     "trades_short":      "SHORT",
     "trades_ganadores":  "WIN",
     "trades_perdedores": "LOSS",
+    "trades_neutros":    "BE",
     "win_rate":          "WIN RATE",
     "roi_total":         "ROI",
+    "expectancy":        "EXPECT.",
     "max_drawdown":      "MAX DD",
     "profit_factor":     "PF",
     "sharpe_ratio":      "SHARPE",
+    "trades_por_dia":    "TRADES/DÍA",
     "pnl_bruto_total":   "PNL BRUTO",
     "pnl_total":         "PNL NETO",
     "pnl_promedio":      "PNL PROM",
@@ -105,11 +111,11 @@ MONEY_COLS = {
     "saldo_apertura", "tamano_posicion", "comision_total",
     "pnl_bruto", "pnl", "saldo_post", "saldo",
 }
-PCT_COLS      = {"win_rate", "roi_total", "max_drawdown", "roi"}
+PCT_COLS      = {"win_rate", "roi_total", "expectancy", "max_drawdown", "roi"}
 PCT_POINT_COLS = {"param_exit_sl_pct", "param_exit_tp_pct"}
 INT_COLS      = {
     "trial", "total_trades", "trades_long", "trades_short",
-    "trades_ganadores", "trades_perdedores",
+    "trades_ganadores", "trades_perdedores", "trades_neutros",
     "punto", "trade_num", "param_exit_velas",
 }
 PRICE_COLS    = {"precio_entrada", "precio_salida"}
@@ -119,22 +125,22 @@ DUR_SEG_COLS  = {"duracion_seg", "duracion_media_seg"}
 MAX_DETALLES_EXCEL = 5
 
 # ── Paleta profesional ────────────────────────────────────────────────────────
-#   Fondo oscuro tipo terminal de trading
-_BG_BASE      = "#0D1117"   # fondo principal
-_BG_HEADER    = "#161B22"   # cabecera de hoja
-_BG_SECTION   = "#1C2128"   # sección agrupadora
-_BG_ROW_EVEN  = "#161B22"   # fila par
-_BG_ROW_ODD   = "#0D1117"   # fila impar
-_FG_HEADER    = "#8B949E"   # texto cabecera
-_FG_SECTION   = "#6E7681"   # texto sección
-_FG_MAIN      = "#E6EDF3"   # texto principal
-_FG_DIM       = "#8B949E"   # texto secundario
-_BORDER       = "#30363D"   # borde sutil
-_GREEN        = "#3FB950"   # positivo
-_RED          = "#F85149"   # negativo
-_BLUE_ACCENT  = "#388BFD"   # acento azul (score, títulos)
-_GOLD         = "#D29922"   # alerta / stop saldo
-_CHART_LINE   = "#388BFD"
+#   Fondo claro blanco/gris con texto oscuro
+_BG_BASE      = "#FFFFFF"   # fondo principal
+_BG_HEADER    = "#E5E7EB"   # cabecera de hoja
+_BG_SECTION   = "#D1D5DB"   # sección agrupadora
+_BG_ROW_EVEN  = "#F3F4F6"   # fila par (gris muy claro)
+_BG_ROW_ODD   = "#FFFFFF"   # fila impar (blanco)
+_FG_HEADER    = "#1F2937"   # texto cabecera
+_FG_SECTION   = "#111827"   # texto sección
+_FG_MAIN      = "#111827"   # texto principal
+_FG_DIM       = "#6B7280"   # texto secundario
+_BORDER       = "#D1D5DB"   # borde sutil
+_GREEN        = "#15803D"   # positivo
+_RED          = "#B91C1C"   # negativo
+_BLUE_ACCENT  = "#1D4ED8"   # acento azul (score, títulos)
+_GOLD         = "#B45309"   # alerta / stop saldo
+_CHART_LINE   = "#1D4ED8"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -443,7 +449,7 @@ def _format_for(name: str, formatos: dict, alt: bool):
         return formatos["pct_point"][idx]
     if name in INT_COLS:
         return formatos["int"][idx]
-    if name in {"profit_factor", "sharpe_ratio", "duracion_media_velas"}:
+    if name in {"profit_factor", "sharpe_ratio", "trades_por_dia", "duracion_media_velas"}:
         return formatos["ratio"][idx]
     if name == "score":
         return formatos["num"][idx]
