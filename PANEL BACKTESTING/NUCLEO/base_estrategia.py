@@ -1,158 +1,202 @@
+"""Base de toda estrategia.
+
+Cada estrategia define **sus propios indicadores** dentro de su script
+(`generar_señales`, `generar_salidas`, `indicadores_para_grafica`). El
+motor Rust sólo se ocupa de la simulación y de la gestión de capital;
+los indicadores son territorio exclusivo de la estrategia.
+
+Lo que aporta esta clase:
+
+  - Buffers numpy estables sobre los que la estrategia opera (`self.close`,
+    `self.high`, `self.low`, `self.open`, `self.volume`). Se inyectan con
+    `bind(arrays)` antes de empezar la combinación y permanecen vivos
+    durante toda ella, lo que hace que el cache pueda identificar series
+    por identidad de buffer entre trials.
+
+  - Un cache opcional (`self.cache`) para memoizar resultados pesados
+    cuando Optuna repite parámetros enteros (TPE/QMC los reusan a menudo).
+    Es la propia estrategia quien decide qué cacheables son significativos.
+    El helper `self.memo("nombre", periodo, ..., calcular=lambda: ...)`
+    encapsula el patrón típico.
+
+  - Utilidades vectoriales puras para construir señales y máscaras
+    (`serie_senales`, `shift`). No imponen ningún cálculo de indicador.
+"""
+
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from typing import Callable, Optional
+
+import numpy as np
 import polars as pl
 
 
-class BaseEstrategia(ABC):
+class CacheIndicadores:
+    """Cache key→ndarray, vivo lo que dura una combinación (un par
+    `activo×timeframe`). Es opcional: una estrategia puede ignorarlo y
+    recalcular siempre.
     """
-    Clase madre de todas las estrategias.
 
-    Contrato obligatorio para cada estrategia hija:
-      - ID     : entero único en todo el sistema
-      - NOMBRE : texto descriptivo
-      - espacio_busqueda(trial) → dict con los parámetros del trial
-      - generar_señales(df, params) → pl.Series de Señal (por vela)
-      - generar_salidas(df, params) → pl.Series Int8 si se usa EXIT_TYPE="CUSTOM"
+    __slots__ = ("_cache",)
 
-    REGLA ABSOLUTA: generar_señales solo puede usar datos de velas
-    anteriores a la actual. La entrada siempre ocurre en el open
-    de la vela siguiente a la señal — esto lo garantiza el motor.
+    def __init__(self) -> None:
+        self._cache: dict[tuple, np.ndarray] = {}
 
-    Para salidas CUSTOM, generar_salidas usa el mismo histórico OHLCV de la estrategia y
-    devuelve:
-      0  → no cerrar
-      1  → cerrar LONG abierto
-     -1  → cerrar SHORT abierto
+    def get(self, key: tuple) -> Optional[np.ndarray]:
+        return self._cache.get(key)
 
-    La salida CUSTOM se ejecuta al close de la vela donde aparece la
-    condición. El SL de seguridad sigue teniendo prioridad dentro del motor.
+    def put(self, key: tuple, value: np.ndarray) -> None:
+        self._cache[key] = value
 
-    Para salidas FIXED o BARS, el sistema ejecuta los cierres en el timeframe
-    más bajo disponible en HISTORICO. La señal sigue naciendo en el timeframe
-    de estrategia y la entrada se mantiene en el open de la siguiente vela de
-    estrategia.
+    def clear(self) -> None:
+        self._cache.clear()
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
+
+class BaseEstrategia(ABC):
+    """Contrato:
+
+      - `ID` (int único) y `NOMBRE` (str).
+      - `espacio_busqueda(trial)` define el espacio Optuna.
+      - `generar_señales(df, params) → pl.Series` (Int8: 1, -1, 0).
+      - `generar_salidas(df, params) → pl.Series` (sólo si EXIT_TYPE='CUSTOM').
+      - `indicadores_para_grafica(df, params) → list[dict]` (opcional).
+
+    REGLA ABSOLUTA: las señales no pueden mirar la vela actual ni el futuro.
+    El motor entra siempre en el open de la vela siguiente.
     """
 
     ID: int
     NOMBRE: str
     COLUMNAS_REQUERIDAS: set[str] = set()
 
+    def __init__(self) -> None:
+        self._arrays = None
+        self._cache: CacheIndicadores | None = None
+
+    # ── Inyección desde el runner ─────────────────────────────────────────
+
+    def bind(self, arrays, cache: CacheIndicadores | None = None) -> None:
+        """Asigna buffers numpy y cache antes de la combinación. El runner
+        llama a esto una vez por (estrategia × ctx), no por trial: los
+        buffers son estables y el cache se reusa entre trials."""
+        self._arrays = arrays
+        self._cache = cache
+
+    def desvincular(self) -> None:
+        """Libera buffers y cache al terminar la combinación."""
+        self._arrays = None
+        self._cache = None
+
+    # ── Acceso a buffers ──────────────────────────────────────────────────
+
+    @property
+    def open(self) -> np.ndarray:
+        return self._req_arrays().opens
+
+    @property
+    def high(self) -> np.ndarray:
+        return self._req_arrays().highs
+
+    @property
+    def low(self) -> np.ndarray:
+        return self._req_arrays().lows
+
+    @property
+    def close(self) -> np.ndarray:
+        return self._req_arrays().closes
+
+    @property
+    def volume(self) -> np.ndarray:
+        return self._req_arrays().volumes
+
+    @property
+    def cache(self) -> CacheIndicadores | None:
+        """Cache de la combinación. `None` si la estrategia se está usando
+        fuera del runner (p. ej. en pruebas). La estrategia debe tolerar
+        ambos casos."""
+        return self._cache
+
+    def _req_arrays(self):
+        if self._arrays is None:
+            raise RuntimeError(
+                "Estrategia sin buffers vinculados. El runner debe llamar a "
+                "estrategia.bind(arrays, cache) antes de generar señales."
+            )
+        return self._arrays
+
+    # ── Memoización opcional ──────────────────────────────────────────────
+
+    def memo(self, *clave_partes, calcular: Callable[[], np.ndarray]) -> np.ndarray:
+        """Devuelve el resultado de `calcular()` cacheándolo bajo la clave
+        `(nombre_estrategia, *clave_partes)`. Pensado para indicadores
+        cuyo cálculo es caro y cuyos parámetros se repiten entre trials.
+
+            ema21 = self.memo("ema", id(self.close), 21,
+                              calcular=lambda: _calcula_ema(self.close, 21))
+
+        Si no hay cache disponible, calcula directamente sin memoizar.
+        """
+        if self._cache is None:
+            return calcular()
+        key = (type(self).__name__, *clave_partes)
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        result = calcular()
+        self._cache.put(key, result)
+        return result
+
+    # ── Utilidades vectoriales para construir señales/salidas ─────────────
+
+    @staticmethod
+    def serie_senales(longitud: int, mascara_long: np.ndarray, mascara_short: np.ndarray) -> pl.Series:
+        """Construye una `pl.Series(int8)` a partir de dos máscaras booleanas.
+        Es el patrón canónico para devolver señales y salidas custom.
+        """
+        arr = np.zeros(int(longitud), dtype=np.int8)
+        arr[mascara_long] = 1
+        arr[mascara_short] = -1
+        return pl.Series("senal", arr)
+
+    @staticmethod
+    def shift(arr: np.ndarray, n: int = 1, fill: float = float("nan")) -> np.ndarray:
+        """Equivalente vectorial a `pl.Series.shift(n)` con relleno NaN."""
+        if n == 0:
+            return arr
+        out = np.empty_like(arr, dtype=np.float64)
+        if n > 0:
+            out[:n] = fill
+            out[n:] = arr[:-n]
+        else:
+            k = -n
+            out[-k:] = fill
+            out[:-k] = arr[k:]
+        return out
+
+    # ── API obligatoria de la estrategia ──────────────────────────────────
+
     @abstractmethod
     def espacio_busqueda(self, trial) -> dict:
-        """
-        Define los parámetros y sus rangos para Optuna.
-        Recibe un optuna.Trial y devuelve un dict {nombre: valor}.
-        """
+        """Define el espacio Optuna del trial."""
 
     def parametros_por_defecto(self) -> dict:
-        """
-        Parametros fijos para una ejecucion simple sin Optuna.
-        Las estrategias pueden sobrescribirlo para la fase de prueba end-to-end.
-        """
+        """Parámetros fijos para una ejecución sin Optuna."""
         return {}
 
     @abstractmethod
     def generar_señales(self, df: pl.DataFrame, params: dict) -> pl.Series:
-        """
-        Recibe el DataFrame OHLCV y los parámetros del trial.
-        Devuelve una pl.Series de tipo Int8 con valores Señal:
-          0  → sin señal
-          1  → señal LONG
-         -1  → señal SHORT
-        """
+        """Devuelve `pl.Series` Int8 con valores en {-1, 0, 1}."""
 
     def generar_salidas(self, df: pl.DataFrame, params: dict) -> pl.Series:
-        """
-        Contrato opcional para EXIT_TYPE="CUSTOM".
-
-        Debe devolver una pl.Series Int8 con la misma longitud que df:
-          0  → no cerrar
-          1  → cerrar LONG abierto
-         -1  → cerrar SHORT abierto
-
-        Igual que las señales, no puede usar información futura. Si una
-        estrategia no implementa este método, no puede ejecutarse con CUSTOM.
-        """
+        """Sólo si EXIT_TYPE='CUSTOM'. Devuelve `pl.Series` Int8."""
         raise NotImplementedError(
             f"{self.__class__.__name__} no define generar_salidas para EXIT_TYPE='CUSTOM'."
         )
 
-    # ------------------------------------------------------------------
-    # Indicadores vectorizados (disponibles para todas las estrategias)
-    # ------------------------------------------------------------------
-
-    def sma(self, serie: pl.Series, periodo: int) -> pl.Series:
-        """Media móvil simple."""
-        return serie.rolling_mean(window_size=periodo)
-
-    def ema(self, serie: pl.Series, periodo: int) -> pl.Series:
-        """Media móvil exponencial (factor de suavizado = 2 / (periodo + 1))."""
-        alpha = 2.0 / (periodo + 1)
-        return serie.ewm_mean(alpha=alpha, adjust=False)
-
-    def rsi(self, serie: pl.Series, periodo: int) -> pl.Series:
-        """
-        RSI con suavizado de Wilder (EWM con alpha = 1/periodo).
-        Los primeros 'periodo' valores serán nulos.
-        """
-        delta = serie.diff()
-        ganancia = delta.clip(lower_bound=0)
-        perdida  = (-delta).clip(lower_bound=0)
-
-        alpha = 1.0 / periodo
-        media_gan = ganancia.ewm_mean(alpha=alpha, adjust=False)
-        media_per = perdida.ewm_mean(alpha=alpha, adjust=False)
-
-        rs  = media_gan / media_per
-        rsi = 100.0 - (100.0 / (1.0 + rs))
-
-        # Anular las primeras 'periodo' filas: el RSI no es fiable sin historia suficiente
-        mascara = pl.Series([None] * periodo + [1] * (len(rsi) - periodo), dtype=pl.Float64)
-        return rsi * mascara
-
-    def atr(self, df: pl.DataFrame, periodo: int) -> pl.Series:
-        """Average True Range con suavizado de Wilder."""
-        prev_close = df["close"].shift(1)
-        tr = pl.Series([
-            max(h - l, abs(h - pc), abs(l - pc))
-            for h, l, pc in zip(df["high"], df["low"], prev_close)
-        ])
-        alpha = 1.0 / periodo
-        return tr.ewm_mean(alpha=alpha, adjust=False)
-
-    def bollinger(
-        self,
-        serie: pl.Series,
-        periodo: int,
-        desviaciones: float = 2.0,
-    ) -> tuple[pl.Series, pl.Series, pl.Series]:
-        """
-        Bandas de Bollinger.
-        Devuelve (banda_superior, media, banda_inferior).
-        """
-        media = serie.rolling_mean(window_size=periodo)
-        std   = serie.rolling_std(window_size=periodo)
-        return (
-            media + desviaciones * std,
-            media,
-            media - desviaciones * std,
-        )
-
     def indicadores_para_grafica(self, df: pl.DataFrame, params: dict) -> list[dict]:
-        """
-        Indicadores que se dibujan en el reporte HTML.
-        Sobrescribir en cada estrategia. Por defecto no dibuja nada.
-
-        Cada elemento de la lista:
-          {
-            "nombre": str,
-            "tipo":   "overlay"   <- linea sobre el grafico de precio
-                    | "pane",     <- panel separado debajo del precio
-            "color": str,         <- hex, ej. "#f59e0b"
-            "data":  [{"t": int, "v": float}, ...],  # t = Unix segundos UTC
-            # solo para tipo "pane":
-            "niveles": [{"valor": float, "color": str}, ...],
-            "min": float,
-            "max": float,
-          }
-        """
+        """Indicadores para el reporte HTML. Sobrescribir si interesa."""
         return []

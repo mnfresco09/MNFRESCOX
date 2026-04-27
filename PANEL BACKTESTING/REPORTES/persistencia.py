@@ -9,8 +9,10 @@ from datetime import datetime, timezone
 from math import isclose
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 
+from MOTOR.wrapper import MOTIVOS
 
 TOL = 1e-7
 
@@ -68,14 +70,14 @@ def guardar_optimizacion(
             huella_timeframe=huella_timeframe,
             conteo_senales=conteo_senales_mejor,
             conteo_salidas=conteo_salidas_mejor,
-            resultado=mejor.resultado,
+            replay=mejor.replay,
             total_trials=len(trials),
         ),
     )
 
     resumen_trials_dataframe(trials).write_csv(run_dir / "trials.csv")
-    trades_dataframe(mejor.resultado).write_csv(run_dir / "trades.csv")
-    equity_dataframe(mejor.resultado).write_csv(run_dir / "equity.csv")
+    trades_dataframe(mejor.replay).write_csv(run_dir / "trades.csv")
+    equity_dataframe(mejor.replay).write_csv(run_dir / "equity.csv")
 
     verificar_optimizacion(run_dir, trials, mejor, conteo_senales_mejor, conteo_salidas_mejor)
     return run_dir
@@ -118,7 +120,6 @@ def resumen_trials_dataframe(trials: list) -> pl.DataFrame:
         | {"exit_type", "exit_sl_pct", "exit_tp_pct", "exit_velas"}
     )
     filas = []
-
     for trial in sorted(trials, key=lambda t: t.score, reverse=True):
         fila = {
             "trial": int(trial.numero),
@@ -142,43 +143,46 @@ def resumen_trials_dataframe(trials: list) -> pl.DataFrame:
         for key in param_keys:
             fila[f"param_{key}"] = parametros.get(key)
         filas.append(fila)
-
     return pl.DataFrame(filas)
 
 
-def trades_dataframe(resultado) -> pl.DataFrame:
-    filas = []
-    for trade in resultado.trades:
-        pnl_neto = float(trade.pnl)
-        comision = float(trade.comision_total)
-        dur_seg = max(0, int(trade.ts_salida - trade.ts_entrada)) / 1_000_000
-        filas.append(
-            {
-                "idx_senal": int(getattr(trade, "idx_señal")),
-                "idx_entrada": int(trade.idx_entrada),
-                "idx_salida": int(trade.idx_salida),
-                "ts_senal": int(getattr(trade, "ts_señal")),
-                "ts_entrada": int(trade.ts_entrada),
-                "ts_salida": int(trade.ts_salida),
-                "direccion": int(trade.direccion),
-                "direccion_txt": "LONG" if int(trade.direccion) == 1 else "SHORT",
-                "precio_entrada": float(trade.precio_entrada),
-                "precio_salida": float(trade.precio_salida),
-                "saldo_apertura": float(trade.colateral),
-                "tamano_posicion": float(getattr(trade, "tamaño_posicion")),
-                "comision_total": float(comision),
-                "pnl_bruto": float(pnl_neto + comision),
-                "pnl": float(pnl_neto),
-                "roi": float(trade.roi),
-                "saldo_post": float(trade.saldo_post),
-                "motivo_salida": str(trade.motivo_salida),
-                "duracion_velas": int(trade.duracion_velas),
-                "duracion_seg": float(dur_seg),
-            }
-        )
+def trades_dataframe(replay) -> pl.DataFrame:
+    """Construye el DataFrame de trades directamente desde columnas numpy.
+    Cero iteración Python: una sola asignación por columna.
+    """
+    if replay is None:
+        raise ValueError("[REPORTES] No hay replay disponible para trades_dataframe.")
+    t = replay.trades
+    direccion = t["direccion"].astype(np.int8)
+    pnl_neto = t["pnl"].astype(np.float64)
+    comision = t["comision_total"].astype(np.float64)
+    dur_seg = (t["ts_salida"] - t["ts_entrada"]).clip(min=0).astype(np.float64) / 1_000_000.0
+    motivo = np.array(MOTIVOS, dtype=object)[t["motivo_salida"].astype(np.int64)]
+    direccion_txt = np.where(direccion == 1, "LONG", "SHORT")
 
     return pl.DataFrame(
-        filas,
+        {
+            "idx_senal":      t["idx_senal"].astype(np.int64),
+            "idx_entrada":    t["idx_entrada"].astype(np.int64),
+            "idx_salida":     t["idx_salida"].astype(np.int64),
+            "ts_senal":       t["ts_senal"].astype(np.int64),
+            "ts_entrada":     t["ts_entrada"].astype(np.int64),
+            "ts_salida":      t["ts_salida"].astype(np.int64),
+            "direccion":      direccion,
+            "direccion_txt":  direccion_txt,
+            "precio_entrada": t["precio_entrada"].astype(np.float64),
+            "precio_salida":  t["precio_salida"].astype(np.float64),
+            "saldo_apertura": t["colateral"].astype(np.float64),
+            "tamano_posicion": t["tamano_posicion"].astype(np.float64),
+            "comision_total": comision,
+            "pnl_bruto":      pnl_neto + comision,
+            "pnl":            pnl_neto,
+            "roi":            t["roi"].astype(np.float64),
+            "saldo_post":     t["saldo_post"].astype(np.float64),
+            "motivo_salida":  motivo,
+            "duracion_velas": t["duracion_velas"].astype(np.int64),
+            "duracion_seg":   dur_seg,
+        },
         schema={
             "idx_senal": pl.Int64,
             "idx_entrada": pl.Int64,
@@ -204,40 +208,51 @@ def trades_dataframe(resultado) -> pl.DataFrame:
     )
 
 
-def equity_dataframe(resultado) -> pl.DataFrame:
-    trades = list(resultado.trades)
-    filas = [
-        {
-            "punto": 0,
-            "trade_num": 0,
-            "idx_salida": None,
-            "ts_salida": None,
-            "saldo": float(resultado.equity_curve[0]),
-        }
-    ]
+def equity_dataframe(replay) -> pl.DataFrame:
+    if replay is None:
+        raise ValueError("[REPORTES] No hay replay disponible para equity_dataframe.")
+    eq = replay.equity_curve.astype(np.float64)
+    n_trades = int(replay.trades["idx_salida"].shape[0])
+    if eq.shape[0] != n_trades + 1:
+        raise ValueError("[REPORTES] equity_curve no coincide con número de trades.")
 
-    for i, saldo in enumerate(resultado.equity_curve[1:], start=1):
-        trade = trades[i - 1]
-        filas.append(
+    punto = np.arange(eq.shape[0], dtype=np.int64)
+    trade_num = np.arange(eq.shape[0], dtype=np.int64)
+    if n_trades > 0:
+        idx_salida_full = np.concatenate(([np.iinfo(np.int64).min], replay.trades["idx_salida"].astype(np.int64)))
+        ts_salida_full = np.concatenate(([np.iinfo(np.int64).min], replay.trades["ts_salida"].astype(np.int64)))
+        # marcar fila inicial como nulos en idx_salida y ts_salida
+        df = pl.DataFrame(
             {
-                "punto": i,
-                "trade_num": i,
-                "idx_salida": int(trade.idx_salida),
-                "ts_salida": int(trade.ts_salida),
-                "saldo": float(saldo),
+                "punto": punto,
+                "trade_num": trade_num,
+                "idx_salida": idx_salida_full,
+                "ts_salida": ts_salida_full,
+                "saldo": eq,
             }
         )
-
-    return pl.DataFrame(
-        filas,
-        schema={
-            "punto": pl.Int64,
-            "trade_num": pl.Int64,
-            "idx_salida": pl.Int64,
-            "ts_salida": pl.Int64,
-            "saldo": pl.Float64,
-        },
-    )
+        # nulos sólo en la primera fila para idx_salida y ts_salida
+        df = df.with_columns([
+            pl.when(pl.col("punto") == 0).then(None).otherwise(pl.col("idx_salida")).alias("idx_salida"),
+            pl.when(pl.col("punto") == 0).then(None).otherwise(pl.col("ts_salida")).alias("ts_salida"),
+        ])
+    else:
+        df = pl.DataFrame(
+            {
+                "punto": punto,
+                "trade_num": trade_num,
+                "idx_salida": pl.Series("idx_salida", [None], dtype=pl.Int64),
+                "ts_salida": pl.Series("ts_salida", [None], dtype=pl.Int64),
+                "saldo": eq,
+            }
+        )
+    return df.cast({
+        "punto": pl.Int64,
+        "trade_num": pl.Int64,
+        "idx_salida": pl.Int64,
+        "ts_salida": pl.Int64,
+        "saldo": pl.Float64,
+    })
 
 
 def verificar_optimizacion(
@@ -264,7 +279,7 @@ def verificar_optimizacion(
     equity_df = pl.read_csv(equity_path)
 
     total_trials = len(trials)
-    total_trades = len(list(mejor.resultado.trades))
+    total_trades = int(mejor.replay.trades["idx_salida"].shape[0]) if mejor.replay else 0
     if int(resumen["optimizacion"]["total_trials"]) != total_trials:
         raise ValueError("[REPORTES] resumen.json no conserva total_trials.")
     if trials_df.height != total_trials:
@@ -273,7 +288,7 @@ def verificar_optimizacion(
         raise ValueError("[REPORTES] trades.csv no conserva trades del mejor trial.")
     if equity_df.height != total_trades + 1:
         raise ValueError("[REPORTES] equity.csv no conserva la curva del mejor trial.")
-    if not isclose(float(equity_df["saldo"][-1]), float(mejor.resultado.saldo_final), abs_tol=TOL):
+    if not isclose(float(equity_df["saldo"][-1]), float(mejor.replay.metricas_obj.saldo_final), abs_tol=TOL):
         raise ValueError("[REPORTES] equity.csv no termina en saldo_final.")
 
     senales = auditoria["senales_mejor_trial"]
@@ -363,10 +378,10 @@ def _crear_auditoria(
     huella_timeframe,
     conteo_senales: dict[int, int],
     conteo_salidas: dict[int, int] | None,
-    resultado,
+    replay,
     total_trials: int,
 ) -> dict:
-    total_trades = len(list(resultado.trades))
+    total_trades = int(replay.trades["idx_salida"].shape[0]) if replay else 0
     auditoria = {
         "generado_utc": datetime.now(timezone.utc).isoformat(),
         "datos_base": _huella_dict(huella_base),
@@ -387,8 +402,8 @@ def _crear_auditoria(
                 "resampleo validado",
                 "senales alineadas con datos en cada trial",
                 "salidas custom alineadas con datos cuando aplica",
-                "trades alineados con senales y velas en cada trial",
-                "pnl/equity/saldo consistentes en cada trial",
+                "trades alineados con senales y velas en el replay",
+                "pnl/equity/saldo consistentes en el replay",
                 "archivos core leidos y verificados tras escritura",
             ],
         },

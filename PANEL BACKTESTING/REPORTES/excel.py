@@ -165,7 +165,12 @@ def generar_excel(run_dir: Path, trials: list, mejor) -> Path:
         workbook.close()
 
     verificar_resumen_excel(path, resumen.height)
-    for trial in sorted(trials, key=lambda t: t.score, reverse=True)[:MAX_DETALLES_EXCEL]:
+    # Sólo los trials con replay materializado pueden generar detalle.
+    detalles = [
+        t for t in sorted(trials, key=lambda t: t.score, reverse=True)
+        if t.replay is not None
+    ][:MAX_DETALLES_EXCEL]
+    for trial in detalles:
         _generar_excel_detalle(excel_dir, trial)
 
     return path
@@ -214,8 +219,8 @@ def verificar_detalle_excel(path: Path, filas_trades: int, filas_equity: int) ->
 
 def _generar_excel_detalle(excel_dir: Path, trial) -> Path:
     path = _unique_path(excel_dir / _nombre_detalle(trial))
-    trades = trades_dataframe(trial.resultado)
-    equity = equity_dataframe(trial.resultado)
+    trades = trades_dataframe(trial.replay)
+    equity = equity_dataframe(trial.replay)
 
     workbook = xlsxwriter.Workbook(
         str(path),

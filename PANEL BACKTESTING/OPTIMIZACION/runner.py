@@ -5,7 +5,9 @@ import os
 from dataclasses import dataclass
 from datetime import date
 from threading import Lock
+from typing import Any, Optional
 
+import numpy as np
 import optuna
 
 from CONFIGURACION import config as cfg
@@ -13,15 +15,16 @@ from CONFIGURACION.validador_config import validar as validar_config
 from DATOS.cargador import cargar
 from DATOS.resampleo import inferir_timeframe, resamplear
 from DATOS.validador import validar as validar_datos
-from MOTOR import simular
+from MOTOR import simular_full, simular_metricas
 from NUCLEO import integridad
-from NUCLEO.contexto import ContextoCombinacion, SimConfigMotor, crear_contexto
+from NUCLEO.base_estrategia import CacheIndicadores
+from NUCLEO.contexto import ArraysMotor, ContextoCombinacion, SimConfigMotor, crear_contexto
 from NUCLEO.proyeccion import proyectar_senales_a_base
 from NUCLEO.registro import cargar_estrategias, obtener_estrategia
 from OPTIMIZACION.metricas import calcular_metricas
 from OPTIMIZACION.puntuacion import calcular_score
 from OPTIMIZACION.samplers import crear_sampler
-from REPORTES.excel import generar_excel
+from REPORTES.excel import MAX_DETALLES_EXCEL, generar_excel
 from REPORTES.html import generar_htmls
 from REPORTES.informe import generar_informe
 from REPORTES.persistencia import guardar_optimizacion
@@ -43,7 +46,15 @@ class ExitConfig:
     velas_max: int | None = None
 
 
-@dataclass(frozen=True)
+@dataclass
+class ReplayTrial:
+    """Datos del replay de un trial top: trades en columnas numpy + equity."""
+    metricas_obj: object  # struct Metricas Rust (para integridad)
+    trades: dict[str, np.ndarray]
+    equity_curve: np.ndarray
+
+
+@dataclass
 class TrialResultado:
     numero: int
     activo: str
@@ -53,15 +64,15 @@ class TrialResultado:
     estrategia_nombre: str
     salida: ExitConfig
     parametros: dict
-    resultado: object
     score: float
     metricas: dict
     conteo_senales: dict[int, int]
     conteo_salidas: dict[int, int] | None = None
+    replay: Optional[ReplayTrial] = None
 
 
 def main() -> None:
-    print("[RUN] Fase 7: salidas CUSTOM + guia de estrategias + auditoria reforzada")
+    print("[RUN] Backtest motor v2 — buffers numpy, métricas en Rust, GIL liberado")
     validar_config(cfg)
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     fecha_inicio = _fecha_config(cfg.FECHA_INICIO, "FECHA_INICIO")
@@ -107,76 +118,86 @@ def main() -> None:
             ctx = crear_contexto(df_base=df_base, df_tf=df_tf)
 
             for estrategia in estrategias:
-                for salida in salidas:
-                    clave = (str(activo), str(timeframe), int(estrategia.ID), str(salida.tipo))
-                    if clave in combinaciones_ejecutadas:
-                        raise ValueError(f"[FASE 7] Combinacion duplicada detectada: {clave}.")
-                    combinaciones_ejecutadas.add(clave)
+                # bind cubre TODA la combinación: optimización + reportes
+                # (los reportes HTML llaman a indicadores_para_grafica que
+                # también necesita los buffers).
+                cache_indicadores = CacheIndicadores()
+                estrategia.bind(ctx.arrays_tf, cache_indicadores)
+                try:
+                    for salida in salidas:
+                        clave = (str(activo), str(timeframe), int(estrategia.ID), str(salida.tipo))
+                        if clave in combinaciones_ejecutadas:
+                            raise ValueError(f"[RUN] Combinacion duplicada detectada: {clave}.")
+                        combinaciones_ejecutadas.add(clave)
 
-                    try:
-                        trials = _optimizar_combinacion(
+                        try:
+                            trials = _optimizar_combinacion(
+                                activo=activo,
+                                timeframe=timeframe,
+                                estrategia=estrategia,
+                                salida_base=salida,
+                                ctx=ctx,
+                                timeframe_base=timeframe_base,
+                                n_jobs=n_jobs,
+                                fecha_inicio=fecha_inicio,
+                                fecha_fin=fecha_fin,
+                            )
+                        except Exception as exc:
+                            contexto = (
+                                f"{activo}/{timeframe}/{estrategia.NOMBRE}/{salida.tipo}"
+                            )
+                            raise RuntimeError(f"[RUN] Fallo en {contexto}: {exc}") from exc
+
+                        mejor = max(trials, key=lambda t: t.score)
+                        if mejor.replay is None:
+                            raise RuntimeError("[RUN] El mejor trial no tiene replay materializado.")
+                        run_dir = guardar_optimizacion(
+                            carpeta_resultados=cfg.CARPETA_RESULTADOS,
                             activo=activo,
                             timeframe=timeframe,
+                            estrategia_id=estrategia.ID,
+                            estrategia_nombre=estrategia.NOMBRE,
+                            salida=salida,
+                            trials=trials,
+                            mejor=mejor,
+                            huella_base=huella_base,
+                            huella_timeframe=huella_tf,
+                            conteo_senales_mejor=mejor.conteo_senales,
+                            conteo_salidas_mejor=mejor.conteo_salidas,
+                            max_archivos=cfg.MAX_ARCHIVOS,
+                        )
+
+                        excel_path = None
+                        if cfg.USAR_EXCEL:
+                            excel_path = generar_excel(run_dir, trials, mejor)
+
+                        html_paths = generar_htmls(
+                            run_dir=run_dir,
+                            df=ctx.df_tf,
+                            df_exec=_df_para_reporte(ctx, salida),
+                            df_indicadores=ctx.df_tf,
+                            trials=trials,
                             estrategia=estrategia,
-                            salida_base=salida,
-                            ctx=ctx,
-                            timeframe_base=timeframe_base,
-                            n_jobs=n_jobs,
-                            fecha_inicio=fecha_inicio,
-                            fecha_fin=fecha_fin,
+                            max_plots=cfg.MAX_PLOTS,
+                            grafica_rango=cfg.GRAFICA_RANGO,
+                            grafica_desde=cfg.GRAFICA_DESDE,
+                            grafica_hasta=cfg.GRAFICA_HASTA,
                         )
-                    except Exception as exc:
-                        contexto = (
-                            f"{activo}/{timeframe}/{estrategia.NOMBRE}/"
-                            f"{salida.tipo}"
+                        informe_path = generar_informe(
+                            run_dir=run_dir,
+                            trials=trials,
+                            estrategia=estrategia,
+                            activo=activo,
+                            timeframe=timeframe,
+                            salida_tipo=salida.tipo,
                         )
-                        raise RuntimeError(f"[FASE 7] Fallo en {contexto}: {exc}") from exc
-                    mejor = max(trials, key=lambda t: t.score)
-                    run_dir = guardar_optimizacion(
-                        carpeta_resultados=cfg.CARPETA_RESULTADOS,
-                        activo=activo,
-                        timeframe=timeframe,
-                        estrategia_id=estrategia.ID,
-                        estrategia_nombre=estrategia.NOMBRE,
-                        salida=salida,
-                        trials=trials,
-                        mejor=mejor,
-                        huella_base=huella_base,
-                        huella_timeframe=huella_tf,
-                        conteo_senales_mejor=mejor.conteo_senales,
-                        conteo_salidas_mejor=mejor.conteo_salidas,
-                        max_archivos=cfg.MAX_ARCHIVOS,
-                    )
 
-                    excel_path = None
-                    if cfg.USAR_EXCEL:
-                        excel_path = generar_excel(run_dir, trials, mejor)
-
-                    html_paths = generar_htmls(
-                        run_dir=run_dir,
-                        df=ctx.df_tf,
-                        df_exec=_df_para_reporte(ctx, salida),
-                        df_indicadores=ctx.df_tf,
-                        trials=trials,
-                        estrategia=estrategia,
-                        max_plots=cfg.MAX_PLOTS,
-                        grafica_rango=cfg.GRAFICA_RANGO,
-                        grafica_desde=cfg.GRAFICA_DESDE,
-                        grafica_hasta=cfg.GRAFICA_HASTA,
-                    )
-                    informe_path = generar_informe(
-                        run_dir=run_dir,
-                        trials=trials,
-                        estrategia=estrategia,
-                        activo=activo,
-                        timeframe=timeframe,
-                        salida_tipo=salida.tipo,
-                    )
-
-                    _imprimir_resumen_run(mejor, run_dir, excel_path, html_paths, informe_path)
-                    total_runs += 1
-                    del trials, mejor, run_dir, excel_path, html_paths, informe_path
-                    gc.collect()
+                        _imprimir_resumen_run(mejor, run_dir, excel_path, html_paths, informe_path)
+                        total_runs += 1
+                        del trials, mejor, run_dir, excel_path, html_paths, informe_path
+                        gc.collect()
+                finally:
+                    estrategia.desvincular()
 
             del df_tf, ctx
             gc.collect()
@@ -186,10 +207,10 @@ def main() -> None:
 
     if total_runs != combinaciones_esperadas:
         raise ValueError(
-            f"[FASE 7] Runs ejecutados incorrectos: {total_runs} != {combinaciones_esperadas}."
+            f"[RUN] Runs ejecutados incorrectos: {total_runs} != {combinaciones_esperadas}."
         )
 
-    print(f"[OK] Fase 7 completada. Combinaciones verificadas: {total_runs}")
+    print(f"[OK] Backtest completado. Combinaciones verificadas: {total_runs}")
 
 
 def _optimizar_combinacion(
@@ -209,18 +230,19 @@ def _optimizar_combinacion(
     resultados: list[TrialResultado] = []
     lock = Lock()
 
+    # Estrategia ya vinculada por main() a los buffers TF y al cache.
+
     def objective(trial: optuna.Trial) -> float:
         params_estrategia = estrategia.espacio_busqueda(trial)
         salida_trial, params_salida = _salida_para_trial(salida_base, trial)
         parametros = {**params_estrategia, **params_salida}
 
-        senales_tf = getattr(estrategia, "generar_señales")(ctx.df_tf, params_estrategia)
+        senales_tf = estrategia.generar_señales(ctx.df_tf, params_estrategia)
         conteo = integridad.verificar_senales(ctx.df_tf, senales_tf)
-        salidas_custom = _generar_salidas_custom(
-            estrategia=estrategia,
-            df_tf=ctx.df_tf,
-            params_estrategia=params_estrategia,
-            salida=salida_trial,
+        salidas_custom = (
+            estrategia.generar_salidas(ctx.df_tf, params_estrategia)
+            if salida_trial.tipo == "CUSTOM"
+            else None
         )
         conteo_salidas = (
             integridad.verificar_salidas_custom(ctx.df_tf, salidas_custom)
@@ -228,33 +250,26 @@ def _optimizar_combinacion(
             else None
         )
 
-        arrays_exec, df_exec, cache_exec, senales_exec, salidas_exec = _preparar_ejecucion(
+        arrays_exec, senales_exec, salidas_exec = _preparar_ejecucion(
             ctx=ctx,
             salida=salida_trial,
             senales_tf=senales_tf,
             salidas_custom=salidas_custom,
         )
-        integridad.verificar_senales(df_exec, senales_exec)
         timeframe_ejecucion = _timeframe_ejecucion(
             ctx=ctx,
             salida=salida_trial,
             timeframe=timeframe,
             timeframe_base=timeframe_base,
         )
-        resultado = simular(
+
+        metricas_obj = simular_metricas(
             arrays_exec,
             senales_exec,
             sim_cfg=_sim_config(salida_trial),
             salidas_custom=salidas_exec,
         )
-        integridad.verificar_resultado(
-            df_exec,
-            senales_exec,
-            resultado,
-            salidas_exec,
-            _cache=cache_exec,
-        )
-        metricas = calcular_metricas(resultado, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
+        metricas = calcular_metricas(metricas_obj, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
         score = calcular_score(metricas)
         trial.set_user_attr("metricas", metricas)
         trial.set_user_attr("conteo_senales", conteo)
@@ -269,7 +284,6 @@ def _optimizar_combinacion(
             estrategia_nombre=estrategia.NOMBRE,
             salida=salida_trial,
             parametros=parametros,
-            resultado=resultado,
             score=float(score),
             metricas=metricas,
             conteo_senales=conteo,
@@ -302,7 +316,84 @@ def _optimizar_combinacion(
         )
 
     _verificar_mejor_de_study(study, resultados)
+
+    # Replay determinista de los top-N para alimentar reportes (CSV / Excel / HTML).
+    # El resto de trials sigue sin trades en memoria.
+    n_replay = max(MAX_DETALLES_EXCEL, int(cfg.MAX_PLOTS), 1)
+    top = sorted(resultados, key=lambda t: t.score, reverse=True)[:n_replay]
+    for trial_res in top:
+        _replay_trial(
+            trial_res=trial_res,
+            ctx=ctx,
+            estrategia=estrategia,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+        )
+
     return resultados
+
+
+def _replay_trial(
+    *,
+    trial_res: TrialResultado,
+    ctx: ContextoCombinacion,
+    estrategia,
+    fecha_inicio: date,
+    fecha_fin: date,
+) -> None:
+    """Reconstruye trades + equity_curve para un trial que va a generar reporte.
+
+    Verifica que los escalares clave (saldo_final, total_trades) coinciden
+    con los registrados durante la fase Optuna — garantía de determinismo.
+    """
+    salida = trial_res.salida
+    params_estrategia = {
+        k: v for k, v in trial_res.parametros.items()
+        if not k.startswith("exit_")
+    }
+    senales_tf = estrategia.generar_señales(ctx.df_tf, params_estrategia)
+    salidas_custom = (
+        estrategia.generar_salidas(ctx.df_tf, params_estrategia)
+        if salida.tipo == "CUSTOM"
+        else None
+    )
+    arrays_exec, senales_exec, salidas_exec = _preparar_ejecucion(
+        ctx=ctx,
+        salida=salida,
+        senales_tf=senales_tf,
+        salidas_custom=salidas_custom,
+    )
+    sim_result = simular_full(
+        arrays_exec,
+        senales_exec,
+        sim_cfg=_sim_config(salida),
+        salidas_custom=salidas_exec,
+    )
+    metricas_obj = sim_result.metricas
+    trades = sim_result.take_trades()  # consume el SimResult, libera RAM Rust
+    equity_curve = trades.pop("equity_curve")
+
+    # Verificación de determinismo y de integridad columnar.
+    if int(metricas_obj.total_trades) != int(trial_res.metricas["total_trades"]):
+        raise RuntimeError(
+            f"[REPLAY] total_trades difiere entre Optuna y replay: "
+            f"{trial_res.metricas['total_trades']} vs {metricas_obj.total_trades}."
+        )
+    if abs(float(metricas_obj.saldo_final) - float(trial_res.metricas["saldo_final"])) > 1e-6:
+        raise RuntimeError("[REPLAY] saldo_final difiere entre Optuna y replay.")
+
+    # Para la verificación, las señales deben venir como ndarray del mismo
+    # buffer que se pasó al motor (idéntica fuente de verdad).
+    senales_arr = senales_exec.to_numpy() if hasattr(senales_exec, "to_numpy") else senales_exec
+    integridad.verificar_resultado(
+        arrays_exec, senales_arr, trades, equity_curve, metricas_obj,
+    )
+
+    trial_res.replay = ReplayTrial(
+        metricas_obj=metricas_obj,
+        trades=trades,
+        equity_curve=equity_curve,
+    )
 
 
 def _preparar_ejecucion(
@@ -311,16 +402,16 @@ def _preparar_ejecucion(
     salida: ExitConfig,
     senales_tf,
     salidas_custom,
-):
+) -> tuple[ArraysMotor, Any, Any]:
     if salida.tipo == "CUSTOM" or ctx.es_min_tf:
-        return ctx.arrays_tf, ctx.df_tf, ctx.cache_tf, senales_tf, salidas_custom
+        return ctx.arrays_tf, senales_tf, salidas_custom
 
     senales_base = proyectar_senales_a_base(
         senales_tf,
         ctx.tf_to_base_idx,
         ctx.df_base.height,
     )
-    return ctx.arrays_base, ctx.df_base, ctx.cache_base, senales_base, None
+    return ctx.arrays_base, senales_base, None
 
 
 def _df_para_reporte(ctx: ContextoCombinacion, salida: ExitConfig):
@@ -384,18 +475,6 @@ def _salida_para_trial(salida: ExitConfig, trial: optuna.Trial) -> tuple[ExitCon
         )
 
     raise ValueError(f"Salida no soportada para Optuna: {salida.tipo}")
-
-
-def _generar_salidas_custom(
-    *,
-    estrategia,
-    df_tf,
-    params_estrategia: dict,
-    salida: ExitConfig,
-):
-    if salida.tipo != "CUSTOM":
-        return None
-    return getattr(estrategia, "generar_salidas")(df_tf, params_estrategia)
 
 
 def _params_para_monitor(parametros: dict, salida: ExitConfig) -> dict:

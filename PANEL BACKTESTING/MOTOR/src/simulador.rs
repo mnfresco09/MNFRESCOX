@@ -1,76 +1,288 @@
 // ---------------------------------------------------------------------------
-// simulador.rs — Loop principal vela a vela
+// simulador.rs — Loop principal vela a vela (SoA + acumuladores)
 //
-// REGLA CRÍTICA: la entrada ocurre SIEMPRE en el open de la vela N+1,
-// nunca en la vela de la señal. El sistema lo garantiza por construcción.
+// REGLA CRÍTICA: la entrada ocurre SIEMPRE en el open de la vela N+1.
+//
+// Diseño de memoria:
+//   - Las velas se procesan vía VelasSoA (slices del buffer numpy de Python).
+//     No hay copia ni Vec<Vela>: cada acceso es a la columna directamente,
+//     amigable para el cache.
+//   - Métricas (max DD, profit factor, sharpe, expectancy, conteos…) se
+//     acumulan al vuelo dentro del loop. No requieren almacenar trades.
+//   - El modo "full" recibe un callback `on_trade` que decide si materializa
+//     las columnas de cada trade. En modo "slim" el callback es no-op.
 // ---------------------------------------------------------------------------
 
 use crate::capital;
-use crate::tipos::{Direccion, ExitType, SimConfig, SimResult, TradeResult, Vela};
+use crate::tipos::{
+    motivo, Direccion, ExitType, Metricas, SimConfig, SimResultFull, VelasSoA,
+};
 
-/// Estado interno de un trade abierto. No se expone a Python.
 struct TradeAbierto {
-    idx_señal: usize,
+    idx_senal: usize,
     idx_entrada: usize,
     direccion: Direccion,
     precio_entrada: f64,
     colateral: f64,
-    tamaño_posicion: f64,
+    tamano_posicion: f64,
     comision_total: f64,
     precio_sl: f64,
-    precio_tp: f64,    // 0.0 si no aplica (BARS/CUSTOM sin TP)
-    max_velas: usize,  // 0 si no aplica (FIXED/CUSTOM)
-    usar_custom: bool, // true si la estrategia decide el cierre
+    precio_tp: f64,
+    max_velas: usize,
+    usar_custom: bool,
 }
 
-struct CierreTrade {
-    idx_salida: usize,
-    precio_salida: f64,
-    motivo: String,
+#[derive(Clone, Copy)]
+pub struct TradeEvent {
+    pub idx_senal: usize,
+    pub idx_entrada: usize,
+    pub idx_salida: usize,
+    pub ts_senal: i64,
+    pub ts_entrada: i64,
+    pub ts_salida: i64,
+    pub direccion: Direccion,
+    pub precio_entrada: f64,
+    pub precio_salida: f64,
+    pub colateral: f64,
+    pub tamano_posicion: f64,
+    pub comision_total: f64,
+    pub pnl: f64,
+    pub roi: f64,
+    pub saldo_post: f64,
+    pub motivo: u8,
+    pub duracion_velas: usize,
 }
 
-/// Ejecuta la simulación completa vela a vela.
-///
-/// Recibe las velas OHLCV, las señales generadas por la estrategia y la config.
-/// Devuelve un SimResult con todos los datos base de la simulación.
-pub fn simular(
-    velas: &[Vela],
-    señales: &[i8],
+struct Acumuladores {
+    saldo_inicial: f64,
+    saldo: f64,
+    pnl_total: f64,
+    pnl_bruto_total: f64,
+    sum_retornos: f64,
+    sum_retornos_sq: f64,
+    sum_dur_us: i128,
+    sum_dur_velas: u128,
+    total_trades: u64,
+    trades_long: u64,
+    trades_short: u64,
+    trades_ganadores: u64,
+    trades_perdedores: u64,
+    trades_neutros: u64,
+    ganancias: f64,
+    perdidas: f64,
+    parado_por_saldo: bool,
+    max_equity: f64,
+    max_dd: f64,
+}
+
+impl Acumuladores {
+    fn nuevo(saldo_inicial: f64) -> Self {
+        Acumuladores {
+            saldo_inicial,
+            saldo: saldo_inicial,
+            pnl_total: 0.0,
+            pnl_bruto_total: 0.0,
+            sum_retornos: 0.0,
+            sum_retornos_sq: 0.0,
+            sum_dur_us: 0,
+            sum_dur_velas: 0,
+            total_trades: 0,
+            trades_long: 0,
+            trades_short: 0,
+            trades_ganadores: 0,
+            trades_perdedores: 0,
+            trades_neutros: 0,
+            ganancias: 0.0,
+            perdidas: 0.0,
+            parado_por_saldo: false,
+            max_equity: saldo_inicial,
+            max_dd: 0.0,
+        }
+    }
+
+    fn registrar(&mut self, ev: &TradeEvent) {
+        self.total_trades += 1;
+        match ev.direccion {
+            Direccion::Long => self.trades_long += 1,
+            Direccion::Short => self.trades_short += 1,
+        }
+        if ev.pnl > 0.0 {
+            self.trades_ganadores += 1;
+            self.ganancias += ev.pnl;
+        } else if ev.pnl < 0.0 {
+            self.trades_perdedores += 1;
+            self.perdidas += -ev.pnl;
+        } else {
+            self.trades_neutros += 1;
+        }
+        self.pnl_total += ev.pnl;
+        self.pnl_bruto_total += ev.pnl + ev.comision_total;
+        self.sum_retornos += ev.roi;
+        self.sum_retornos_sq += ev.roi * ev.roi;
+        self.sum_dur_us += (ev.ts_salida as i128) - (ev.ts_entrada as i128);
+        self.sum_dur_velas += ev.duracion_velas as u128;
+        self.saldo = ev.saldo_post;
+        if self.saldo > self.max_equity {
+            self.max_equity = self.saldo;
+        }
+        if self.max_equity > 0.0 {
+            let dd = (self.max_equity - self.saldo) / self.max_equity;
+            if dd > self.max_dd {
+                self.max_dd = dd;
+            }
+        }
+    }
+
+    fn finalizar(self) -> Metricas {
+        let n = self.total_trades;
+        if n == 0 {
+            let mut m = Metricas::vacia(self.saldo_inicial);
+            m.parado_por_saldo = self.parado_por_saldo;
+            return m;
+        }
+        let nf = n as f64;
+        let win_rate = self.trades_ganadores as f64 / nf;
+        let pnl_promedio = self.pnl_total / nf;
+        let expectancy = self.sum_retornos / nf;
+        let roi_total = if self.saldo_inicial != 0.0 {
+            self.pnl_total / self.saldo_inicial
+        } else {
+            0.0
+        };
+        let profit_factor = if self.perdidas == 0.0 {
+            if self.ganancias > 0.0 {
+                f64::INFINITY
+            } else {
+                0.0
+            }
+        } else {
+            self.ganancias / self.perdidas
+        };
+        let sharpe_ratio = if n >= 2 {
+            let media = self.sum_retornos / nf;
+            // Varianza muestral: SUM(r^2)/n - media^2 daría poblacional;
+            // ajustamos a (n-1) para coincidir con el cálculo previo Python.
+            let var_pop = self.sum_retornos_sq / nf - media * media;
+            let var_muestral = var_pop * nf / (nf - 1.0);
+            let desviacion = if var_muestral > 0.0 {
+                var_muestral.sqrt()
+            } else {
+                0.0
+            };
+            if desviacion > 0.0 {
+                media / desviacion
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+        let duracion_media_seg = (self.sum_dur_us as f64 / nf) / 1_000_000.0;
+        let duracion_media_velas = self.sum_dur_velas as f64 / nf;
+
+        Metricas {
+            saldo_inicial: self.saldo_inicial,
+            saldo_final: self.saldo,
+            total_trades: n,
+            trades_long: self.trades_long,
+            trades_short: self.trades_short,
+            trades_ganadores: self.trades_ganadores,
+            trades_perdedores: self.trades_perdedores,
+            trades_neutros: self.trades_neutros,
+            win_rate,
+            roi_total,
+            expectancy,
+            pnl_bruto_total: self.pnl_bruto_total,
+            pnl_total: self.pnl_total,
+            pnl_promedio,
+            max_drawdown: self.max_dd,
+            profit_factor,
+            sharpe_ratio,
+            duracion_media_seg,
+            duracion_media_velas,
+            parado_por_saldo: self.parado_por_saldo,
+        }
+    }
+}
+
+/// Versión "slim": sólo devuelve métricas. Usada por Optuna en cada trial.
+pub fn simular_metricas(
+    velas: VelasSoA,
+    senales: &[i8],
     salidas_custom: &[i8],
     config: &SimConfig,
-) -> SimResult {
-    let n = velas.len();
-    assert_eq!(
-        n,
-        señales.len(),
-        "El número de velas y señales debe coincidir"
-    );
-    assert_eq!(
-        n,
-        salidas_custom.len(),
-        "El número de velas y salidas custom debe coincidir"
-    );
+) -> Metricas {
+    let mut acc = Acumuladores::nuevo(config.saldo_inicial);
+    simular_core(velas, senales, salidas_custom, config, &mut acc, |_| {});
+    acc.finalizar()
+}
 
-    let mut saldo = config.saldo_inicial;
-    let mut trades: Vec<TradeResult> = Vec::new();
-    let mut equity_curve: Vec<f64> = vec![saldo];
+/// Versión "full": métricas + columnas de trades + curva de equity.
+/// Sólo se usa en el replay de los top-N trials para alimentar reportes.
+pub fn simular_full(
+    velas: VelasSoA,
+    senales: &[i8],
+    salidas_custom: &[i8],
+    config: &SimConfig,
+) -> SimResultFull {
+    let mut acc = Acumuladores::nuevo(config.saldo_inicial);
+    let mut full = SimResultFull::vacio(config.saldo_inicial);
+    // Estimación grosera: como mucho un trade cada 2 velas.
+    full.reservar((velas.len() / 2).max(64));
+
+    simular_core(velas, senales, salidas_custom, config, &mut acc, |ev| {
+        full.idx_senal.push(ev.idx_senal as u64);
+        full.idx_entrada.push(ev.idx_entrada as u64);
+        full.idx_salida.push(ev.idx_salida as u64);
+        full.ts_senal.push(ev.ts_senal);
+        full.ts_entrada.push(ev.ts_entrada);
+        full.ts_salida.push(ev.ts_salida);
+        full.direccion.push(ev.direccion.as_i8());
+        full.precio_entrada.push(ev.precio_entrada);
+        full.precio_salida.push(ev.precio_salida);
+        full.colateral.push(ev.colateral);
+        full.tamano_posicion.push(ev.tamano_posicion);
+        full.comision_total.push(ev.comision_total);
+        full.pnl.push(ev.pnl);
+        full.roi.push(ev.roi);
+        full.saldo_post.push(ev.saldo_post);
+        full.motivo_salida.push(ev.motivo);
+        full.duracion_velas.push(ev.duracion_velas as u64);
+        full.equity_curve.push(ev.saldo_post);
+    });
+
+    full.metricas = acc.finalizar();
+    full
+}
+
+fn simular_core<F>(
+    velas: VelasSoA,
+    senales: &[i8],
+    salidas_custom: &[i8],
+    config: &SimConfig,
+    acc: &mut Acumuladores,
+    mut on_trade: F,
+) where
+    F: FnMut(TradeEvent),
+{
+    let n = velas.len();
+    debug_assert_eq!(n, senales.len(), "velas y senales deben coincidir");
+    debug_assert_eq!(n, salidas_custom.len(), "velas y salidas_custom deben coincidir");
+
     let mut trade_abierto: Option<TradeAbierto> = None;
-    let mut parado_por_saldo = false;
-    let mut señal_pendiente: Option<(usize, Direccion)> = None;
+    let mut senal_pendiente: Option<(usize, Direccion)> = None;
 
     for i in 0..n {
-        // --- 1. ¿Hay que ABRIR un trade en esta vela? (señal de la vela anterior) ---
-        if let Some((idx_señal, direccion)) = señal_pendiente.take() {
+        // 1. ABRIR
+        if let Some((idx_senal, direccion)) = senal_pendiente.take() {
             if trade_abierto.is_none() {
-                // Verificar saldo suficiente
-                if saldo < config.saldo_minimo || saldo < config.saldo_por_trade {
-                    parado_por_saldo = true;
+                if acc.saldo < config.saldo_minimo || acc.saldo < config.saldo_por_trade {
+                    acc.parado_por_saldo = true;
                     break;
                 }
-
-                let precio_entrada = velas[i].open;
+                let precio_entrada = velas.opens[i];
                 let colateral = config.saldo_por_trade;
-                let tamaño = capital::calcular_tamaño_posicion(
+                let tamano = capital::calcular_tamano_posicion(
                     colateral,
                     config.apalancamiento,
                     precio_entrada,
@@ -81,8 +293,6 @@ pub fn simular(
                     config.comision_pct,
                     config.comision_lados,
                 );
-
-                // Calcular niveles de SL y TP
                 let precio_sl = if config.exit_sl_pct > 0.0 {
                     capital::calcular_precio_sl(
                         direccion,
@@ -93,7 +303,6 @@ pub fn simular(
                 } else {
                     0.0
                 };
-
                 let precio_tp = if config.exit_type == ExitType::Fixed && config.exit_tp_pct > 0.0 {
                     capital::calcular_precio_tp(
                         direccion,
@@ -104,7 +313,6 @@ pub fn simular(
                 } else {
                     0.0
                 };
-
                 let max_velas = if config.exit_type == ExitType::Bars {
                     config.exit_velas
                 } else {
@@ -113,12 +321,12 @@ pub fn simular(
                 let usar_custom = config.exit_type == ExitType::Custom;
 
                 trade_abierto = Some(TradeAbierto {
-                    idx_señal,
+                    idx_senal,
                     idx_entrada: i,
                     direccion,
                     precio_entrada,
                     colateral,
-                    tamaño_posicion: tamaño,
+                    tamano_posicion: tamano,
                     comision_total: comision,
                     precio_sl,
                     precio_tp,
@@ -128,193 +336,151 @@ pub fn simular(
             }
         }
 
-        // --- 2. ¿Hay que CERRAR el trade abierto? ---
+        // 2. CERRAR (si aplica)
         if let Some(ref trade) = trade_abierto {
-            let vela = &velas[i];
             let velas_transcurridas = i - trade.idx_entrada + 1;
-
-            if let Some((precio_salida, motivo)) =
-                evaluar_salida(trade, vela, velas_transcurridas, salidas_custom[i])
-            {
-                saldo = cerrar_trade(
-                    trade,
-                    velas,
-                    CierreTrade {
-                        idx_salida: i,
-                        precio_salida,
-                        motivo,
-                    },
-                    saldo,
-                    &mut trades,
-                    &mut equity_curve,
-                );
+            if let Some((precio_salida, motivo)) = evaluar_salida(
+                trade,
+                velas.opens[i],
+                velas.highs[i],
+                velas.lows[i],
+                velas.closes[i],
+                velas_transcurridas,
+                salidas_custom[i],
+            ) {
+                let ev = construir_evento(trade, &velas, i, precio_salida, motivo, acc.saldo);
+                acc.registrar(&ev);
+                on_trade(ev);
                 trade_abierto = None;
-
-                // Verificar saldo después del cierre
-                if saldo < config.saldo_minimo {
-                    parado_por_saldo = true;
+                if acc.saldo < config.saldo_minimo {
+                    acc.parado_por_saldo = true;
                     break;
                 }
             }
         }
 
-        // --- 3. ¿Hay señal nueva en esta vela? (se ejecutará en la siguiente) ---
-        if trade_abierto.is_none() && señales[i] != 0 {
-            if let Ok(direccion) = Direccion::from_signal(señales[i]) {
-                señal_pendiente = Some((i, direccion));
+        // 3. NUEVA SEÑAL (se ejecuta en la siguiente vela)
+        if trade_abierto.is_none() && senales[i] != 0 {
+            if let Ok(direccion) = Direccion::from_signal(senales[i]) {
+                senal_pendiente = Some((i, direccion));
             }
         }
     }
 
-    // Si el histórico termina con una posición abierta, se liquida al close
-    // de la última vela para que el resultado refleje todo el riesgo tomado.
-    if let Some(ref trade) = trade_abierto {
+    // Liquidación al close de la última vela si quedó posición abierta.
+    if let Some(trade) = trade_abierto.take() {
         let idx_salida = n - 1;
         let velas_transcurridas = idx_salida - trade.idx_entrada + 1;
         if velas_transcurridas > 0 {
-            saldo = cerrar_trade(
-                trade,
-                velas,
-                CierreTrade {
-                    idx_salida,
-                    precio_salida: velas[idx_salida].close,
-                    motivo: "END".to_string(),
-                },
-                saldo,
-                &mut trades,
-                &mut equity_curve,
+            let ev = construir_evento(
+                &trade,
+                &velas,
+                idx_salida,
+                velas.closes[idx_salida],
+                motivo::END,
+                acc.saldo,
             );
+            acc.registrar(&ev);
+            on_trade(ev);
         }
-    }
-
-    SimResult {
-        trades,
-        saldo_final: saldo,
-        saldo_inicial: config.saldo_inicial,
-        equity_curve,
-        parado_por_saldo,
     }
 }
 
-fn cerrar_trade(
+fn construir_evento(
     trade: &TradeAbierto,
-    velas: &[Vela],
-    cierre: CierreTrade,
+    velas: &VelasSoA,
+    idx_salida: usize,
+    precio_salida: f64,
+    motivo: u8,
     saldo_previo: f64,
-    trades: &mut Vec<TradeResult>,
-    equity_curve: &mut Vec<f64>,
-) -> f64 {
+) -> TradeEvent {
     let pnl_bruto = capital::calcular_pnl_bruto(
         trade.direccion,
-        trade.tamaño_posicion,
+        trade.tamano_posicion,
         trade.precio_entrada,
-        cierre.precio_salida,
+        precio_salida,
     );
     let pnl_neto = pnl_bruto - trade.comision_total;
     let saldo_post = saldo_previo + pnl_neto;
-    let roi = pnl_neto / trade.colateral;
-    let direccion = match trade.direccion {
-        Direccion::Long => 1i8,
-        Direccion::Short => -1i8,
+    let roi = if trade.colateral != 0.0 {
+        pnl_neto / trade.colateral
+    } else {
+        0.0
     };
-
-    trades.push(TradeResult {
-        idx_señal: trade.idx_señal,
+    TradeEvent {
+        idx_senal: trade.idx_senal,
         idx_entrada: trade.idx_entrada,
-        idx_salida: cierre.idx_salida,
-        ts_señal: velas[trade.idx_señal].timestamp,
-        ts_entrada: velas[trade.idx_entrada].timestamp,
-        ts_salida: velas[cierre.idx_salida].timestamp,
-        direccion,
+        idx_salida,
+        ts_senal: velas.timestamps[trade.idx_senal],
+        ts_entrada: velas.timestamps[trade.idx_entrada],
+        ts_salida: velas.timestamps[idx_salida],
+        direccion: trade.direccion,
         precio_entrada: trade.precio_entrada,
-        precio_salida: cierre.precio_salida,
+        precio_salida,
         colateral: trade.colateral,
-        tamaño_posicion: trade.tamaño_posicion,
+        tamano_posicion: trade.tamano_posicion,
         comision_total: trade.comision_total,
         pnl: pnl_neto,
         roi,
         saldo_post,
-        motivo_salida: cierre.motivo,
-        duracion_velas: cierre.idx_salida - trade.idx_entrada + 1,
-    });
-    equity_curve.push(saldo_post);
-
-    saldo_post
+        motivo,
+        duracion_velas: idx_salida - trade.idx_entrada + 1,
+    }
 }
 
-/// Evalúa si el trade debe cerrarse en esta vela.
-/// Devuelve Some((precio_salida, motivo)) si debe cerrarse, None si sigue abierto.
-///
-/// Orden de prioridad dentro de la misma vela:
-///   1. Stop Loss (usa precio worst-case: low para LONG, high para SHORT)
-///   2. Salida CUSTOM de la estrategia -> cierra al close de la vela
-///   3. Take Profit (usa precio best-case: high para LONG, low para SHORT)
-///   4. Máximo de velas (BARS) → cierra al close de la vela
+#[inline]
 fn evaluar_salida(
     trade: &TradeAbierto,
-    vela: &Vela,
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
     velas_transcurridas: usize,
     salida_custom: i8,
-) -> Option<(f64, String)> {
-    // --- Stop Loss ---
+) -> Option<(f64, u8)> {
+    // 1. Stop Loss (peor caso dentro de la vela)
     if trade.precio_sl > 0.0 {
         match trade.direccion {
-            Direccion::Long if vela.low <= trade.precio_sl => {
-                let precio = if vela.open < trade.precio_sl {
-                    vela.open
-                } else {
-                    trade.precio_sl
-                };
-                return Some((precio, "SL".to_string()));
+            Direccion::Long if low <= trade.precio_sl => {
+                let precio = if open < trade.precio_sl { open } else { trade.precio_sl };
+                return Some((precio, motivo::SL));
             }
-            Direccion::Short if vela.high >= trade.precio_sl => {
-                let precio = if vela.open > trade.precio_sl {
-                    vela.open
-                } else {
-                    trade.precio_sl
-                };
-                return Some((precio, "SL".to_string()));
+            Direccion::Short if high >= trade.precio_sl => {
+                let precio = if open > trade.precio_sl { open } else { trade.precio_sl };
+                return Some((precio, motivo::SL));
             }
             _ => {}
         }
     }
 
-    // --- Salida CUSTOM ---
+    // 2. Salida CUSTOM (al close)
     if trade.usar_custom {
         match (trade.direccion, salida_custom) {
             (Direccion::Long, 1) | (Direccion::Short, -1) => {
-                return Some((vela.close, "CUSTOM".to_string()));
+                return Some((close, motivo::CUSTOM));
             }
             _ => {}
         }
     }
 
-    // --- Take Profit ---
+    // 3. Take Profit (mejor caso dentro de la vela)
     if trade.precio_tp > 0.0 {
         match trade.direccion {
-            Direccion::Long if vela.high >= trade.precio_tp => {
-                let precio = if vela.open > trade.precio_tp {
-                    vela.open
-                } else {
-                    trade.precio_tp
-                };
-                return Some((precio, "TP".to_string()));
+            Direccion::Long if high >= trade.precio_tp => {
+                let precio = if open > trade.precio_tp { open } else { trade.precio_tp };
+                return Some((precio, motivo::TP));
             }
-            Direccion::Short if vela.low <= trade.precio_tp => {
-                let precio = if vela.open < trade.precio_tp {
-                    vela.open
-                } else {
-                    trade.precio_tp
-                };
-                return Some((precio, "TP".to_string()));
+            Direccion::Short if low <= trade.precio_tp => {
+                let precio = if open < trade.precio_tp { open } else { trade.precio_tp };
+                return Some((precio, motivo::TP));
             }
             _ => {}
         }
     }
 
-    // --- Máximo de velas (BARS) ---
+    // 4. Máximo de velas (BARS)
     if trade.max_velas > 0 && velas_transcurridas >= trade.max_velas {
-        return Some((vela.close, "BARS".to_string()));
+        return Some((close, motivo::BARS));
     }
 
     None
@@ -324,7 +490,7 @@ fn evaluar_salida(
 mod tests {
     use super::*;
 
-    fn config_fixed() -> SimConfig {
+    fn cfg_fixed() -> SimConfig {
         SimConfig {
             saldo_inicial: 10_000.0,
             saldo_por_trade: 500.0,
@@ -339,170 +505,137 @@ mod tests {
         }
     }
 
-    fn config_custom() -> SimConfig {
-        let mut cfg = config_fixed();
-        cfg.exit_type = ExitType::Custom;
-        cfg.exit_tp_pct = 0.0;
-        cfg.exit_velas = 0;
-        cfg
+    fn cfg_custom() -> SimConfig {
+        let mut c = cfg_fixed();
+        c.exit_type = ExitType::Custom;
+        c.exit_tp_pct = 0.0;
+        c.exit_velas = 0;
+        c
     }
 
-    fn vela(ts: i64, o: f64, h: f64, l: f64, c: f64) -> Vela {
-        Vela {
-            timestamp: ts,
-            open: o,
-            high: h,
-            low: l,
-            close: c,
-            volume: 100.0,
+    fn build_soa<'a>(
+        ts: &'a [i64],
+        o: &'a [f64],
+        h: &'a [f64],
+        l: &'a [f64],
+        c: &'a [f64],
+    ) -> VelasSoA<'a> {
+        VelasSoA {
+            timestamps: ts,
+            opens: o,
+            highs: h,
+            lows: l,
+            closes: c,
         }
-    }
-
-    fn sin_salidas(n: usize) -> Vec<i8> {
-        vec![0; n]
     }
 
     #[test]
     fn test_entrada_en_vela_siguiente() {
-        // Señal en vela 0, entrada debe ser en vela 1 al open
-        let velas = vec![
-            vela(1, 100.0, 105.0, 95.0, 102.0),  // señal aquí
-            vela(2, 103.0, 110.0, 100.0, 108.0), // entrada aquí
-            vela(3, 108.0, 200.0, 100.0, 150.0), // TP aquí
-        ];
-        let señales = vec![1, 0, 0];
-        let salidas = sin_salidas(velas.len());
-        let cfg = config_fixed();
-        let result = simular(&velas, &señales, &salidas, &cfg);
-
-        assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].idx_señal, 0);
-        assert_eq!(result.trades[0].idx_entrada, 1);
-        assert!((result.trades[0].precio_entrada - 103.0).abs() < 1e-10);
+        let ts = [1, 2, 3];
+        let o = [100.0, 103.0, 108.0];
+        let h = [105.0, 110.0, 200.0];
+        let l = [95.0, 100.0, 100.0];
+        let c = [102.0, 108.0, 150.0];
+        let velas = build_soa(&ts, &o, &h, &l, &c);
+        let senales = [1i8, 0, 0];
+        let salidas = [0i8, 0, 0];
+        let r = simular_full(velas, &senales, &salidas, &cfg_fixed());
+        assert_eq!(r.metricas.total_trades, 1);
+        assert_eq!(r.idx_senal[0], 0);
+        assert_eq!(r.idx_entrada[0], 1);
+        assert!((r.precio_entrada[0] - 103.0).abs() < 1e-10);
     }
 
     #[test]
-    fn test_señales_ignoradas_con_trade_abierto() {
-        // Señal en vela 0, otra señal en vela 2 (debe ignorarse)
-        let velas = vec![
-            vela(1, 100.0, 105.0, 95.0, 102.0),
-            vela(2, 103.0, 105.0, 101.0, 104.0),
-            vela(3, 104.0, 106.0, 103.0, 105.0), // señal aquí, ignorada
-            vela(4, 105.0, 200.0, 100.0, 150.0), // TP aquí
-        ];
-        let señales = vec![1, 0, -1, 0];
-        let salidas = sin_salidas(velas.len());
-        let cfg = config_fixed();
-        let result = simular(&velas, &señales, &salidas, &cfg);
-
-        // Solo un trade, la señal SHORT fue ignorada
-        assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].direccion, 1); // LONG
+    fn test_senales_ignoradas_con_trade_abierto() {
+        let ts = [1, 2, 3, 4];
+        let o = [100.0, 103.0, 104.0, 105.0];
+        let h = [105.0, 105.0, 106.0, 200.0];
+        let l = [95.0, 101.0, 103.0, 100.0];
+        let c = [102.0, 104.0, 105.0, 150.0];
+        let velas = build_soa(&ts, &o, &h, &l, &c);
+        let senales = [1i8, 0, -1, 0];
+        let salidas = [0i8, 0, 0, 0];
+        let r = simular_full(velas, &senales, &salidas, &cfg_fixed());
+        assert_eq!(r.metricas.total_trades, 1);
+        assert_eq!(r.direccion[0], 1);
     }
 
     #[test]
     fn test_cierra_trade_abierto_al_final() {
-        let velas = vec![
-            vela(1, 100.0, 101.0, 99.0, 100.0),
-            vela(2, 100.0, 101.0, 99.0, 100.5),
-            vela(3, 101.0, 102.0, 100.0, 101.5),
-        ];
-        let señales = vec![1, 0, 0];
-        let salidas = sin_salidas(velas.len());
-        let result = simular(&velas, &señales, &salidas, &config_fixed());
-
-        assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].idx_salida, 2);
-        assert_eq!(result.trades[0].motivo_salida, "END");
-        assert!((result.trades[0].precio_salida - 101.5).abs() < 1e-10);
+        let ts = [1, 2, 3];
+        let o = [100.0, 100.0, 101.0];
+        let h = [101.0, 101.0, 102.0];
+        let l = [99.0, 99.0, 100.0];
+        let c = [100.0, 100.5, 101.5];
+        let velas = build_soa(&ts, &o, &h, &l, &c);
+        let r = simular_full(velas, &[1i8, 0, 0], &[0i8, 0, 0], &cfg_fixed());
+        assert_eq!(r.metricas.total_trades, 1);
+        assert_eq!(r.motivo_salida[0], motivo::END);
+        assert!((r.precio_salida[0] - 101.5).abs() < 1e-10);
     }
 
     #[test]
-    fn test_gap_long_ejecuta_sl_en_open_si_salta_el_stop() {
-        let velas = vec![
-            vela(1, 100.0, 101.0, 99.0, 100.0),
-            vela(2, 100.0, 101.0, 99.0, 100.5),
-            vela(3, 95.0, 97.0, 94.0, 96.0),
-        ];
-        let señales = vec![1, 0, 0];
-        let salidas = sin_salidas(velas.len());
-        let result = simular(&velas, &señales, &salidas, &config_fixed());
-
-        assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].motivo_salida, "SL");
-        assert!((result.trades[0].precio_salida - 95.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_gap_short_ejecuta_sl_en_open_si_salta_el_stop() {
-        let velas = vec![
-            vela(1, 100.0, 101.0, 99.0, 100.0),
-            vela(2, 100.0, 101.0, 99.0, 100.5),
-            vela(3, 105.0, 106.0, 104.0, 105.5),
-        ];
-        let señales = vec![-1, 0, 0];
-        let salidas = sin_salidas(velas.len());
-        let result = simular(&velas, &señales, &salidas, &config_fixed());
-
-        assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].motivo_salida, "SL");
-        assert!((result.trades[0].precio_salida - 105.0).abs() < 1e-10);
+    fn test_gap_long_ejecuta_sl_en_open() {
+        let ts = [1, 2, 3];
+        let o = [100.0, 100.0, 95.0];
+        let h = [101.0, 101.0, 97.0];
+        let l = [99.0, 99.0, 94.0];
+        let c = [100.0, 100.5, 96.0];
+        let velas = build_soa(&ts, &o, &h, &l, &c);
+        let r = simular_full(velas, &[1i8, 0, 0], &[0i8, 0, 0], &cfg_fixed());
+        assert_eq!(r.metricas.total_trades, 1);
+        assert_eq!(r.motivo_salida[0], motivo::SL);
+        assert!((r.precio_salida[0] - 95.0).abs() < 1e-10);
     }
 
     #[test]
     fn test_bars_cierra_por_numero_de_velas() {
-        let velas = vec![
-            vela(1, 100.0, 101.0, 99.0, 100.0),
-            vela(2, 100.0, 101.0, 99.0, 100.5),
-            vela(3, 101.0, 102.0, 100.0, 101.5),
-            vela(4, 102.0, 103.0, 101.0, 102.5),
-        ];
-        let señales = vec![1, 0, 0, 0];
-        let salidas = sin_salidas(velas.len());
-        let mut cfg = config_fixed();
+        let ts = [1, 2, 3, 4];
+        let o = [100.0, 100.0, 101.0, 102.0];
+        let h = [101.0, 101.0, 102.0, 103.0];
+        let l = [99.0, 99.0, 100.0, 101.0];
+        let c = [100.0, 100.5, 101.5, 102.5];
+        let velas = build_soa(&ts, &o, &h, &l, &c);
+        let mut cfg = cfg_fixed();
         cfg.exit_type = ExitType::Bars;
         cfg.exit_tp_pct = 0.0;
         cfg.exit_velas = 2;
-
-        let result = simular(&velas, &señales, &salidas, &cfg);
-
-        assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].idx_salida, 2);
-        assert_eq!(result.trades[0].motivo_salida, "BARS");
+        let r = simular_full(velas, &[1i8, 0, 0, 0], &[0i8, 0, 0, 0], &cfg);
+        assert_eq!(r.metricas.total_trades, 1);
+        assert_eq!(r.motivo_salida[0], motivo::BARS);
     }
 
     #[test]
-    fn test_custom_cierra_long_al_close_de_la_vela() {
-        let velas = vec![
-            vela(1, 100.0, 101.0, 99.0, 100.0),
-            vela(2, 100.0, 101.0, 99.0, 100.5),
-            vela(3, 101.0, 102.0, 100.0, 101.5),
-            vela(4, 102.0, 103.0, 101.0, 102.5),
-        ];
-        let señales = vec![1, 0, 0, 0];
-        let salidas = vec![0, 0, 1, 0];
-
-        let result = simular(&velas, &señales, &salidas, &config_custom());
-
-        assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].idx_salida, 2);
-        assert_eq!(result.trades[0].motivo_salida, "CUSTOM");
-        assert!((result.trades[0].precio_salida - 101.5).abs() < 1e-10);
+    fn test_custom_cierra_long_al_close() {
+        let ts = [1, 2, 3, 4];
+        let o = [100.0, 100.0, 101.0, 102.0];
+        let h = [101.0, 101.0, 102.0, 103.0];
+        let l = [99.0, 99.0, 100.0, 101.0];
+        let c = [100.0, 100.5, 101.5, 102.5];
+        let velas = build_soa(&ts, &o, &h, &l, &c);
+        let r = simular_full(velas, &[1i8, 0, 0, 0], &[0i8, 0, 1, 0], &cfg_custom());
+        assert_eq!(r.metricas.total_trades, 1);
+        assert_eq!(r.motivo_salida[0], motivo::CUSTOM);
+        assert!((r.precio_salida[0] - 101.5).abs() < 1e-10);
     }
 
     #[test]
-    fn test_custom_mantiene_prioridad_de_sl() {
-        let velas = vec![
-            vela(1, 100.0, 101.0, 99.0, 100.0),
-            vela(2, 100.0, 101.0, 99.0, 100.5),
-            vela(3, 100.0, 101.0, 95.0, 99.0),
-        ];
-        let señales = vec![1, 0, 0];
-        let salidas = vec![0, 0, 1];
-
-        let result = simular(&velas, &señales, &salidas, &config_custom());
-
-        assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].motivo_salida, "SL");
+    fn test_metricas_slim_y_full_coinciden() {
+        let ts = [1, 2, 3, 4, 5];
+        let o = [100.0, 100.0, 101.0, 102.0, 103.0];
+        let h = [101.0, 101.0, 102.0, 103.0, 104.0];
+        let l = [99.0, 99.0, 100.0, 101.0, 102.0];
+        let c = [100.0, 100.5, 101.5, 102.5, 103.5];
+        let velas = build_soa(&ts, &o, &h, &l, &c);
+        let s = [1i8, 0, 0, 0, 0];
+        let x = [0i8; 5];
+        let m_slim = simular_metricas(velas, &s, &x, &cfg_fixed());
+        let m_full = simular_full(velas, &s, &x, &cfg_fixed()).metricas;
+        assert_eq!(m_slim.total_trades, m_full.total_trades);
+        assert!((m_slim.saldo_final - m_full.saldo_final).abs() < 1e-10);
+        assert!((m_slim.pnl_total - m_full.pnl_total).abs() < 1e-10);
+        assert!((m_slim.max_drawdown - m_full.max_drawdown).abs() < 1e-12);
+        assert!((m_slim.sharpe_ratio - m_full.sharpe_ratio).abs() < 1e-12);
     }
 }

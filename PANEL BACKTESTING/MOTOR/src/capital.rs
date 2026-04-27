@@ -1,15 +1,15 @@
 // ---------------------------------------------------------------------------
-// capital.rs — Gestión de capital, comisiones y apalancamiento
+// capital.rs — Cálculos de capital, comisiones y niveles de salida.
 // ---------------------------------------------------------------------------
 
 use crate::tipos::Direccion;
 
-/// Tamaño de posición = (colateral × apalancamiento) / precio_entrada
-pub fn calcular_tamaño_posicion(colateral: f64, apalancamiento: f64, precio_entrada: f64) -> f64 {
+#[inline]
+pub fn calcular_tamano_posicion(colateral: f64, apalancamiento: f64, precio_entrada: f64) -> f64 {
     (colateral * apalancamiento) / precio_entrada
 }
 
-/// Comisiones totales en USD. Se calcula sobre el valor nocional.
+#[inline]
 pub fn calcular_comision(
     colateral: f64,
     apalancamiento: f64,
@@ -20,20 +20,20 @@ pub fn calcular_comision(
     nocional * comision_pct * comision_lados as f64
 }
 
-/// P&L bruto (antes de comisiones).
+#[inline]
 pub fn calcular_pnl_bruto(
     direccion: Direccion,
-    tamaño_posicion: f64,
+    tamano_posicion: f64,
     precio_entrada: f64,
     precio_salida: f64,
 ) -> f64 {
     match direccion {
-        Direccion::Long => tamaño_posicion * (precio_salida - precio_entrada),
-        Direccion::Short => tamaño_posicion * (precio_entrada - precio_salida),
+        Direccion::Long => tamano_posicion * (precio_salida - precio_entrada),
+        Direccion::Short => tamano_posicion * (precio_entrada - precio_salida),
     }
 }
 
-/// Precio exacto donde se activa el Stop Loss.
+#[inline]
 pub fn calcular_precio_sl(
     direccion: Direccion,
     precio_entrada: f64,
@@ -47,7 +47,7 @@ pub fn calcular_precio_sl(
     }
 }
 
-/// Precio exacto donde se activa el Take Profit.
+#[inline]
 pub fn calcular_precio_tp(
     direccion: Direccion,
     precio_entrada: f64,
@@ -66,8 +66,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tamaño_posicion() {
-        let t = calcular_tamaño_posicion(500.0, 10.0, 50_000.0);
+    fn test_tamano_posicion() {
+        let t = calcular_tamano_posicion(500.0, 10.0, 50_000.0);
         assert!((t - 0.1).abs() < 1e-10);
     }
 

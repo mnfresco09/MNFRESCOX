@@ -1,12 +1,22 @@
+"""Verificaciones de integridad sobre datos, señales y resultados.
+
+`verificar_resultado` opera sobre el dict columnar devuelto por
+`SimResult.take_trades()` (replay). No se invoca en el camino caliente de
+Optuna: el motor Rust acumula métricas internamente y queda auditado por
+sus propios tests; en cada `_optimizar_combinacion` se replican sólo los
+trials que generan reportes y sobre esos sí se hace la verificación
+exhaustiva.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from math import isclose
 
+import numpy as np
 import polars as pl
 
-from NUCLEO.contexto import CacheDF, cachear_df
-
+from MOTOR.wrapper import MOTIVOS
 
 TOL = 1e-7
 
@@ -25,10 +35,8 @@ def huella_dataframe(etapa: str, df: pl.DataFrame) -> HuellaDatos:
         raise ValueError(f"[INTEGRIDAD] {etapa}: DataFrame vacio.")
     if "timestamp" not in df.columns:
         raise ValueError(f"[INTEGRIDAD] {etapa}: falta columna timestamp.")
-
     _verificar_timestamps(etapa, df)
     _verificar_ohlc(etapa, df)
-
     return HuellaDatos(
         etapa=etapa,
         filas=df.height,
@@ -38,24 +46,18 @@ def huella_dataframe(etapa: str, df: pl.DataFrame) -> HuellaDatos:
     )
 
 
-def verificar_resampleo(
-    origen: pl.DataFrame,
-    destino: pl.DataFrame,
-    timeframe: str,
-) -> None:
+def verificar_resampleo(origen: pl.DataFrame, destino: pl.DataFrame, timeframe: str) -> None:
     huella_dataframe(f"resampleo {timeframe}", destino)
-
     if timeframe == "1m":
         if destino.height != origen.height:
-            raise ValueError(
-                "[INTEGRIDAD] Resampleo 1m no debe cambiar el numero de filas."
-            )
+            raise ValueError("[INTEGRIDAD] Resampleo 1m no debe cambiar el numero de filas.")
         if not destino["timestamp"].equals(origen["timestamp"]):
             raise ValueError("[INTEGRIDAD] Resampleo 1m altero timestamps.")
         return
 
     if "volume" in origen.columns and "volume" in destino.columns:
-        vol_origen = float(origen["volume"].sum())
+        origen_cubierto = origen.filter(pl.col("timestamp") <= destino["timestamp"][-1])
+        vol_origen = float(origen_cubierto["volume"].sum())
         vol_destino = float(destino["volume"].sum())
         if not isclose(vol_origen, vol_destino, rel_tol=TOL, abs_tol=TOL):
             raise ValueError(
@@ -69,147 +71,134 @@ def verificar_resampleo(
         raise ValueError("[INTEGRIDAD] Resampleo creo timestamp final posterior al origen.")
 
 
-def verificar_senales(df: pl.DataFrame, senales: pl.Series) -> dict[int, int]:
+def verificar_senales(df: pl.DataFrame, senales) -> dict[int, int]:
+    """Acepta pl.Series o np.ndarray (int8)."""
+    if isinstance(senales, np.ndarray):
+        if senales.shape[0] != df.height:
+            raise ValueError(
+                f"[INTEGRIDAD] Longitud de senales incorrecta: {senales.shape[0]:,} != {df.height:,}."
+            )
+        arr = senales if senales.dtype == np.int8 else senales.astype(np.int8)
+        invalidos = np.unique(arr)
+        invalidos = invalidos[(invalidos != -1) & (invalidos != 0) & (invalidos != 1)]
+        if invalidos.size:
+            raise ValueError(f"[INTEGRIDAD] Senales invalidas: {sorted(int(v) for v in invalidos)}.")
+        return {
+            -1: int((arr == -1).sum()),
+             0: int((arr == 0).sum()),
+             1: int((arr == 1).sum()),
+        }
+
     if len(senales) != df.height:
         raise ValueError(
             f"[INTEGRIDAD] Longitud de senales incorrecta: {len(senales):,} != {df.height:,}."
         )
     if senales.null_count() > 0:
         raise ValueError("[INTEGRIDAD] Las senales contienen nulos.")
-
     valores = set(senales.cast(pl.Int8).unique().to_list())
     invalidos = valores - {-1, 0, 1}
     if invalidos:
         raise ValueError(f"[INTEGRIDAD] Senales invalidas: {sorted(invalidos)}.")
-
     return {
         -1: int((senales == -1).sum()),
-        0: int((senales == 0).sum()),
-        1: int((senales == 1).sum()),
+         0: int((senales == 0).sum()),
+         1: int((senales == 1).sum()),
     }
 
 
-def verificar_salidas_custom(df: pl.DataFrame, salidas: pl.Series) -> dict[int, int]:
-    if len(salidas) != df.height:
-        raise ValueError(
-            "[INTEGRIDAD] Longitud de salidas custom incorrecta: "
-            f"{len(salidas):,} != {df.height:,}."
-        )
-    if salidas.null_count() > 0:
-        raise ValueError("[INTEGRIDAD] Las salidas custom contienen nulos.")
-
-    valores = set(salidas.cast(pl.Int8).unique().to_list())
-    invalidos = valores - {-1, 0, 1}
-    if invalidos:
-        raise ValueError(f"[INTEGRIDAD] Salidas custom invalidas: {sorted(invalidos)}.")
-
-    return {
-        -1: int((salidas == -1).sum()),
-        0: int((salidas == 0).sum()),
-        1: int((salidas == 1).sum()),
-    }
+def verificar_salidas_custom(df: pl.DataFrame, salidas) -> dict[int, int]:
+    return verificar_senales(df, salidas)
 
 
-def verificar_resultado(
-    df: pl.DataFrame,
-    senales: pl.Series,
-    resultado,
-    salidas_custom: pl.Series | None = None,
-    _cache: CacheDF | None = None,
-) -> None:
-    trades = list(resultado.trades)
-    total_trades = len(trades)
+def verificar_resultado(arrays, senales, trades: dict, equity_curve: np.ndarray, metricas) -> None:
+    """Verificación exhaustiva del replay (sólo top-N trials).
 
-    if len(resultado.equity_curve) != total_trades + 1:
+    Recibe los buffers numpy del contexto, las señales utilizadas y el dict
+    columnar devuelto por `SimResult.take_trades()`. Toda la verificación es
+    vectorial: para 10 K trades dura microsegundos, no segundos.
+    """
+    n_trades = int(trades["idx_senal"].shape[0])
+    if equity_curve.shape[0] != n_trades + 1:
         raise ValueError("[INTEGRIDAD] equity_curve debe tener saldo inicial + un punto por trade.")
 
-    pnl_total = sum(float(t.pnl) for t in trades)
-    saldo_esperado = float(resultado.saldo_inicial) + pnl_total
-    if not isclose(float(resultado.saldo_final), saldo_esperado, rel_tol=TOL, abs_tol=TOL):
+    pnl_total = float(trades["pnl"].sum()) if n_trades else 0.0
+    saldo_esperado = float(metricas.saldo_inicial) + pnl_total
+    if not isclose(float(metricas.saldo_final), saldo_esperado, rel_tol=TOL, abs_tol=TOL):
         raise ValueError("[INTEGRIDAD] saldo_final no coincide con saldo_inicial + pnl_total.")
 
-    if not isclose(float(resultado.equity_curve[0]), float(resultado.saldo_inicial), abs_tol=TOL):
+    if not isclose(float(equity_curve[0]), float(metricas.saldo_inicial), abs_tol=TOL):
         raise ValueError("[INTEGRIDAD] equity_curve no arranca en saldo_inicial.")
-    if not isclose(float(resultado.equity_curve[-1]), float(resultado.saldo_final), abs_tol=TOL):
+    if not isclose(float(equity_curve[-1]), float(metricas.saldo_final), abs_tol=TOL):
         raise ValueError("[INTEGRIDAD] equity_curve no termina en saldo_final.")
 
-    cache = _cache if _cache is not None else cachear_df(df)
+    if n_trades == 0:
+        return
 
-    # Extraer solo los índices necesarios de forma vectorizada
-    idxs_senal  = [int(t.idx_señal)  for t in trades]
-    idxs_salida = [int(t.idx_salida) for t in trades]
+    timestamps = arrays.timestamps
+    opens = arrays.opens
+    highs = arrays.highs
+    lows = arrays.lows
+    closes = arrays.closes
+    total = timestamps.shape[0]
 
-    senales_en_senal = senales.cast(pl.Int8).gather(idxs_senal).to_list()
-    salidas_en_salida = (
-        salidas_custom.cast(pl.Int8).gather(idxs_salida).to_list()
-        if salidas_custom is not None
-        else None
+    idx_senal = trades["idx_senal"].astype(np.int64)
+    idx_entrada = trades["idx_entrada"].astype(np.int64)
+    idx_salida = trades["idx_salida"].astype(np.int64)
+    direccion = trades["direccion"].astype(np.int8)
+    motivos = trades["motivo_salida"].astype(np.int8)
+
+    if (idx_senal < 0).any() or (idx_salida >= total).any():
+        raise ValueError("[INTEGRIDAD] Indices de trade fuera de rango.")
+    if not ((idx_senal < idx_entrada) & (idx_entrada <= idx_salida)).all():
+        raise ValueError("[INTEGRIDAD] Indices de trade fuera de orden.")
+    if not (idx_entrada == idx_senal + 1).all():
+        raise ValueError("[INTEGRIDAD] Trade con entrada que no ocurre en vela N+1.")
+
+    # Señales en idx_senal deben coincidir con la dirección registrada
+    senales_arr = senales.to_numpy() if hasattr(senales, "to_numpy") else senales
+    if senales_arr.dtype != np.int8:
+        senales_arr = senales_arr.astype(np.int8)
+    if not (senales_arr[idx_senal] == direccion).all():
+        raise ValueError("[INTEGRIDAD] Trade con direccion que no coincide con la senal.")
+
+    if not (timestamps[idx_senal] == trades["ts_senal"]).all():
+        raise ValueError("[INTEGRIDAD] Trade con timestamp de senal incorrecto.")
+    if not (timestamps[idx_entrada] == trades["ts_entrada"]).all():
+        raise ValueError("[INTEGRIDAD] Trade con timestamp de entrada incorrecto.")
+    if not (timestamps[idx_salida] == trades["ts_salida"]).all():
+        raise ValueError("[INTEGRIDAD] Trade con timestamp de salida incorrecto.")
+
+    # precio_entrada == open[idx_entrada]
+    if not np.allclose(trades["precio_entrada"], opens[idx_entrada], rtol=TOL, atol=TOL):
+        raise ValueError("[INTEGRIDAD] Trade con precio_entrada que no es el open de N+1.")
+
+    precio_salida = trades["precio_salida"]
+    cod_sl, cod_tp, cod_bars, cod_custom, cod_end = 0, 1, 2, 3, 4
+
+    # Salidas END/BARS/CUSTOM → close de la vela
+    mask_close = (motivos == cod_end) | (motivos == cod_bars) | (motivos == cod_custom)
+    if mask_close.any():
+        if not np.allclose(precio_salida[mask_close], closes[idx_salida[mask_close]], rtol=TOL, atol=TOL):
+            raise ValueError("[INTEGRIDAD] Salida END/BARS/CUSTOM no usa close.")
+
+    # Salidas SL/TP → dentro del rango low..high
+    mask_intra = (motivos == cod_sl) | (motivos == cod_tp)
+    if mask_intra.any():
+        ps = precio_salida[mask_intra]
+        lo = lows[idx_salida[mask_intra]]
+        hi = highs[idx_salida[mask_intra]]
+        if (ps < lo - TOL).any() or (ps > hi + TOL).any():
+            raise ValueError("[INTEGRIDAD] Salida SL/TP fuera del rango de vela.")
+
+    motivos_validos = (
+        (motivos == cod_sl)
+        | (motivos == cod_tp)
+        | (motivos == cod_bars)
+        | (motivos == cod_custom)
+        | (motivos == cod_end)
     )
-
-    for n, trade in enumerate(trades, start=1):
-        _verificar_trade(
-            n,
-            trade,
-            cache.timestamps,
-            cache.opens,
-            cache.highs,
-            cache.lows,
-            cache.closes,
-            senales_en_senal,
-            salidas_en_salida,
-            n - 1,  # posición en las listas de gather
-        )
-
-
-def _verificar_trade(
-    n: int,
-    trade,
-    timestamps: list,
-    opens: list,
-    highs: list,
-    lows: list,
-    closes: list,
-    senales_en_senal: list,
-    salidas_en_salida: list | None,
-    pos: int,
-) -> None:
-    total = len(timestamps)
-    idx_senal = int(trade.idx_señal)
-    idx_entrada = int(trade.idx_entrada)
-    idx_salida = int(trade.idx_salida)
-
-    if not (0 <= idx_senal < idx_entrada <= idx_salida < total):
-        raise ValueError(f"[INTEGRIDAD] Trade {n}: indices fuera de orden.")
-    if idx_entrada != idx_senal + 1:
-        raise ValueError(f"[INTEGRIDAD] Trade {n}: entrada no ocurre en vela N+1.")
-    if int(trade.direccion) != int(senales_en_senal[pos]):
-        raise ValueError(f"[INTEGRIDAD] Trade {n}: direccion no coincide con la senal.")
-    if int(trade.ts_señal) != timestamps[idx_senal]:
-        raise ValueError(f"[INTEGRIDAD] Trade {n}: timestamp de senal no coincide.")
-    if int(trade.ts_entrada) != timestamps[idx_entrada]:
-        raise ValueError(f"[INTEGRIDAD] Trade {n}: timestamp de entrada no coincide.")
-    if int(trade.ts_salida) != timestamps[idx_salida]:
-        raise ValueError(f"[INTEGRIDAD] Trade {n}: timestamp de salida no coincide.")
-    if not isclose(float(trade.precio_entrada), opens[idx_entrada], rel_tol=TOL, abs_tol=TOL):
-        raise ValueError(f"[INTEGRIDAD] Trade {n}: precio_entrada no es el open de N+1.")
-
-    precio_salida = float(trade.precio_salida)
-    motivo = str(trade.motivo_salida)
-    if motivo in {"END", "BARS", "CUSTOM"}:
-        if not isclose(precio_salida, closes[idx_salida], rel_tol=TOL, abs_tol=TOL):
-            raise ValueError(f"[INTEGRIDAD] Trade {n}: salida {motivo} no usa close.")
-        if motivo == "CUSTOM":
-            if salidas_en_salida is None:
-                raise ValueError(f"[INTEGRIDAD] Trade {n}: salida CUSTOM sin serie auditada.")
-            if int(salidas_en_salida[pos]) != int(trade.direccion):
-                raise ValueError(
-                    f"[INTEGRIDAD] Trade {n}: salida CUSTOM no coincide con la direccion."
-                )
-    elif motivo in {"SL", "TP"}:
-        if precio_salida < lows[idx_salida] - TOL or precio_salida > highs[idx_salida] + TOL:
-            raise ValueError(f"[INTEGRIDAD] Trade {n}: salida {motivo} fuera del rango de vela.")
-    else:
-        raise ValueError(f"[INTEGRIDAD] Trade {n}: motivo_salida desconocido: {motivo}.")
+    if not motivos_validos.all():
+        raise ValueError(f"[INTEGRIDAD] Trade con motivo_salida desconocido (códigos: {MOTIVOS}).")
 
 
 def _verificar_timestamps(etapa: str, df: pl.DataFrame) -> None:

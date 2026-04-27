@@ -7,6 +7,7 @@ from pathlib import Path
 
 import polars as pl
 
+from MOTOR.wrapper import MOTIVOS
 from REPORTES.tv_library import obtener_script_libreria
 
 
@@ -33,7 +34,9 @@ def generar_htmls(
 
     html_dir = _base_resultados(run_dir) / "GRAFICA"
     html_dir.mkdir(parents=True, exist_ok=True)
-    mejores = sorted(trials, key=lambda t: t.score, reverse=True)[: min(max_plots, 5)]
+    # Sólo trials con replay materializado tienen trades para dibujar.
+    candidatos = [t for t in trials if t.replay is not None]
+    mejores = sorted(candidatos, key=lambda t: t.score, reverse=True)[: min(max_plots, 5)]
     tv_script = obtener_script_libreria()
 
     df_idx = df.with_row_index("_i_")
@@ -116,29 +119,39 @@ def _crear_payload(
         data_rango = [d for d in ind["data"] if ts_min <= d["t"] <= ts_max]
         indicadores.append({**ind, "data": data_rango})
 
-    # Trades y markers
+    # Trades y markers — leídos directamente desde columnas numpy del replay.
     trades = []
     markers = []
-    for n, trade in enumerate(trial.resultado.trades, start=1):
-        idx_e = int(trade.idx_entrada)
-        idx_s = int(trade.idx_salida)
+    cols = trial.replay.trades
+    n_trades = int(cols["idx_salida"].shape[0])
+    motivos_lookup = MOTIVOS
+
+    for i in range(n_trades):
+        idx_e = int(cols["idx_entrada"][i])
+        idx_s = int(cols["idx_salida"][i])
         t_e = idx_to_time.get(idx_e)
         t_s = idx_to_time.get(idx_s)
-        direccion = "LONG" if int(trade.direccion) == 1 else "SHORT"
-        pnl = float(trade.pnl)
-        roi = float(trade.roi)
+        dir_int = int(cols["direccion"][i])
+        direccion = "LONG" if dir_int == 1 else "SHORT"
+        pnl = float(cols["pnl"][i])
+        roi = float(cols["roi"][i])
+        precio_e = float(cols["precio_entrada"][i])
+        precio_s = float(cols["precio_salida"][i])
+        duracion = int(cols["duracion_velas"][i])
+        motivo = motivos_lookup[int(cols["motivo_salida"][i])]
+        n = i + 1
 
         trades.append({
-            "n":             n,
-            "direccion":     direccion,
-            "time_entrada":  t_e,
-            "time_salida":   t_s,
-            "precio_entrada": float(trade.precio_entrada),
-            "precio_salida":  float(trade.precio_salida),
-            "pnl":     pnl,
-            "roi":     roi,
-            "duracion": int(trade.duracion_velas),
-            "motivo":  str(trade.motivo_salida),
+            "n":              n,
+            "direccion":      direccion,
+            "time_entrada":   t_e,
+            "time_salida":    t_s,
+            "precio_entrada": precio_e,
+            "precio_salida":  precio_s,
+            "pnl":            pnl,
+            "roi":            roi,
+            "duracion":       duracion,
+            "motivo":         motivo,
         })
 
         if t_e and ts_min <= t_e <= ts_max:
@@ -147,11 +160,11 @@ def _crear_payload(
                 "tipo":      "entrada",
                 "time":      t_e,
                 "direccion": direccion,
-                "precio":    float(trade.precio_entrada),
+                "precio":    precio_e,
                 "pnl":       pnl,
                 "roi":       roi,
-                "duracion":  int(trade.duracion_velas),
-                "motivo":    str(trade.motivo_salida),
+                "duracion":  duracion,
+                "motivo":    motivo,
             })
         if t_s and ts_min <= t_s <= ts_max:
             markers.append({
@@ -159,11 +172,11 @@ def _crear_payload(
                 "tipo":      "salida",
                 "time":      t_s,
                 "direccion": direccion,
-                "precio":    float(trade.precio_salida),
+                "precio":    precio_s,
                 "pnl":       pnl,
                 "roi":       roi,
-                "duracion":  int(trade.duracion_velas),
-                "motivo":    str(trade.motivo_salida),
+                "duracion":  duracion,
+                "motivo":    motivo,
             })
 
     return {

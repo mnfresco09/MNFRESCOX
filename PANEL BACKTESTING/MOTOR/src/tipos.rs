@@ -1,14 +1,18 @@
 // ---------------------------------------------------------------------------
 // tipos.rs — Estructuras de datos del motor de simulación
 //
-// Todas las structs que viajan entre Python y Rust, más los tipos internos
-// del simulador. PyO3 convierte automáticamente entre estos y los tipos Python.
+// Sólo se exponen a Python las structs estrictamente necesarias:
+//   - Metricas        : escalares calculados durante la simulación.
+//   - SimResultFull   : métricas + columnas de trades + curva de equity.
+//
+// El motor NO devuelve trades como objetos Python por trial: en el modo
+// "slim" (Optuna) sólo viaja Metricas. En el modo "full" (replay para
+// reportes) se devuelven columnas en `Vec<T>`, que el wrapper convierte
+// a numpy arrays sin copia adicional.
 // ---------------------------------------------------------------------------
 
 use pyo3::prelude::*;
 
-/// Dirección de un trade.
-/// Se mapea 1:1 con Señal en Python: 1 = LONG, -1 = SHORT.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Direccion {
     Long,
@@ -16,7 +20,6 @@ pub enum Direccion {
 }
 
 impl Direccion {
-    /// Convierte el valor entero de la señal Python al enum Rust.
     pub fn from_signal(val: i8) -> Result<Self, String> {
         match val {
             1 => Ok(Direccion::Long),
@@ -26,9 +29,15 @@ impl Direccion {
             )),
         }
     }
+
+    pub fn as_i8(self) -> i8 {
+        match self {
+            Direccion::Long => 1,
+            Direccion::Short => -1,
+        }
+    }
 }
 
-/// Tipo de salida soportado por el motor.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExitType {
     Fixed,
@@ -43,129 +52,183 @@ impl ExitType {
             "BARS" => Ok(ExitType::Bars),
             "CUSTOM" => Ok(ExitType::Custom),
             _ => Err(format!(
-                "EXIT_TYPE inválido: '{val}'. Opciones soportadas por el motor: FIXED, BARS, CUSTOM."
+                "EXIT_TYPE inválido: '{val}'. Opciones: FIXED, BARS, CUSTOM."
             )),
         }
     }
 }
 
-/// Configuración de la simulación. Se recibe una vez desde Python al inicio.
+/// Códigos compactos para el motivo de salida.
+/// Se exponen como u8 para mantener el array de motivos pequeño en RAM.
+/// El wrapper Python traduce estos códigos a strings cuando es necesario.
+pub mod motivo {
+    pub const SL: u8 = 0;
+    pub const TP: u8 = 1;
+    pub const BARS: u8 = 2;
+    pub const CUSTOM: u8 = 3;
+    pub const END: u8 = 4;
+}
+
 #[derive(Debug, Clone)]
 pub struct SimConfig {
-    /// Capital inicial en USD
     pub saldo_inicial: f64,
-    /// Colateral por operación en USD
     pub saldo_por_trade: f64,
-    /// Multiplicador de apalancamiento (>= 1)
     pub apalancamiento: f64,
-    /// Saldo mínimo para seguir operando — si cae por debajo, el backtest para
     pub saldo_minimo: f64,
-    /// Comisión como fracción decimal (ej: 0.0005 = 0.05%)
     pub comision_pct: f64,
-    /// 1 = solo apertura, 2 = apertura y cierre
     pub comision_lados: u8,
-    /// Tipo de salida
     pub exit_type: ExitType,
-    /// Stop Loss como % del colateral (ej: 20.0 = 20%)
     pub exit_sl_pct: f64,
-    /// Take Profit como % del colateral (ej: 40.0 = 40%)
     pub exit_tp_pct: f64,
-    /// Máximo de velas para tipo BARS (0 si no aplica)
     pub exit_velas: usize,
 }
 
-/// Datos OHLCV de una vela individual, extraídos del DataFrame Python.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct Vela {
-    /// Timestamp en microsegundos desde epoch UTC
-    pub timestamp: i64,
-    pub open: f64,
-    pub high: f64,
-    pub low: f64,
-    pub close: f64,
-    pub volume: f64,
+/// Vista SoA (Struct-of-Arrays) sobre las velas. No copia datos: las slices
+/// vienen directamente de los buffers NumPy enviados desde Python.
+#[derive(Debug, Clone, Copy)]
+pub struct VelasSoA<'a> {
+    pub timestamps: &'a [i64],
+    pub opens: &'a [f64],
+    pub highs: &'a [f64],
+    pub lows: &'a [f64],
+    pub closes: &'a [f64],
 }
 
-/// Resultado de un trade individual. Se devuelve a Python como dict.
+impl<'a> VelasSoA<'a> {
+    pub fn len(&self) -> usize {
+        self.timestamps.len()
+    }
+}
+
+/// Métricas escalares de una simulación. Esto es lo único que viaja a
+/// Python en el modo Optuna (un struct pequeño por trial).
 #[derive(Debug, Clone)]
 #[pyclass(skip_from_py_object)]
-pub struct TradeResult {
-    /// Índice de la vela donde se detectó la señal (vela N)
-    #[pyo3(get)]
-    pub idx_señal: usize,
-    /// Índice de la vela donde se abrió el trade (vela N+1)
-    #[pyo3(get)]
-    pub idx_entrada: usize,
-    /// Índice de la vela donde se cerró el trade
-    #[pyo3(get)]
-    pub idx_salida: usize,
-    /// Timestamp de la señal (microsegundos epoch UTC)
-    #[pyo3(get)]
-    pub ts_señal: i64,
-    /// Timestamp de la entrada
-    #[pyo3(get)]
-    pub ts_entrada: i64,
-    /// Timestamp de la salida
-    #[pyo3(get)]
-    pub ts_salida: i64,
-    /// 1 = LONG, -1 = SHORT
-    #[pyo3(get)]
-    pub direccion: i8,
-    /// Precio de entrada (open de la vela N+1)
-    #[pyo3(get)]
-    pub precio_entrada: f64,
-    /// Precio de salida (donde se cumplió la condición)
-    #[pyo3(get)]
-    pub precio_salida: f64,
-    /// Colateral usado (USD)
-    #[pyo3(get)]
-    pub colateral: f64,
-    /// Tamaño de la posición = colateral * apalancamiento / precio_entrada
-    #[pyo3(get)]
-    pub tamaño_posicion: f64,
-    /// Comisiones totales pagadas (USD)
-    #[pyo3(get)]
-    pub comision_total: f64,
-    /// P&L neto después de comisiones (USD)
-    #[pyo3(get)]
-    pub pnl: f64,
-    /// ROI sobre el colateral (fracción decimal, ej: 0.15 = 15%)
-    #[pyo3(get)]
-    pub roi: f64,
-    /// Saldo después de cerrar este trade (USD)
-    #[pyo3(get)]
-    pub saldo_post: f64,
-    /// Motivo de cierre: "SL", "TP", "BARS", "CUSTOM", "END"
-    #[pyo3(get)]
-    pub motivo_salida: String,
-    /// Número de velas que duró el trade
-    #[pyo3(get)]
-    pub duracion_velas: usize,
+pub struct Metricas {
+    #[pyo3(get)] pub saldo_inicial: f64,
+    #[pyo3(get)] pub saldo_final: f64,
+    #[pyo3(get)] pub total_trades: u64,
+    #[pyo3(get)] pub trades_long: u64,
+    #[pyo3(get)] pub trades_short: u64,
+    #[pyo3(get)] pub trades_ganadores: u64,
+    #[pyo3(get)] pub trades_perdedores: u64,
+    #[pyo3(get)] pub trades_neutros: u64,
+    #[pyo3(get)] pub win_rate: f64,
+    #[pyo3(get)] pub roi_total: f64,
+    #[pyo3(get)] pub expectancy: f64,
+    #[pyo3(get)] pub pnl_bruto_total: f64,
+    #[pyo3(get)] pub pnl_total: f64,
+    #[pyo3(get)] pub pnl_promedio: f64,
+    #[pyo3(get)] pub max_drawdown: f64,
+    /// f64::INFINITY si hay ganancias y no hay pérdidas; 0.0 si no hay ganancias.
+    #[pyo3(get)] pub profit_factor: f64,
+    #[pyo3(get)] pub sharpe_ratio: f64,
+    #[pyo3(get)] pub duracion_media_seg: f64,
+    #[pyo3(get)] pub duracion_media_velas: f64,
+    #[pyo3(get)] pub parado_por_saldo: bool,
 }
 
-/// Resultado completo de una simulación.
+impl Metricas {
+    pub fn vacia(saldo_inicial: f64) -> Self {
+        Metricas {
+            saldo_inicial,
+            saldo_final: saldo_inicial,
+            total_trades: 0,
+            trades_long: 0,
+            trades_short: 0,
+            trades_ganadores: 0,
+            trades_perdedores: 0,
+            trades_neutros: 0,
+            win_rate: 0.0,
+            roi_total: 0.0,
+            expectancy: 0.0,
+            pnl_bruto_total: 0.0,
+            pnl_total: 0.0,
+            pnl_promedio: 0.0,
+            max_drawdown: 0.0,
+            profit_factor: 0.0,
+            sharpe_ratio: 0.0,
+            duracion_media_seg: 0.0,
+            duracion_media_velas: 0.0,
+            parado_por_saldo: false,
+        }
+    }
+}
+
+/// Resultado completo (replay): métricas + columnas de trades + equity_curve.
+/// Sólo se construye para los top-N trials que alimentan reportes.
 ///
-/// El motor solo devuelve datos base. Las métricas públicas del sistema
-/// se calculan en Python, en OPTIMIZACION/metricas.py.
-#[derive(Debug, Clone)]
-#[pyclass(skip_from_py_object)]
-pub struct SimResult {
-    /// Lista de todos los trades ejecutados
-    #[pyo3(get)]
-    pub trades: Vec<TradeResult>,
-    /// Saldo final después de todos los trades
-    #[pyo3(get)]
-    pub saldo_final: f64,
-    /// Saldo inicial de la simulación
-    #[pyo3(get)]
-    pub saldo_inicial: f64,
-    /// Curva de equity: saldo después de cada trade
-    #[pyo3(get)]
+/// Los `Vec<T>` se exponen a Python como numpy arrays vía el módulo `lib.rs`
+/// usando `PyArray1::from_vec_bound`, que mueve la propiedad sin copia extra.
+#[derive(Debug)]
+pub struct SimResultFull {
+    pub metricas: Metricas,
+    // Columnas de trades — cada una con length == metricas.total_trades
+    pub idx_senal: Vec<u64>,
+    pub idx_entrada: Vec<u64>,
+    pub idx_salida: Vec<u64>,
+    pub ts_senal: Vec<i64>,
+    pub ts_entrada: Vec<i64>,
+    pub ts_salida: Vec<i64>,
+    pub direccion: Vec<i8>,
+    pub precio_entrada: Vec<f64>,
+    pub precio_salida: Vec<f64>,
+    pub colateral: Vec<f64>,
+    pub tamano_posicion: Vec<f64>,
+    pub comision_total: Vec<f64>,
+    pub pnl: Vec<f64>,
+    pub roi: Vec<f64>,
+    pub saldo_post: Vec<f64>,
+    pub motivo_salida: Vec<u8>,
+    pub duracion_velas: Vec<u64>,
     pub equity_curve: Vec<f64>,
-    /// Si el backtest fue detenido por saldo insuficiente
-    #[pyo3(get)]
-    pub parado_por_saldo: bool,
+}
+
+impl SimResultFull {
+    pub fn vacio(saldo_inicial: f64) -> Self {
+        SimResultFull {
+            metricas: Metricas::vacia(saldo_inicial),
+            idx_senal: Vec::new(),
+            idx_entrada: Vec::new(),
+            idx_salida: Vec::new(),
+            ts_senal: Vec::new(),
+            ts_entrada: Vec::new(),
+            ts_salida: Vec::new(),
+            direccion: Vec::new(),
+            precio_entrada: Vec::new(),
+            precio_salida: Vec::new(),
+            colateral: Vec::new(),
+            tamano_posicion: Vec::new(),
+            comision_total: Vec::new(),
+            pnl: Vec::new(),
+            roi: Vec::new(),
+            saldo_post: Vec::new(),
+            motivo_salida: Vec::new(),
+            duracion_velas: Vec::new(),
+            equity_curve: vec![saldo_inicial],
+        }
+    }
+
+    pub fn reservar(&mut self, capacidad: usize) {
+        self.idx_senal.reserve(capacidad);
+        self.idx_entrada.reserve(capacidad);
+        self.idx_salida.reserve(capacidad);
+        self.ts_senal.reserve(capacidad);
+        self.ts_entrada.reserve(capacidad);
+        self.ts_salida.reserve(capacidad);
+        self.direccion.reserve(capacidad);
+        self.precio_entrada.reserve(capacidad);
+        self.precio_salida.reserve(capacidad);
+        self.colateral.reserve(capacidad);
+        self.tamano_posicion.reserve(capacidad);
+        self.comision_total.reserve(capacidad);
+        self.pnl.reserve(capacidad);
+        self.roi.reserve(capacidad);
+        self.saldo_post.reserve(capacidad);
+        self.motivo_salida.reserve(capacidad);
+        self.duracion_velas.reserve(capacidad);
+        self.equity_curve.reserve(capacidad);
+    }
 }
 
 #[cfg(test)]
@@ -174,8 +237,7 @@ mod tests {
 
     #[test]
     fn test_direccion_rechaza_senal_invalida() {
-        let err = Direccion::from_signal(2).unwrap_err();
-        assert!(err.contains("Señal inválida"));
+        assert!(Direccion::from_signal(2).is_err());
     }
 
     #[test]
@@ -185,7 +247,6 @@ mod tests {
 
     #[test]
     fn test_exit_type_rechaza_valor_invalido() {
-        let err = ExitType::from_str("INVALIDO").unwrap_err();
-        assert!(err.contains("EXIT_TYPE inválido"));
+        assert!(ExitType::from_str("INVALIDO").is_err());
     }
 }

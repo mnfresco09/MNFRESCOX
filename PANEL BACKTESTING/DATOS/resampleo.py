@@ -71,10 +71,22 @@ def resamplear(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
     for col in sorted(extras):
         aggs.append(pl.col(col).mean())
 
+    df_ordenado = df.sort("timestamp")
+    ultimo_timestamp = df_ordenado["timestamp"][-1]
+
+    # Ventanas estrictamente cerradas y etiquetadas a la derecha:
+    # una vela 10:00-11:00 queda marcada en 11:00, no en 10:00.
     df_resampled = (
-        df.sort("timestamp")
-        .group_by_dynamic("timestamp", every=duracion, closed="left", start_by="datapoint")
+        df_ordenado
+        .group_by_dynamic(
+            "timestamp",
+            every=duracion,
+            closed="right",
+            label="right",
+            start_by="window",
+        )
         .agg(aggs)
+        .filter(pl.col("timestamp") <= ultimo_timestamp)
         .sort("timestamp")
     )
 

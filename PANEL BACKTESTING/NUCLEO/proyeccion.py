@@ -1,53 +1,74 @@
+"""Mapeo y proyección de señales entre el timeframe de estrategia y el base."""
+
 from __future__ import annotations
 
 import numpy as np
 import polars as pl
 
 
-def construir_mapeo(df_base: pl.DataFrame, df_tf: pl.DataFrame) -> list[int]:
+def construir_mapeo(df_base: pl.DataFrame, df_tf: pl.DataFrame) -> np.ndarray:
+    """Devuelve un array int64 con la posición en `df_base` que corresponde
+    al cierre de cada vela de `df_tf` (`join_asof` backward).
+    """
     base_con_idx = (
         df_base.with_row_index("base_idx")
         .select(["timestamp", "base_idx"])
         .sort("timestamp")
     )
-    # join_asof backward: cada vela del TF se mapea a la última vela base
-    # cuyo timestamp sea <= al timestamp del TF (necesario en mercados con huecos).
-    mapeo = (
+    mapeo_serie = (
         df_tf.select("timestamp")
         .sort("timestamp")
         .join_asof(base_con_idx, on="timestamp", strategy="backward")
         .get_column("base_idx")
-        .to_list()
     )
 
-    faltantes = [idx for idx, valor in enumerate(mapeo) if valor is None]
-    if faltantes:
-        muestras = ", ".join(str(i) for i in faltantes[:10])
+    if mapeo_serie.null_count() > 0:
+        nulos = (
+            mapeo_serie.to_frame("base_idx")
+            .with_row_index("pos")
+            .filter(pl.col("base_idx").is_null())
+            .get_column("pos")
+            .head(10)
+            .to_list()
+        )
+        muestras = ", ".join(str(int(p)) for p in nulos)
         raise ValueError(
             "[PROYECCION] Hay timestamps del timeframe estrategia anteriores al "
             f"inicio del timeframe base. Indices: {muestras}."
         )
 
-    return [int(valor) for valor in mapeo]
+    arr = mapeo_serie.cast(pl.Int64).to_numpy()
+    if arr.dtype != np.int64 or not arr.flags["C_CONTIGUOUS"]:
+        arr = np.ascontiguousarray(arr, dtype=np.int64)
+    return arr
 
 
 def proyectar_senales_a_base(
-    senales_tf: pl.Series,
-    tf_to_base_idx: list[int],
+    senales_tf,
+    tf_to_base_idx: np.ndarray,
     base_len: int,
 ) -> pl.Series:
-    if len(senales_tf) != len(tf_to_base_idx):
+    """Proyecta señales del TF de estrategia al TF base. Las velas resampleadas
+    están etiquetadas en su cierre, así que la señal se marca en la última vela
+    base disponible dentro de esa ventana; el motor entra siempre en la
+    siguiente vela base.
+    """
+    if len(senales_tf) != tf_to_base_idx.shape[0]:
         raise ValueError(
             "[PROYECCION] Longitud de senales y mapeo no coincide: "
-            f"{len(senales_tf):,} != {len(tf_to_base_idx):,}."
+            f"{len(senales_tf):,} != {tf_to_base_idx.shape[0]:,}."
         )
 
+    # Acepta pl.Series o np.ndarray
+    if isinstance(senales_tf, np.ndarray):
+        valores_tf = senales_tf if senales_tf.dtype == np.int8 else senales_tf.astype(np.int8)
+    else:
+        valores_tf = senales_tf.cast(pl.Int8).to_numpy()
+
     arr = np.zeros(int(base_len), dtype=np.int8)
-    if len(tf_to_base_idx) < 2:
+    if tf_to_base_idx.shape[0] == 0:
         return pl.Series("senal", arr)
 
-    valores_tf = senales_tf.cast(pl.Int8).to_numpy()
-    targets = np.asarray(tf_to_base_idx[1:], dtype=np.int64) - 1
-    validos = (targets >= 0) & (targets < int(base_len))
-    arr[targets[validos]] = valores_tf[:-1][validos]
+    validos = (tf_to_base_idx >= 0) & (tf_to_base_idx < int(base_len))
+    arr[tf_to_base_idx[validos]] = valores_tf[validos]
     return pl.Series("senal", arr)

@@ -1,8 +1,8 @@
 [package]
 name = "motor_backtesting"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
-description = "Motor de simulación de trades para backtesting. Compilado como extensión Python via PyO3."
+description = "Motor de simulación de trades para backtesting. Compilado como extensión Python via PyO3 con buffers NumPy zero-copy."
 
 [lib]
 name = "motor_backtesting"
@@ -10,6 +10,12 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module"] }
+numpy = "0.28"
 
 [build-dependencies]
 pyo3-build-config = "0.28"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
