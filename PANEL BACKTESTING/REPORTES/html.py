@@ -85,6 +85,9 @@ def verificar_htmls(paths: list[Path]) -> None:
             "addCandlestickSeries",
             "chart-equity-dd",
             "addEquityDrawdownPane",
+            "btn-reset-view",
+            "resetToDefaultView",
+            "paneMarkerSeries",
             "trade-tbody",
         )
         for token in tokens:
@@ -125,16 +128,21 @@ def _crear_payload(
     ]
     candle_times = [int(c["time"]) for c in candles]
 
-    # Indicadores: calculados sobre el df completo, filtrados al rango visible
+    # Indicadores: calculados sobre el df completo, filtrados al conjunto exacto
+    # de timestamps de las velas visibles. Restringir por `set(candle_times)` (no
+    # por rango ts_min/ts_max) garantiza que el espacio lógico de los subpaneles
+    # coincida exactamente con el del gráfico principal y elimina puntos huérfanos
+    # que TradingView ancla al borde izquierdo desincronizando la timescale.
     indicadores_raw = (
         indicadores_precalculados
         if indicadores_precalculados is not None
         else estrategia.indicadores_para_grafica(df_indicadores, trial.parametros)
     )
-    indicadores = []
-    for ind in indicadores_raw:
-        data_rango = [d for d in ind["data"] if ts_min <= d["t"] <= ts_max]
-        indicadores.append({**ind, "data": data_rango})
+    candle_times_set = set(candle_times)
+    indicadores = [
+        {**ind, "data": [d for d in ind["data"] if int(d["t"]) in candle_times_set]}
+        for ind in indicadores_raw
+    ]
 
     # Trades y markers — leídos directamente desde columnas numpy del replay.
     trades = []
@@ -535,6 +543,7 @@ body{font-family:var(--font-body);background:var(--bg);color:var(--text);font-si
 <div class="secondary" id="var-secondary"></div>
 <div class="params-row"><span class="lbl">PARAMS</span><div id="var-params"></div></div>
 <div class="toolbar">
+  <div class="tool-group"><span class="lbl">VISTA</span><button class="tbtn" id="btn-reset-view" type="button">RESET</button></div>
   <div class="tool-group"><span class="lbl">MARKERS</span><button class="tbtn" data-toggle="entries">ENTRADAS</button><button class="tbtn" data-toggle="exits">SALIDAS</button><button class="tbtn" data-toggle="trailing">TRAILING</button></div>
   <div class="tool-group"><span class="lbl">CAPAS</span><div class="tool-inline" id="pane-buttons"></div></div>
   <div class="legend-inline"><div class="li"><span class="ltri up"></span>LONG</div><div class="li"><span class="ltri down"></span>SHORT</div><div class="li"><span class="ldot" style="background:var(--pos)"></span>WIN</div><div class="li"><span class="ldot" style="background:var(--neg)"></span>LOSS</div><div class="li"><span class="ldot" style="background:var(--trailing)"></span>TRAIL</div></div>
@@ -548,7 +557,7 @@ __TV_SCRIPT__
 'use strict';
 window.TRIAL_DATA=__DATA_JSON__;
 const D=window.TRIAL_DATA;
-const T={chartBg:'#000000',border:'#1f1f1f',gridV:'#0d0d0d',gridH:'#0d0d0d',textMuted:'#9a9a9a',monoFont:'JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace',crosshair:'#ffb000',crosshairLabel:'#ffb000',up:'#5cdb5c',down:'#ff4d4d',entryLong:'#3aa3ff',entryShort:'#ff8a00',exitWin:'#5cdb5c',exitLoss:'#ff4d4d',exitTrailing:'#ffd84d',equityLine:'#ffb000',equityFillTop:'rgba(255,176,0,.28)',equityFillBottom:'rgba(255,176,0,0)',ddLine:'#ff4d4d',ddFillTop:'rgba(255,77,77,0)',ddFillBottom:'rgba(255,77,77,.34)'};
+const T={chartBg:'#000000',border:'#1f1f1f',gridV:'#0d0d0d',gridH:'#0d0d0d',textMuted:'#9a9a9a',monoFont:'JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace',crosshair:'#ffb000',crosshairLabel:'#ffb000',up:'#5cdb5c',down:'#ff4d4d',entryLong:'#3aa3ff',entryShort:'#ff8a00',exitWin:'#5cdb5c',exitLoss:'#ff4d4d',exitTrailing:'#ffd84d',equityLine:'#5cdb5c',equityFillTop:'rgba(92,219,92,.45)',equityFillBottom:'rgba(92,219,92,.05)',ddLine:'#ff4d4d',ddFillBottom:'rgba(255,77,77,.05)'};
 if(!D||!window.LightweightCharts){throw new Error('HTML report missing TRIAL_DATA or LightweightCharts');}
 const num=v=>Number.isFinite(Number(v))?Number(v):0;
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -592,10 +601,43 @@ function addToggleButton(key,label){const host=document.getElementById('pane-but
 function shortLabel(name){return String(name||'IND').replace(/\\(.+\\)/,'').slice(0,12).toUpperCase();}
 (D.indicadores||[]).filter(i=>i.tipo==='overlay').forEach(ind=>{const s=mainChart.addLineSeries({color:ind.color,lineWidth:1,title:ind.nombre,lastValueVisible:true,priceLineVisible:false});s.setData((ind.data||[]).map(d=>({time:d.t,value:d.v})));overlaySeriesMap[ind.nombre]=s;addToggleButton(ind.nombre,shortLabel(ind.nombre));});
 function isTrailing(m){return /TRAIL|TS\\b/i.test(m.motivo||'');}
-function buildMarkers(){return (D.markers||[]).filter(m=>{if(m.tipo==='entrada'&&!visState.entries)return false;if(m.tipo==='salida'&&!visState.exits)return false;if(m.tipo==='salida'&&isTrailing(m)&&!visState.trailing)return false;return true;}).map(m=>{const isEntry=m.tipo==='entrada';const isLong=m.direccion==='LONG';return {time:m.time,position:isEntry?(isLong?'belowBar':'aboveBar'):(isLong?'aboveBar':'belowBar'),color:isEntry?(isLong?T.entryLong:T.entryShort):(isTrailing(m)?T.exitTrailing:(m.pnl>=0?T.exitWin:T.exitLoss)),shape:isEntry?(isLong?'arrowUp':'arrowDown'):'circle',text:'',size:1.2};}).sort((a,b)=>a.time-b.time);}
-candleSeries.setMarkers(buildMarkers());
-(D.indicadores||[]).filter(i=>i.tipo==='pane').forEach(ind=>{const wrapper=document.createElement('div');wrapper.className='pane-wrapper';wrapper.dataset.indicator=ind.nombre;chartsEl.appendChild(wrapper);const lbl=document.createElement('div');lbl.className='pane-label';lbl.textContent=ind.nombre;wrapper.appendChild(lbl);const paneEl=document.createElement('div');paneEl.className='pane-chart';wrapper.appendChild(paneEl);const paneChart=LightweightCharts.createChart(paneEl,baseOpts(paneEl,132,false));addTimeAnchor(paneChart);const paneSeries=paneChart.addLineSeries({color:ind.color,lineWidth:1.2,lastValueVisible:true,priceLineVisible:false});const paneData=(ind.data||[]).map(d=>({time:d.t,value:d.v}));paneSeries.setData(paneData);if(ind.min!==undefined&&ind.max!==undefined){paneSeries.applyOptions({autoscaleInfoProvider:()=>({priceRange:{minValue:ind.min,maxValue:ind.max},margins:{above:8,below:8}})});} (ind.niveles||[]).forEach(n=>paneSeries.createPriceLine({price:n.valor,color:n.color,lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true}));registerChart(paneChart,false);paneSeriesMap[ind.nombre]={wrapper,chart:paneChart,el:paneEl};addToggleButton(ind.nombre,shortLabel(ind.nombre));});
-function addEquityDrawdownPane(){const wrapper=document.createElement('div');wrapper.className='pane-wrapper equity-dd-wrapper';chartsEl.appendChild(wrapper);const lbl=document.createElement('div');lbl.className='pane-label';const eqArr=D.equity_drawdown||[];const last=eqArr.length?eqArr[eqArr.length-1]:{};lbl.innerHTML=`EQUITY / DRAWDOWN <span class="meta">equity <span class="${num(last.equity_pct)>=0?'pos':'neg'}">${fmtPctPoints(last.equity_pct||0)}</span> · dd <span class="neg">${fmtPctPoints(last.drawdown_pct||0)}</span></span>`;wrapper.appendChild(lbl);const paneEl=document.createElement('div');paneEl.id='chart-equity-dd';paneEl.className='pane-chart';wrapper.appendChild(paneEl);const chart=LightweightCharts.createChart(paneEl,baseOpts(paneEl,230,false));addTimeAnchor(chart);const equityData=eqArr.map(p=>({time:p.time,value:num(p.equity_pct)}));const ddData=eqArr.map(p=>({time:p.time,value:num(p.drawdown_pct)}));const eqAbs=equityData.concat(ddData).reduce((m,p)=>Math.max(m,Math.abs(num(p.value))),1);const yMax=Math.ceil(eqAbs*1.12*100)/100;const zeroScale=()=>({priceRange:{minValue:-yMax,maxValue:yMax},margins:{above:0,below:0}});const eqSeries=(chart.addBaselineSeries?chart.addBaselineSeries({baseValue:{type:'price',price:0},topLineColor:T.equityLine,topFillColor1:T.equityFillTop,topFillColor2:T.equityFillBottom,bottomLineColor:T.ddLine,bottomFillColor1:'rgba(255,77,77,.20)',bottomFillColor2:'rgba(255,77,77,0)',lineWidth:1.5,lastValueVisible:true,priceLineVisible:false}):chart.addLineSeries({color:T.equityLine,lineWidth:1.5,lastValueVisible:true,priceLineVisible:false}));eqSeries.setData(equityData);eqSeries.applyOptions({autoscaleInfoProvider:zeroScale});const ddSeries=(chart.addBaselineSeries?chart.addBaselineSeries({baseValue:{type:'price',price:0},topLineColor:T.ddLine,topFillColor1:'rgba(255,77,77,0)',topFillColor2:'rgba(255,77,77,0)',bottomLineColor:T.ddLine,bottomFillColor1:T.ddFillBottom,bottomFillColor2:'rgba(255,77,77,0)',lineWidth:1.4,lastValueVisible:true,priceLineVisible:false}):chart.addLineSeries({color:T.ddLine,lineWidth:1.4,lastValueVisible:true,priceLineVisible:false}));ddSeries.setData(ddData);ddSeries.applyOptions({autoscaleInfoProvider:zeroScale});eqSeries.createPriceLine({price:0,color:'#8a8a8a88',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true});registerChart(chart,false);paneSeriesMap.EQUITY_DD={wrapper,chart,el:paneEl};addToggleButton('EQUITY_DD','EQUITY/DD');}
+function buildMarkers(scale){const s=Number(scale)||1;return (D.markers||[]).filter(m=>{if(m.tipo==='entrada'&&!visState.entries)return false;if(m.tipo==='salida'&&!visState.exits)return false;if(m.tipo==='salida'&&isTrailing(m)&&!visState.trailing)return false;return true;}).map(m=>{const isEntry=m.tipo==='entrada';const isLong=m.direccion==='LONG';return {time:m.time,position:isEntry?(isLong?'belowBar':'aboveBar'):(isLong?'aboveBar':'belowBar'),color:isEntry?(isLong?T.entryLong:T.entryShort):(isTrailing(m)?T.exitTrailing:(m.pnl>=0?T.exitWin:T.exitLoss)),shape:isEntry?(isLong?'arrowUp':'arrowDown'):'circle',text:'',size:1.38*s};}).sort((a,b)=>a.time-b.time);}
+const PANE_MARKER_SCALE=0.78;
+const paneMarkerSeries=[];
+candleSeries.setMarkers(buildMarkers(1));
+(D.indicadores||[]).filter(i=>i.tipo==='pane').forEach(ind=>{const wrapper=document.createElement('div');wrapper.className='pane-wrapper';wrapper.dataset.indicator=ind.nombre;chartsEl.appendChild(wrapper);const lbl=document.createElement('div');lbl.className='pane-label';lbl.textContent=ind.nombre;wrapper.appendChild(lbl);const paneEl=document.createElement('div');paneEl.className='pane-chart';wrapper.appendChild(paneEl);const paneChart=LightweightCharts.createChart(paneEl,baseOpts(paneEl,132,false));addTimeAnchor(paneChart);const paneSeries=paneChart.addLineSeries({color:ind.color,lineWidth:1.2,lastValueVisible:true,priceLineVisible:false});const paneData=(ind.data||[]).map(d=>({time:d.t,value:d.v}));paneSeries.setData(paneData);if(ind.min!==undefined&&ind.max!==undefined){paneSeries.applyOptions({autoscaleInfoProvider:()=>({priceRange:{minValue:ind.min,maxValue:ind.max},margins:{above:8,below:8}})});} (ind.niveles||[]).forEach(n=>paneSeries.createPriceLine({price:n.valor,color:n.color,lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true}));paneSeries.setMarkers(buildMarkers(PANE_MARKER_SCALE));paneMarkerSeries.push(paneSeries);registerChart(paneChart,false);paneSeriesMap[ind.nombre]={wrapper,chart:paneChart,el:paneEl};addToggleButton(ind.nombre,shortLabel(ind.nombre));});
+function addEquityDrawdownPane(){
+  const eqArr=D.equity_drawdown||[];
+  const wrapper=document.createElement('div');wrapper.className='pane-wrapper equity-dd-wrapper';chartsEl.appendChild(wrapper);
+  const lbl=document.createElement('div');lbl.className='pane-label';
+  const last=eqArr.length?eqArr[eqArr.length-1]:{};
+  const eqLast=num(last.equity_pct),ddLast=num(last.drawdown_pct);
+  lbl.innerHTML=`EQUITY / DRAWDOWN <span class="meta">equity <span class="${eqLast>=0?'pos':'neg'}">${fmtPctPoints(eqLast)}</span> · dd <span class="neg">${fmtPctPoints(ddLast)}</span></span>`;
+  wrapper.appendChild(lbl);
+  const paneEl=document.createElement('div');paneEl.id='chart-equity-dd';paneEl.className='pane-chart';wrapper.appendChild(paneEl);
+  const chart=LightweightCharts.createChart(paneEl,baseOpts(paneEl,230,false));
+  addTimeAnchor(chart);
+  // Eje Y simétrico alrededor de 0 — equity ocupa la mitad superior, drawdown la inferior.
+  const eqMax=eqArr.reduce((m,p)=>Math.max(m,num(p.equity_pct)),0);
+  const ddMin=eqArr.reduce((m,p)=>Math.min(m,num(p.drawdown_pct)),0);
+  const yLimit=Math.ceil(Math.max(eqMax,Math.abs(ddMin),1)*1.10*100)/100;
+  const sharedScale=()=>({priceRange:{minValue:-yLimit,maxValue:yLimit},margins:{above:0,below:0}});
+  // Equity: BaselineSeries con base 0 — sólo la mitad superior queda rellena (verde),
+  // la inferior se descarta clipeando a 0 los valores negativos.
+  const equitySeries=chart.addBaselineSeries({baseValue:{type:'price',price:0},topLineColor:T.equityLine,topFillColor1:T.equityFillTop,topFillColor2:T.equityFillBottom,bottomLineColor:T.equityLine,bottomFillColor1:'rgba(0,0,0,0)',bottomFillColor2:'rgba(0,0,0,0)',lineWidth:2,lastValueVisible:true,priceLineVisible:false});
+  equitySeries.setData(eqArr.map(p=>({time:p.time,value:Math.max(0,num(p.equity_pct))})));
+  equitySeries.applyOptions({autoscaleInfoProvider:sharedScale});
+  // Drawdown: BaselineSeries con base 0 — sólo la mitad inferior queda rellena (rojo),
+  // estilo "Running Maximum Drawdown" (Fidelity-style).
+  const drawdownSeries=chart.addBaselineSeries({baseValue:{type:'price',price:0},topLineColor:T.ddLine,topFillColor1:'rgba(0,0,0,0)',topFillColor2:'rgba(0,0,0,0)',bottomLineColor:T.ddLine,bottomFillColor1:'rgba(255,77,77,.45)',bottomFillColor2:T.ddFillBottom,lineWidth:2,lastValueVisible:true,priceLineVisible:false});
+  drawdownSeries.setData(eqArr.map(p=>({time:p.time,value:Math.min(0,num(p.drawdown_pct))})));
+  drawdownSeries.applyOptions({autoscaleInfoProvider:sharedScale});
+  // Línea de cero compartida.
+  equitySeries.createPriceLine({price:0,color:'#8a8a8a88',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true});
+  registerChart(chart,false);
+  paneSeriesMap.EQUITY_DD={wrapper,chart,el:paneEl};
+  addToggleButton('EQUITY_DD','EQUITY/DD');
+}
 addEquityDrawdownPane();
 const tooltipEl=document.getElementById('tooltip');const byTime={};(D.markers||[]).forEach(m=>{if(!byTime[m.time])byTime[m.time]=[];byTime[m.time].push(m);});const tradeByN={};(D.trades||[]).forEach(t=>{tradeByN[t.n]=t;});
 mainChart.subscribeCrosshairMove(param=>{moveGlobalCrosshair(param);if(!param.time||!param.point){tooltipEl.style.display='none';return;}const ms=byTime[param.time];if(!ms||!ms.length){tooltipEl.style.display='none';return;}tooltipEl.innerHTML=ms.map(m=>{const t=tradeByN[m.trade]||m;const pnl=num(t.pnl),roi=num(t.roi),pnlCls=pnl>=0?'pos':'neg';const isEntry=m.tipo==='entrada';const headColor=isEntry?(m.direccion==='LONG'?T.entryLong:T.entryShort):(isTrailing(m)?T.exitTrailing:(pnl>=0?T.exitWin:T.exitLoss));const headLabel=isEntry?`${m.direccion} ENTRADA #${m.trade}`:`SALIDA ${t.motivo||m.motivo} #${m.trade}`;return `<div class="tt-head" style="color:${headColor}">${esc(headLabel)}</div><div class="tt-grid"><div class="tt-row"><span>P. ENTRADA</span><b>${fmtMoney(t.precio_entrada,2)}</b></div><div class="tt-row"><span>P. SALIDA</span><b>${fmtMoney(t.precio_salida,2)}</b></div><div class="tt-row"><span>COLLATERAL</span><b>${fmtMoney(t.colateral,2)}</b></div><div class="tt-row"><span>SIZE</span><b>${num(t.tamano_posicion).toFixed(6)}</b></div><div class="tt-row"><span>COMISION</span><b>${fmtMoney(t.comision_total,2)}</b></div><div class="tt-row"><span>PNL BRUTO</span><b>${fmtNum(t.pnl_bruto,2)}</b></div><div class="tt-row"><span>PNL NETO</span><b class="${pnlCls}">${fmtNum(pnl,2)}</b></div><div class="tt-row"><span>ROI</span><b class="${pnlCls}">${fmtPct(roi)}</b></div><div class="tt-row"><span>BALANCE</span><b>${fmtMoney(t.saldo_post,2)}</b></div><div class="tt-row"><span>DURACION</span><b>${esc(t.duracion_txt||fmtDuration(t.duracion_seg,t.duracion))}</b></div></div>`;}).join('');tooltipEl.style.display='block';let lx=param.point.x+16,ly=param.point.y+8;const tw=tooltipEl.offsetWidth||300;if(lx+tw>priceEl.clientWidth-10)lx=param.point.x-tw-8;tooltipEl.style.left=lx+'px';tooltipEl.style.top=ly+'px';});
@@ -603,14 +645,17 @@ let tableFilter='ALL';
 function renderFilterButtons(){const host=document.getElementById('table-filters');const motivos=[...new Set((D.trades||[]).map(t=>t.motivo).filter(Boolean))];const defs=['ALL','LONG','SHORT','WIN','LOSS',...motivos];host.innerHTML=defs.map((f,i)=>`<button class="tbtn ${i===0?'active':''}" data-filter="${esc(f)}">${esc(f)}</button>`).join('');}
 function renderTable(){let trades=D.trades||[];if(tableFilter==='LONG')trades=trades.filter(t=>t.direccion==='LONG');else if(tableFilter==='SHORT')trades=trades.filter(t=>t.direccion==='SHORT');else if(tableFilter==='WIN')trades=trades.filter(t=>num(t.pnl)>=0);else if(tableFilter==='LOSS')trades=trades.filter(t=>num(t.pnl)<0);else if(tableFilter!=='ALL')trades=trades.filter(t=>t.motivo===tableFilter);document.getElementById('trade-tbody').innerHTML=trades.map(t=>{const pnlCls=num(t.pnl)>=0?'pos':'neg';const dirCls=t.direccion==='LONG'?'long':'short';return `<tr class="${num(t.pnl)>=0?'win':'loss'}"><td class="num">${esc(t.n)}</td><td class="${dirCls}">${esc(t.direccion)}</td><td class="mono">${esc(fmtTs(t.time_senal))}</td><td class="mono">${esc(fmtTs(t.time_entrada))}</td><td class="mono num">${num(t.precio_entrada).toFixed(2)}</td><td class="mono">${esc(fmtTs(t.time_salida))}</td><td class="mono num">${num(t.precio_salida).toFixed(2)}</td><td class="mono num">${fmtMoney(t.colateral,2)}</td><td class="mono num">${num(t.tamano_posicion).toFixed(6)}</td><td class="mono num">${fmtMoney(t.comision_total,2)}</td><td class="mono num ${num(t.pnl_bruto)>=0?'pos':'neg'}">${fmtNum(t.pnl_bruto,2)}</td><td class="mono num ${pnlCls}">${fmtNum(t.pnl,2)}</td><td class="mono num ${pnlCls}">${fmtPct(t.roi)}</td><td class="mono num">${fmtMoney(t.saldo_post,2)}</td><td class="mono">${esc(t.duracion_txt||fmtDuration(t.duracion_seg,t.duracion))}</td><td>${esc(t.motivo)}</td></tr>`;}).join('');document.getElementById('trade-count').textContent=`${trades.length} / ${(D.trades||[]).length}`;}
 function wireFilters(){document.querySelectorAll('[data-filter]').forEach(btn=>btn.addEventListener('click',()=>{tableFilter=btn.dataset.filter;document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b===btn));renderTable();}));}
-function applyMarkerVisibility(){candleSeries.setMarkers(buildMarkers());}
+function applyMarkerVisibility(){candleSeries.setMarkers(buildMarkers(1));paneMarkerSeries.forEach(s=>s.setMarkers(buildMarkers(PANE_MARKER_SCALE)));}
 function applyPaneVisibility(key){const entry=paneSeriesMap[key];if(!entry)return;entry.wrapper.style.display=visState[key]?'':'none';setTimeout(()=>{fitAll();const r=mainVisibleRange();if(r)applyTimeRange(r,mainChart);},30);}
 function applyOverlayVisibility(key){const s=overlaySeriesMap[key];if(s&&typeof s.applyOptions==='function')s.applyOptions({visible:!!visState[key]});}
 function wireToggles(){document.querySelectorAll('[data-toggle]').forEach(btn=>{const key=btn.dataset.toggle;if(!(key in visState))visState[key]=true;btn.classList.toggle('active',!!visState[key]);btn.addEventListener('click',()=>{visState[key]=!visState[key];btn.classList.toggle('active',visState[key]);if(key==='entries'||key==='exits'||key==='trailing')applyMarkerVisibility();else if(paneSeriesMap[key])applyPaneVisibility(key);else if(overlaySeriesMap[key])applyOverlayVisibility(key);});});}
 function fitAll(){const priceW=priceEl.clientWidth||chartsEl.clientWidth;mainChart.applyOptions({width:priceW,height:priceEl.clientHeight||620});Object.values(paneSeriesMap).forEach(({chart,el})=>chart.applyOptions({width:(el?.clientWidth||priceW),height:(el?.clientHeight||120)}));}
+const DEFAULT_VISIBLE_BARS=300;
+function resetToDefaultView(){const total=(D.candles||[]).length;if(!total)return;const from=Math.max(0,total-DEFAULT_VISIBLE_BARS);const range={from,to:total-1+6};try{mainChart.timeScale().setVisibleLogicalRange(range);}catch(_){}applyTimeRange(range,mainChart);}
+function wireResetButton(){const btn=document.getElementById('btn-reset-view');if(btn)btn.addEventListener('click',resetToDefaultView);}
 const ro=new ResizeObserver(fitAll);ro.observe(chartsEl);window.addEventListener('resize',fitAll);
 function tick(){const d=new Date(),pad=n=>String(n).padStart(2,'0');document.getElementById('clock').textContent=pad(d.getUTCHours())+':'+pad(d.getUTCMinutes())+':'+pad(d.getUTCSeconds())+' UTC';}
-renderHeader();renderFilterButtons();renderTable();wireFilters();wireToggles();fitAll();setTimeout(()=>{fitAll();mainChart.timeScale().fitContent();const r=mainVisibleRange();if(r)applyTimeRange(r,mainChart);},50);setInterval(tick,1000);tick();
+renderHeader();renderFilterButtons();renderTable();wireFilters();wireToggles();wireResetButton();fitAll();setTimeout(()=>{fitAll();resetToDefaultView();},50);setInterval(tick,1000);tick();
 })();
 </script>
 </body>

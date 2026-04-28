@@ -63,7 +63,7 @@ EXIT_TYPE = "FIXED"
 # OPTIMIZACIÓN (OPTUNA)
 # ---------------------------------------------------------------------------
 # Potencias de 2 recomendadas para QMC: 64, 128, 256, 512
-N_TRIALS = 1024
+N_TRIALS = 128
 
 # "QMC"    → Exploración uniforme (secuencias Sobol). Bueno para primera pasada.
 # "TPE"    → Guiado por resultados anteriores. Bueno para refinar.
