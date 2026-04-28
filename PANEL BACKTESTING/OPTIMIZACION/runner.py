@@ -32,8 +32,15 @@ from OPTIMIZACION.samplers import crear_sampler
 from REPORTES.excel import MAX_DETALLES_EXCEL, generar_excel
 from REPORTES.html import generar_htmls
 from REPORTES.informe import generar_informe
-from REPORTES.persistencia import guardar_optimizacion
-from REPORTES.rich import MonitorOptimizacion
+from REPORTES.persistencia import guardar_optimizacion, preparar_resultados_combinacion
+from REPORTES.rich import (
+    MonitorOptimizacion,
+    mostrar_aviso_perturbaciones,
+    mostrar_fin_backtest,
+    mostrar_huella_datos,
+    mostrar_inicio_motor,
+    mostrar_resumen_run,
+)
 
 
 @dataclass(frozen=True)
@@ -58,7 +65,6 @@ class ReplayTrial:
     trades: dict[str, np.ndarray]
     equity_curve: np.ndarray
     df_tf: Any | None = None
-    df_exec: Any | None = None
     indicadores: list[dict] | None = None
     perturbacion_seed: int | None = None
 
@@ -82,7 +88,7 @@ class TrialResultado:
 
 
 def main() -> None:
-    print("[RUN] Backtest motor v2 — buffers numpy, métricas en Rust, GIL liberado")
+    mostrar_inicio_motor()
     validar_config(cfg)
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     fecha_inicio = _fecha_config(cfg.FECHA_INICIO, "FECHA_INICIO")
@@ -97,7 +103,7 @@ def main() -> None:
     n_jobs = _normalizar_jobs(cfg.N_JOBS)
     perturbaciones = ConfiguracionPerturbaciones.desde_config(cfg)
     if perturbaciones.activa and n_jobs != 1:
-        print("[PERT] Perturbaciones activas: N_JOBS se ajusta a 1 para evitar duplicar caminos en paralelo.")
+        mostrar_aviso_perturbaciones(n_jobs_original=n_jobs, n_jobs_final=1)
         n_jobs = 1
     combinaciones_esperadas = len(activos) * len(timeframes) * len(estrategias) * len(salidas)
     combinaciones_ejecutadas: set[tuple[str, str, int, str]] = set()
@@ -115,7 +121,8 @@ def main() -> None:
             permitir_huecos=permitir_huecos,
         )
         huella_base = integridad.huella_dataframe(f"{activo} carga", df_base)
-        _imprimir_huella(huella_base)
+        mostrar_huella_datos(huella_base)
+        perturbaciones_activo = perturbaciones.con_tabla_desde(df_base)
 
         for timeframe in timeframes:
             df_tf = resamplear(df_base, timeframe)
@@ -128,13 +135,13 @@ def main() -> None:
             )
             integridad.verificar_resampleo(df_base, df_tf, timeframe)
             huella_tf = integridad.huella_dataframe(f"{activo} {timeframe}", df_tf)
-            _imprimir_huella(huella_tf)
+            mostrar_huella_datos(huella_tf)
             ctx = crear_contexto(df_base=df_base, df_tf=df_tf)
 
             for estrategia in estrategias:
                 # Sin perturbaciones los buffers son estables para toda la
                 # combinacion. Con perturbaciones se clona y vincula por trial.
-                if not perturbaciones.activa:
+                if not perturbaciones_activo.activa:
                     cache_indicadores = CacheIndicadores()
                     estrategia.bind(ctx.arrays_tf, cache_indicadores)
                 try:
@@ -145,6 +152,13 @@ def main() -> None:
                         combinaciones_ejecutadas.add(clave)
 
                         try:
+                            resultados_base = preparar_resultados_combinacion(
+                                carpeta_resultados=cfg.CARPETA_RESULTADOS,
+                                activo=activo,
+                                timeframe=timeframe,
+                                estrategia_nombre=estrategia.NOMBRE,
+                                exit_type=salida.tipo,
+                            )
                             trials = _optimizar_combinacion(
                                 activo=activo,
                                 timeframe=timeframe,
@@ -155,7 +169,8 @@ def main() -> None:
                                 n_jobs=n_jobs,
                                 fecha_inicio=fecha_inicio,
                                 fecha_fin=fecha_fin,
-                                perturbaciones=perturbaciones,
+                                perturbaciones=perturbaciones_activo,
+                                resultados_base=resultados_base,
                             )
                         except Exception as exc:
                             contexto = (
@@ -189,7 +204,6 @@ def main() -> None:
                         html_paths = generar_htmls(
                             run_dir=run_dir,
                             df=ctx.df_tf,
-                            df_exec=_df_para_reporte(ctx, salida),
                             df_indicadores=ctx.df_tf,
                             trials=trials,
                             estrategia=estrategia,
@@ -207,7 +221,14 @@ def main() -> None:
                             salida_tipo=salida.tipo,
                         )
 
-                        _imprimir_resumen_run(mejor, run_dir, excel_path, html_paths, informe_path)
+                        mostrar_resumen_run(
+                            mejor=mejor,
+                            total_trials=cfg.N_TRIALS,
+                            run_dir=run_dir,
+                            excel_path=excel_path,
+                            html_paths=html_paths,
+                            informe_path=informe_path,
+                        )
                         total_runs += 1
                         del trials, mejor, run_dir, excel_path, html_paths, informe_path
                         gc.collect()
@@ -225,7 +246,7 @@ def main() -> None:
             f"[RUN] Runs ejecutados incorrectos: {total_runs} != {combinaciones_esperadas}."
         )
 
-    print(f"[OK] Backtest completado. Combinaciones verificadas: {total_runs}")
+    mostrar_fin_backtest(total_runs)
 
 
 def _optimizar_combinacion(
@@ -240,8 +261,10 @@ def _optimizar_combinacion(
     fecha_inicio: date,
     fecha_fin: date,
     perturbaciones: ConfiguracionPerturbaciones,
+    resultados_base: Any,
 ) -> list[TrialResultado]:
-    sampler = crear_sampler(cfg.OPTUNA_SAMPLER, cfg.OPTUNA_SEED, cfg.N_TRIALS)
+    seed_activa = _seed_activa()
+    sampler = crear_sampler(cfg.OPTUNA_SAMPLER, _optuna_seed(), cfg.N_TRIALS)
     study = optuna.create_study(direction="maximize", sampler=sampler)
     resultados: list[TrialResultado] = []
     lock = Lock()
@@ -294,7 +317,6 @@ def _optimizar_combinacion(
             )
             timeframe_ejecucion = _timeframe_ejecucion(
                 ctx=ctx_trial,
-                salida=salida_trial,
                 timeframe=timeframe,
                 timeframe_base=timeframe_base,
             )
@@ -348,6 +370,11 @@ def _optimizar_combinacion(
         total_trials=cfg.N_TRIALS,
         sampler=cfg.OPTUNA_SAMPLER,
         n_jobs=n_jobs,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+        perturbaciones=perturbaciones.activa,
+        seed_activa=seed_activa,
+        resultados_dir=resultados_base,
     ) as monitor:
         study.optimize(objective, n_trials=cfg.N_TRIALS, n_jobs=n_jobs)
 
@@ -485,6 +512,16 @@ def _estrategia_para_trial(estrategia, perturbaciones: ConfiguracionPerturbacion
     return type(estrategia)()
 
 
+def _seed_activa() -> bool:
+    return bool(getattr(cfg, "USAR_SEED", True))
+
+
+def _optuna_seed() -> int | None:
+    if not _seed_activa():
+        return None
+    return getattr(cfg, "OPTUNA_SEED", None)
+
+
 def _preparar_ejecucion(
     *,
     ctx: ContextoCombinacion,
@@ -492,7 +529,7 @@ def _preparar_ejecucion(
     senales_tf,
     salidas_custom,
 ) -> tuple[ArraysMotor, Any, Any]:
-    if salida.tipo == "CUSTOM" or ctx.es_min_tf:
+    if ctx.es_min_tf:
         return ctx.arrays_tf, senales_tf, salidas_custom
 
     senales_base = proyectar_senales_a_base(
@@ -500,23 +537,26 @@ def _preparar_ejecucion(
         ctx.tf_to_base_idx,
         ctx.df_base.height,
     )
+    if salida.tipo == "CUSTOM":
+        if salidas_custom is None:
+            raise ValueError("[CUSTOM] Falta la serie de salidas custom para preparar ejecucion.")
+        salidas_base = proyectar_senales_a_base(
+            salidas_custom,
+            ctx.tf_to_base_idx,
+            ctx.df_base.height,
+        )
+        return ctx.arrays_base, senales_base, salidas_base
+
     return ctx.arrays_base, senales_base, None
-
-
-def _df_para_reporte(ctx: ContextoCombinacion, salida: ExitConfig):
-    if salida.tipo == "CUSTOM" or ctx.es_min_tf:
-        return ctx.df_tf
-    return ctx.df_base
 
 
 def _timeframe_ejecucion(
     *,
     ctx: ContextoCombinacion,
-    salida: ExitConfig,
     timeframe: str,
     timeframe_base: str,
 ) -> str:
-    if salida.tipo == "CUSTOM" or ctx.es_min_tf:
+    if ctx.es_min_tf:
         return str(timeframe)
     return str(timeframe_base)
 
@@ -664,35 +704,3 @@ def _columnas_requeridas(estrategias) -> set[str]:
     for estrategia in estrategias:
         columnas.update(getattr(estrategia, "COLUMNAS_REQUERIDAS", set()))
     return columnas
-
-
-def _imprimir_huella(huella: integridad.HuellaDatos) -> None:
-    print(
-        "[DATOS] "
-        f"{huella.etapa}: filas={huella.filas:,} "
-        f"rango={huella.ts_inicio} -> {huella.ts_fin}"
-    )
-
-
-def _imprimir_resumen_run(mejor: TrialResultado, run_dir, excel_path, html_paths, informe_path) -> None:
-    metricas = mejor.metricas
-    excel_txt = str(excel_path) if excel_path is not None else "desactivado"
-    print(
-        "[RESULTADO] "
-        f"{mejor.activo} {mejor.timeframe} {mejor.estrategia_nombre} {mejor.salida.tipo}: "
-        f"trials={cfg.N_TRIALS:,} "
-        f"mejor_trial={mejor.numero} "
-        f"score={mejor.score:.6f} "
-        f"roi={metricas['roi_total']:.2%} "
-        f"expectancy={metricas['expectancy']:.2%} "
-        f"win_rate={metricas['win_rate']:.2%} "
-        f"profit_factor={metricas['profit_factor']:.4f} "
-        f"sharpe={metricas['sharpe_ratio']:.4f} "
-        f"max_dd={metricas['max_drawdown']:.2%} "
-        f"trades_dia={metricas['trades_por_dia']:.4f} "
-        f"trades={metricas['total_trades']:,} "
-        f"excel={excel_txt} "
-        f"htmls={len(html_paths)} "
-        f"informe={informe_path} "
-        f"dir={run_dir}"
-    )

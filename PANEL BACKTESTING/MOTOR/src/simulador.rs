@@ -14,9 +14,7 @@
 // ---------------------------------------------------------------------------
 
 use crate::capital;
-use crate::tipos::{
-    motivo, Direccion, ExitType, Metricas, SimConfig, SimResultFull, VelasSoA,
-};
+use crate::tipos::{motivo, Direccion, ExitType, Metricas, SimConfig, SimResultFull, VelasSoA};
 
 struct TradeAbierto {
     idx_senal: usize,
@@ -274,13 +272,35 @@ fn simular_core<F>(
 {
     let n = velas.len();
     debug_assert_eq!(n, senales.len(), "velas y senales deben coincidir");
-    debug_assert_eq!(n, salidas_custom.len(), "velas y salidas_custom deben coincidir");
+    debug_assert_eq!(
+        n,
+        salidas_custom.len(),
+        "velas y salidas_custom deben coincidir"
+    );
 
     let mut trade_abierto: Option<TradeAbierto> = None;
     let mut senal_pendiente: Option<(usize, Direccion)> = None;
+    let mut salida_custom_pendiente = false;
 
     for i in 0..n {
-        // 1. ABRIR
+        // 1. Ejecutar una salida CUSTOM confirmada en la vela anterior.
+        if salida_custom_pendiente {
+            salida_custom_pendiente = false;
+            if let Some(ref trade) = trade_abierto {
+                let (precio_salida, motivo) =
+                    evaluar_salida_custom_pendiente(trade, velas.opens[i]);
+                let ev = construir_evento(trade, &velas, i, precio_salida, motivo, acc.saldo);
+                acc.registrar(&ev);
+                on_trade(ev);
+                trade_abierto = None;
+                if acc.saldo < config.saldo_minimo {
+                    acc.parado_por_saldo = true;
+                    break;
+                }
+            }
+        }
+
+        // 2. ABRIR
         if let Some((idx_senal, direccion)) = senal_pendiente.take() {
             if trade_abierto.is_none() {
                 if acc.saldo < config.saldo_minimo || acc.saldo < config.saldo_por_trade {
@@ -341,7 +361,7 @@ fn simular_core<F>(
             }
         }
 
-        // 2. CERRAR (si aplica)
+        // 3. CERRAR por reglas intrabar o de tiempo (si aplica)
         if let Some(ref trade) = trade_abierto {
             let velas_transcurridas = i - trade.idx_entrada + 1;
             if let Some((precio_salida, motivo)) = evaluar_salida(
@@ -351,7 +371,6 @@ fn simular_core<F>(
                 velas.lows[i],
                 velas.closes[i],
                 velas_transcurridas,
-                salidas_custom[i],
             ) {
                 let ev = construir_evento(trade, &velas, i, precio_salida, motivo, acc.saldo);
                 acc.registrar(&ev);
@@ -364,7 +383,15 @@ fn simular_core<F>(
             }
         }
 
-        // 3. NUEVA SEÑAL (se ejecuta en la siguiente vela)
+        // 4. Programar salida CUSTOM: se confirma al cierre de esta vela y se
+        // ejecuta en el open de la siguiente vela disponible.
+        if let Some(ref trade) = trade_abierto {
+            if trade.usar_custom && salida_custom_activa(trade, salidas_custom[i]) {
+                salida_custom_pendiente = true;
+            }
+        }
+
+        // 5. NUEVA SEÑAL (se ejecuta en la siguiente vela)
         if trade_abierto.is_none() && senales[i] != 0 {
             if let Ok(direccion) = Direccion::from_signal(senales[i]) {
                 senal_pendiente = Some((i, direccion));
@@ -452,54 +479,77 @@ fn evaluar_salida(
     low: f64,
     close: f64,
     velas_transcurridas: usize,
-    salida_custom: i8,
 ) -> Option<(f64, u8)> {
     // 1. Stop Loss (peor caso dentro de la vela)
-    if trade.precio_sl > 0.0 {
-        match trade.direccion {
-            Direccion::Long if low <= trade.precio_sl => {
-                let precio = if open < trade.precio_sl { open } else { trade.precio_sl };
-                return Some((precio, motivo::SL));
-            }
-            Direccion::Short if high >= trade.precio_sl => {
-                let precio = if open > trade.precio_sl { open } else { trade.precio_sl };
-                return Some((precio, motivo::SL));
-            }
-            _ => {}
-        }
+    if let Some(precio) = evaluar_stop_loss(trade, open, high, low) {
+        return Some((precio, motivo::SL));
     }
 
-    // 2. Salida CUSTOM (al close)
-    if trade.usar_custom {
-        match (trade.direccion, salida_custom) {
-            (Direccion::Long, 1) | (Direccion::Short, -1) => {
-                return Some((close, motivo::CUSTOM));
-            }
-            _ => {}
-        }
-    }
-
-    // 3. Take Profit (mejor caso dentro de la vela)
+    // 2. Take Profit (mejor caso dentro de la vela)
     if trade.precio_tp > 0.0 {
         match trade.direccion {
             Direccion::Long if high >= trade.precio_tp => {
-                let precio = if open > trade.precio_tp { open } else { trade.precio_tp };
+                let precio = if open > trade.precio_tp {
+                    open
+                } else {
+                    trade.precio_tp
+                };
                 return Some((precio, motivo::TP));
             }
             Direccion::Short if low <= trade.precio_tp => {
-                let precio = if open < trade.precio_tp { open } else { trade.precio_tp };
+                let precio = if open < trade.precio_tp {
+                    open
+                } else {
+                    trade.precio_tp
+                };
                 return Some((precio, motivo::TP));
             }
             _ => {}
         }
     }
 
-    // 4. Máximo de velas (BARS)
+    // 3. Máximo de velas (BARS)
     if trade.max_velas > 0 && velas_transcurridas >= trade.max_velas {
         return Some((close, motivo::BARS));
     }
 
     None
+}
+
+#[inline]
+fn evaluar_salida_custom_pendiente(trade: &TradeAbierto, open: f64) -> (f64, u8) {
+    if let Some(precio) = evaluar_stop_loss(trade, open, open, open) {
+        return (precio, motivo::SL);
+    }
+    (open, motivo::CUSTOM)
+}
+
+#[inline]
+fn evaluar_stop_loss(trade: &TradeAbierto, open: f64, high: f64, low: f64) -> Option<f64> {
+    if trade.precio_sl <= 0.0 {
+        return None;
+    }
+    match trade.direccion {
+        Direccion::Long if low <= trade.precio_sl => Some(if open < trade.precio_sl {
+            open
+        } else {
+            trade.precio_sl
+        }),
+        Direccion::Short if high >= trade.precio_sl => Some(if open > trade.precio_sl {
+            open
+        } else {
+            trade.precio_sl
+        }),
+        _ => None,
+    }
+}
+
+#[inline]
+fn salida_custom_activa(trade: &TradeAbierto, salida_custom: i8) -> bool {
+    matches!(
+        (trade.direccion, salida_custom),
+        (Direccion::Long, 1) | (Direccion::Short, -1)
+    )
 }
 
 #[cfg(test)]
@@ -623,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn test_custom_cierra_long_al_close() {
+    fn test_custom_cierra_long_en_open_siguiente() {
         let ts = [1, 2, 3, 4];
         let o = [100.0, 100.0, 101.0, 102.0];
         let h = [101.0, 101.0, 102.0, 103.0];
@@ -633,7 +683,23 @@ mod tests {
         let r = simular_full(velas, &[1i8, 0, 0, 0], &[0i8, 0, 1, 0], &cfg_custom());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.motivo_salida[0], motivo::CUSTOM);
-        assert!((r.precio_salida[0] - 101.5).abs() < 1e-10);
+        assert_eq!(r.idx_salida[0], 3);
+        assert!((r.precio_salida[0] - 102.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_custom_pendiente_respeta_sl_en_gap_de_open() {
+        let ts = [1, 2, 3, 4];
+        let o = [100.0, 100.0, 101.0, 95.0];
+        let h = [101.0, 101.0, 102.0, 97.0];
+        let l = [99.0, 99.0, 100.0, 94.0];
+        let c = [100.0, 100.5, 101.5, 96.0];
+        let velas = build_soa(&ts, &o, &h, &l, &c);
+        let r = simular_full(velas, &[1i8, 0, 0, 0], &[0i8, 0, 1, 0], &cfg_custom());
+        assert_eq!(r.metricas.total_trades, 1);
+        assert_eq!(r.motivo_salida[0], motivo::SL);
+        assert_eq!(r.idx_salida[0], 3);
+        assert!((r.precio_salida[0] - 95.0).abs() < 1e-10);
     }
 
     #[test]

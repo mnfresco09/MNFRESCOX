@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from secrets import randbits
 import warnings
 
 import optuna
@@ -12,12 +13,13 @@ from optuna.trial import FrozenTrial
 
 def crear_sampler(modo: str, seed: int | None, n_trials: int) -> BaseSampler:
     modo_normalizado = str(modo).upper()
+    seed_efectiva = _normalizar_seed(seed)
     if modo_normalizado == "QMC":
-        return _qmc(seed)
+        return _qmc(seed_efectiva)
     if modo_normalizado == "TPE":
-        return _tpe(seed)
+        return _tpe(seed_efectiva)
     if modo_normalizado == "HYBRID":
-        return HybridSampler(seed=seed, split=max(1, n_trials // 2))
+        return HybridSampler(seed=seed_efectiva, split=max(1, n_trials // 2))
 
     raise ValueError(f"Sampler no soportado: {modo!r}.")
 
@@ -100,3 +102,9 @@ def _tpe(seed: int | None) -> BaseSampler:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ExperimentalWarning)
         return optuna.samplers.TPESampler(seed=seed, multivariate=True)
+
+
+def _normalizar_seed(seed: int | None) -> int:
+    if seed is not None:
+        return int(seed)
+    return int(randbits(32))

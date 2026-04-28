@@ -70,8 +70,11 @@ N_TRIALS = 64
 # "HYBRID" → QMC primera mitad + TPE segunda mitad. Recomendado por defecto.
 OPTUNA_SAMPLER = "HYBRID"
 
-# None → resultados distintos en cada ejecución
-# Número entero → reproducibilidad exacta
+# True  = usa las semillas configuradas y permite reproducibilidad.
+# False = ignora las semillas y cada ejecución explora caminos aleatorios.
+USAR_SEED = False
+
+# Entero obligatorio cuando USAR_SEED = True.
 OPTUNA_SEED = 42
 
 # ---------------------------------------------------------------------------
@@ -79,19 +82,14 @@ OPTUNA_SEED = 42
 # ---------------------------------------------------------------------------
 # False = todos los trials ven el Parquet original.
 # True  = cada trial ve un camino alternativo plausible, generado en memoria.
-PERTURBACIONES_ACTIVAS = False
+PERTURBACIONES_ACTIVAS = True
+# Entero obligatorio cuando USAR_SEED = True y PERTURBACIONES_ACTIVAS = True.
 PERTURBACIONES_SEED = 42
 
-BANDA_MAX_PRECIO = 0.15
-FUERZA_AMORTIGUACION = 0.10
-ESCALA_VOLATILIDAD = 0.50
-VENTANA_VOLATILIDAD = 20
-SIGMA_RANGO_VELA = 0.05
-RUIDO_POSICION_OHLC = 0.08
-SIGMA_VOLUMEN = 0.10
+# Parametros de la tabla automatica de microestructura.
+# Los valores de la tabla se calculan desde el Parquet cargado.
 GRANULARIDAD_CUBOS = 0.005
-INERCIA_ORDER_FLOW = 0.30
-VENTANA_MEDIA_VOLUMEN = 20
+PERCENTIL_TABLA = 0.10
 
 # ---------------------------------------------------------------------------
 # PARALELISMO

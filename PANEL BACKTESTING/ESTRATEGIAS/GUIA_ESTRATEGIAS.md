@@ -33,15 +33,19 @@ Si se quiere usar `EXIT_TYPE = "CUSTOM"` tambien debe definir:
 - `1`: cerrar un LONG abierto.
 - `-1`: cerrar un SHORT abierto.
 
-La salida CUSTOM cierra al `close` de la vela donde aparece la condicion. El
-Stop Loss de seguridad se evalua antes que la salida CUSTOM. Si una vela toca el
-SL y tambien aparece una salida custom, el trade cierra por `SL`.
+La salida CUSTOM se confirma con la vela donde aparece la condicion, pero no
+cierra en ese mismo `close`: el motor la ejecuta en el `open` de la siguiente
+vela disponible. El Stop Loss de seguridad se evalua antes que la salida CUSTOM.
+Si una vela toca el SL y tambien aparece una salida custom, el trade cierra por
+`SL`. Si la salida custom queda pendiente y el siguiente `open` ya cruza el SL,
+el trade tambien cierra por `SL`.
 
 Las salidas `FIXED` y `BARS` se ejecutan en el timeframe mas bajo disponible en
 `HISTORICO`, aunque la estrategia opere en un timeframe superior. La señal sigue
 naciendo en la vela de estrategia y la entrada se mantiene en el `open` de la
-siguiente vela de estrategia. `CUSTOM` no usa este cambio: se queda en el mismo
-timeframe de la estrategia porque la logica de salida pertenece a la estrategia.
+siguiente vela de estrategia. `CUSTOM` calcula la condicion en el timeframe de
+la estrategia, proyecta esa condicion al timeframe de ejecucion y cierra en el
+`open` siguiente para evitar look-ahead.
 
 ## Regla anti-lookahead
 
@@ -50,6 +54,7 @@ La estrategia no puede usar informacion futura. En la practica:
 - No usar `shift(-1)` para decidir señales o salidas.
 - No calcular indicadores con velas posteriores a la vela actual.
 - No entrar en el `close` de la misma vela donde se genera la señal.
+- No cerrar una salida custom en el mismo `close` donde se confirma.
 - No rellenar nulos de indicadores con datos futuros.
 - No modificar el DataFrame recibido.
 

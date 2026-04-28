@@ -17,7 +17,6 @@ def generar_htmls(
     *,
     run_dir: Path,
     df: pl.DataFrame,
-    df_exec: pl.DataFrame | None = None,
     df_indicadores: pl.DataFrame | None = None,
     trials: list,
     estrategia,
@@ -29,10 +28,6 @@ def generar_htmls(
     if max_plots <= 0:
         return []
     df_indicadores = df if df_indicadores is None else df_indicadores
-    # df_exec es el df sobre el que se ejecutó la simulación (puede ser base 1m).
-    # Se usa solo para resolver los índices de trades a timestamps.
-    # df es siempre el TF de señales y define las velas del gráfico.
-    df_exec_real = df if df_exec is None else df_exec
 
     html_dir = _base_resultados(run_dir) / "GRAFICA"
     html_dir.mkdir(parents=True, exist_ok=True)
@@ -44,13 +39,8 @@ def generar_htmls(
     paths = []
     for trial in mejores:
         df_trial = _df_replay(trial, "df_tf", df)
-        df_exec_trial = _df_replay(trial, "df_exec", df_exec_real)
         df_indicadores_trial = _df_replay(trial, "df_tf", df_indicadores)
         df_idx = df_trial.with_row_index("_i_")
-        idx_to_time: dict[int, int] = {
-            int(row["_i_"]): int(row["timestamp"].timestamp())
-            for row in df_exec_trial.with_row_index("_i_").select(["_i_", "timestamp"]).iter_rows(named=True)
-        }
         path = _unique_path(
             html_dir
             / (
@@ -61,7 +51,6 @@ def generar_htmls(
             df=df_trial,
             df_idx=df_idx,
             df_indicadores=df_indicadores_trial,
-            idx_to_time=idx_to_time,
             trial=trial,
             estrategia=estrategia,
             indicadores_precalculados=getattr(trial.replay, "indicadores", None),
@@ -110,7 +99,6 @@ def _crear_payload(
     df: pl.DataFrame,
     df_idx: pl.DataFrame,
     df_indicadores: pl.DataFrame,
-    idx_to_time: dict[int, int],
     trial,
     estrategia,
     indicadores_precalculados: list[dict] | None,
@@ -158,9 +146,9 @@ def _crear_payload(
         idx_signal = int(cols["idx_senal"][i])
         idx_e = int(cols["idx_entrada"][i])
         idx_s = int(cols["idx_salida"][i])
-        t_signal = idx_to_time.get(idx_signal) or _segundos_desde_us(cols["ts_senal"][i])
-        t_e = idx_to_time.get(idx_e) or _segundos_desde_us(cols["ts_entrada"][i])
-        t_s = idx_to_time.get(idx_s) or _segundos_desde_us(cols["ts_salida"][i])
+        t_signal = _segundos_desde_us(cols["ts_senal"][i])
+        t_e = _segundos_desde_us(cols["ts_entrada"][i])
+        t_s = _segundos_desde_us(cols["ts_salida"][i])
         dir_int = int(cols["direccion"][i])
         direccion = "LONG" if dir_int == 1 else "SHORT"
         pnl = float(cols["pnl"][i])
@@ -253,7 +241,6 @@ def _crear_payload(
 
     equity_drawdown = _crear_equity_drawdown(
         trial=trial,
-        idx_to_time=idx_to_time,
         ts_min=ts_min,
         ts_max=ts_max,
         ts_inicio_total=int(df_idx["timestamp"][0].timestamp()),
@@ -400,7 +387,6 @@ def _resumen_trades(trades: list[dict]) -> dict:
 def _crear_equity_drawdown(
     *,
     trial,
-    idx_to_time: dict[int, int],
     ts_min: int,
     ts_max: int,
     ts_inicio_total: int,
@@ -416,8 +402,7 @@ def _crear_equity_drawdown(
     for i in range(int(cols["idx_salida"].shape[0])):
         saldo = float(equity_curve[i + 1])
         peak = max(peak, saldo)
-        idx_s = int(cols["idx_salida"][i])
-        ts = idx_to_time.get(idx_s) or _segundos_desde_us(cols["ts_salida"][i])
+        ts = _segundos_desde_us(cols["ts_salida"][i])
         puntos.append({"time": int(ts), "saldo": saldo, "peak": peak})
 
     puntos = _deduplicar_por_tiempo(sorted(puntos, key=lambda p: p["time"]))

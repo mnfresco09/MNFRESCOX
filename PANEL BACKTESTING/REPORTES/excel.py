@@ -15,14 +15,13 @@ from REPORTES.persistencia import equity_dataframe, resumen_trials_dataframe, tr
 
 # ── Orden de columnas ─────────────────────────────────────────────────────────
 
-ID_ORDER = ["trial", "activo", "timeframe", "timeframe_ejecucion", "estrategia", "salida", "score"]
+ID_ORDER = ["trial", "activo", "estrategia", "salida", "score"]
 METRIC_ORDER = [
     "total_trades",
     "trades_long",
     "trades_short",
     "trades_ganadores",
     "trades_perdedores",
-    "trades_neutros",
     "win_rate",
     "roi_total",
     "expectancy",
@@ -36,16 +35,22 @@ METRIC_ORDER = [
     "saldo_inicial",
     "saldo_final",
     "duracion_media_seg",
-    "parado_por_saldo",
 ]
+SUMMARY_EXCLUDED_COLS = {
+    "timeframe",
+    "timeframe_ejecucion",
+    "trades_neutros",
+    "parado_por_saldo",
+    "duracion_media_velas",
+    "param_exit_type",
+    "param_exit_velas",
+}
 
 # ── Nombres de cabecera ───────────────────────────────────────────────────────
 
 SUMMARY_NAMES = {
     "trial":             "TRIAL",
     "activo":            "ACTIVO",
-    "timeframe":         "TF",
-    "timeframe_ejecucion": "TF EJEC.",
     "estrategia":        "ESTRATEGIA",
     "salida":            "EXIT",
     "score":             "SCORE",
@@ -54,7 +59,6 @@ SUMMARY_NAMES = {
     "trades_short":      "SHORT",
     "trades_ganadores":  "WIN",
     "trades_perdedores": "LOSS",
-    "trades_neutros":    "BE",
     "win_rate":          "WIN RATE",
     "roi_total":         "ROI",
     "expectancy":        "EXPECT.",
@@ -68,15 +72,14 @@ SUMMARY_NAMES = {
     "saldo_inicial":     "SALDO INI",
     "saldo_final":       "SALDO FIN",
     "duracion_media_seg": "DUR MEDIA",
-    "parado_por_saldo":  "STOP SALDO",
-    "param_exit_type":   "EXIT TYPE",
     "param_exit_sl_pct": "SL %",
     "param_exit_tp_pct": "TP %",
-    "param_exit_velas":  "VELAS",
 }
 
 _TRADE_COLS_OCULTAS  = {"idx_senal", "idx_entrada", "idx_salida", "direccion", "duracion_velas"}
 _EQUITY_COLS_OCULTAS = {"idx_salida"}
+_EQUITY_CHART_DATE_COL = 4
+_EQUITY_CHART_DATE_HEADER = "FECHA GRAF."
 
 TRADE_NAMES = {
     "ts_senal":        "SEÑAL",
@@ -108,9 +111,10 @@ EQUITY_NAMES = {
 MONEY_COLS = {
     "saldo_inicial", "saldo_final",
     "pnl_bruto_total", "pnl_total", "pnl_promedio",
-    "saldo_apertura", "tamano_posicion", "comision_total",
+    "saldo_apertura", "comision_total",
     "pnl_bruto", "pnl", "saldo_post", "saldo",
 }
+QUANTITY_COLS = {"tamano_posicion"}
 PCT_COLS      = {"win_rate", "roi_total", "expectancy", "max_drawdown", "roi"}
 PCT_POINT_COLS = {"param_exit_sl_pct", "param_exit_tp_pct"}
 INT_COLS      = {
@@ -211,6 +215,22 @@ def verificar_detalle_excel(path: Path, filas_trades: int, filas_equity: int) ->
                 raise ValueError(
                     f"[EXCEL] {sheet} no conserva filas: {filas_xml} != {filas}."
                 )
+        if filas_trades > 0:
+            _verificar_chart_balance_temporal(zf, presentes)
+
+
+def _verificar_chart_balance_temporal(zf: zipfile.ZipFile, presentes: set[str]) -> None:
+    charts = sorted(p for p in presentes if p.startswith("xl/charts/chart") and p.endswith(".xml"))
+    if not charts:
+        raise ValueError("[EXCEL] No se genero el grafico de balance.")
+
+    contenido = "\n".join(zf.read(path).decode("utf-8") for path in charts)
+    if "<c:dateAx>" not in contenido:
+        raise ValueError("[EXCEL] El grafico de balance no usa eje temporal.")
+    if "$E$2" not in contenido:
+        raise ValueError("[EXCEL] El grafico de balance no usa la columna temporal.")
+    if "mm/yyyy" not in contenido:
+        raise ValueError("[EXCEL] El grafico de balance no usa formato mensual.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -229,7 +249,7 @@ def _generar_excel_detalle(excel_dir: Path, trial) -> Path:
     try:
         formatos = _crear_formatos(workbook)
         _write_trades(workbook, trades, equity.height, formatos)
-        _write_equity(workbook, equity, formatos)
+        _write_equity(workbook, equity, trades, formatos)
     finally:
         workbook.close()
 
@@ -288,7 +308,7 @@ def _write_trades(workbook, df: pl.DataFrame, filas_equity: int, formatos: dict)
         _insert_balance_chart(workbook, ws, start_row=df.height + 3, filas_equity=filas_equity)
 
 
-def _write_equity(workbook, df: pl.DataFrame, formatos: dict) -> None:
+def _write_equity(workbook, df: pl.DataFrame, trades: pl.DataFrame, formatos: dict) -> None:
     ws = workbook.add_worksheet("EQUITY")
     ws.hide_gridlines(2)
     ws.set_tab_color(_CHART_LINE)
@@ -307,6 +327,34 @@ def _write_equity(workbook, df: pl.DataFrame, formatos: dict) -> None:
     ws.autofilter(0, 0, max(df.height, 1), max(len(columnas) - 1, 0))
     ws.set_row(0, 28)
     _set_widths(ws, columnas, df, EQUITY_NAMES)
+    _write_equity_chart_dates(ws, df, trades, formatos)
+
+
+def _write_equity_chart_dates(worksheet, df: pl.DataFrame, trades: pl.DataFrame, formatos: dict) -> None:
+    worksheet.write(0, _EQUITY_CHART_DATE_COL, _EQUITY_CHART_DATE_HEADER, formatos["header"])
+    first_entry_ts = (
+        trades["ts_entrada"][0]
+        if trades.height > 0 and "ts_entrada" in trades.columns
+        else None
+    )
+    ts_salida = df["ts_salida"].to_list() if "ts_salida" in df.columns else []
+
+    for idx in range(df.height):
+        row = idx + 1
+        alt = row % 2 == 0
+        value = first_entry_ts if idx == 0 else (
+            ts_salida[idx] if idx < len(ts_salida) else None
+        )
+        _write_cell(
+            worksheet,
+            row,
+            _EQUITY_CHART_DATE_COL,
+            value,
+            formatos["date"][1 if alt else 0],
+            "ts_salida",
+        )
+
+    worksheet.set_column(_EQUITY_CHART_DATE_COL, _EQUITY_CHART_DATE_COL, 12, None, {"hidden": True})
 
 
 def _insert_balance_chart(workbook, worksheet, *, start_row: int, filas_equity: int) -> None:
@@ -315,7 +363,7 @@ def _insert_balance_chart(workbook, worksheet, *, start_row: int, filas_equity: 
     chart.add_series(
         {
             "name":       "Balance",
-            "categories": f"=EQUITY!$B$2:$B${last_row}",
+            "categories": f"=EQUITY!$E$2:$E${last_row}",
             "values":     f"=EQUITY!$D$2:$D${last_row}",
             "line":  {"color": _CHART_LINE, "width": 2.0},
             "fill":  {"color": _CHART_LINE, "transparency": 80},
@@ -333,7 +381,11 @@ def _insert_balance_chart(workbook, worksheet, *, start_row: int, filas_equity: 
     )
     chart.set_x_axis(
         {
-            "name": "Trade",
+            "name": "Fecha",
+            "date_axis": True,
+            "num_format": "mm/yyyy",
+            "major_unit": 3,
+            "major_unit_type": "months",
             "major_gridlines": {"visible": False},
             "num_font": {"color": _FG_DIM},
             "name_font": {"color": _FG_DIM},
@@ -408,7 +460,7 @@ def _crear_formatos(workbook) -> dict:
         "num":       pair("0.000000"),
         "ratio":     pair("0.00"),
         "money":     pair('$#,##0.00'),
-        "money3":    pair('$#,##0.000'),
+        "quantity3": pair('#,##0.000'),
         "price":     pair('#,##0.00'),
         "pct":       pair("0.00%"),
         "pct_point": pair('0.0"%"'),
@@ -442,9 +494,9 @@ def _format_for(name: str, formatos: dict, alt: bool):
         return formatos["date"][idx]
     if name in DUR_SEG_COLS:
         return formatos["dur"][idx]
+    if name in QUANTITY_COLS:
+        return formatos["quantity3"][idx]
     if name in MONEY_COLS:
-        if name == "tamano_posicion":
-            return formatos["money3"][idx]
         return formatos["money"][idx]
     if name in PRICE_COLS:
         return formatos["price"][idx]
@@ -598,12 +650,13 @@ def _seg_a_dhm(segundos: Any) -> str:
 
 
 def _columnas_resumen(df: pl.DataFrame) -> list[str]:
-    existentes = set(df.columns)
+    columnas_visibles = [col for col in df.columns if col not in SUMMARY_EXCLUDED_COLS]
+    existentes = set(columnas_visibles)
     ids      = [col for col in ID_ORDER     if col in existentes]
     metricas = [col for col in METRIC_ORDER if col in existentes]
-    params   = sorted(col for col in df.columns if col.startswith("param_"))
+    params   = sorted(col for col in columnas_visibles if col.startswith("param_"))
     usados   = set(ids + metricas + params)
-    otros    = [col for col in df.columns if col not in usados]
+    otros    = [col for col in columnas_visibles if col not in usados]
     return ids + metricas + otros + params
 
 

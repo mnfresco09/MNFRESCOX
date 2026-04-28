@@ -86,6 +86,7 @@ def validar(cfg) -> None:
         errores.append("N_TRIALS debe ser >= 1.")
     if cfg.N_JOBS == 0:
         errores.append("N_JOBS no puede ser 0. Usa 1, -1 o -2.")
+    _validar_semillas(cfg, errores)
 
     _validar_perturbaciones(cfg, errores)
 
@@ -138,23 +139,40 @@ def _validar_modulos_salida(exit_type: str, errores: list[str]) -> None:
 
 def _validar_perturbaciones(cfg, errores: list[str]) -> None:
     activa = bool(getattr(cfg, "PERTURBACIONES_ACTIVAS", False))
+    usar_seed = bool(getattr(cfg, "USAR_SEED", True))
     seed = getattr(cfg, "PERTURBACIONES_SEED", None)
     if seed is not None and not isinstance(seed, int):
         errores.append("PERTURBACIONES_SEED debe ser int o None.")
+    if activa and usar_seed and seed is None:
+        errores.append("PERTURBACIONES_SEED debe ser int cuando USAR_SEED=True y PERTURBACIONES_ACTIVAS=True.")
 
     if not activa:
         return
 
-    _cfg_float_rango(cfg, "BANDA_MAX_PRECIO", errores, minimo=0.0, maximo=0.90, cerrado_min=False)
-    _cfg_float_rango(cfg, "FUERZA_AMORTIGUACION", errores, minimo=0.0, maximo=1.0)
-    _cfg_float_rango(cfg, "ESCALA_VOLATILIDAD", errores, minimo=0.0, maximo=None)
-    _cfg_int_min(cfg, "VENTANA_VOLATILIDAD", errores, minimo=2)
-    _cfg_float_rango(cfg, "SIGMA_RANGO_VELA", errores, minimo=0.0, maximo=None)
-    _cfg_float_rango(cfg, "RUIDO_POSICION_OHLC", errores, minimo=0.0, maximo=0.49)
-    _cfg_float_rango(cfg, "SIGMA_VOLUMEN", errores, minimo=0.0, maximo=None)
     _cfg_float_rango(cfg, "GRANULARIDAD_CUBOS", errores, minimo=0.0, maximo=None, cerrado_min=False)
-    _cfg_float_rango(cfg, "INERCIA_ORDER_FLOW", errores, minimo=0.0, maximo=1.0)
-    _cfg_int_min(cfg, "VENTANA_MEDIA_VOLUMEN", errores, minimo=2)
+    _cfg_float_rango(cfg, "PERCENTIL_TABLA", errores, minimo=0.0, maximo=0.49, cerrado_min=False)
+    _validar_kernel_perturbaciones(errores)
+
+
+def _validar_semillas(cfg, errores: list[str]) -> None:
+    usar_seed = getattr(cfg, "USAR_SEED", True)
+    if not isinstance(usar_seed, bool):
+        errores.append("USAR_SEED debe ser True o False.")
+
+    optuna_seed = getattr(cfg, "OPTUNA_SEED", None)
+    if optuna_seed is not None and not isinstance(optuna_seed, int):
+        errores.append("OPTUNA_SEED debe ser int o None.")
+    if usar_seed and optuna_seed is None:
+        errores.append("OPTUNA_SEED debe ser int cuando USAR_SEED=True.")
+
+
+def _validar_kernel_perturbaciones(errores: list[str]) -> None:
+    try:
+        from DATOS.perturbaciones import validar_kernel_numba
+
+        validar_kernel_numba()
+    except Exception as exc:
+        errores.append(str(exc))
 
 
 def _importar_salida(nombre: str, errores: list[str]):

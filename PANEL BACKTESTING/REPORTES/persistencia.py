@@ -92,12 +92,12 @@ def crear_run_dir(
     exit_type: str,
     max_archivos: int,
 ) -> Path:
-    base = (
-        carpeta_resultados
-        / slug(estrategia_nombre).upper()
-        / slug(exit_type).upper()
-        / slug(activo).upper()
-        / slug(timeframe).upper()
+    base = _base_combinacion(
+        carpeta_resultados=carpeta_resultados,
+        activo=activo,
+        timeframe=timeframe,
+        estrategia_nombre=estrategia_nombre,
+        exit_type=exit_type,
     )
     datos_dir = base / "DATOS"
     datos_dir.mkdir(parents=True, exist_ok=True)
@@ -112,6 +112,43 @@ def crear_run_dir(
     run_dir.mkdir()
     _rotar_runs(datos_dir, max_archivos=max_archivos)
     return run_dir
+
+
+def preparar_resultados_combinacion(
+    *,
+    carpeta_resultados: Path,
+    activo: str,
+    timeframe: str,
+    estrategia_nombre: str,
+    exit_type: str,
+) -> Path:
+    base = _base_combinacion(
+        carpeta_resultados=carpeta_resultados,
+        activo=activo,
+        timeframe=timeframe,
+        estrategia_nombre=estrategia_nombre,
+        exit_type=exit_type,
+    )
+    if base.exists():
+        shutil.rmtree(base)
+    return base
+
+
+def _base_combinacion(
+    *,
+    carpeta_resultados: Path,
+    activo: str,
+    timeframe: str,
+    estrategia_nombre: str,
+    exit_type: str,
+) -> Path:
+    return (
+        carpeta_resultados
+        / slug(estrategia_nombre).upper()
+        / slug(exit_type).upper()
+        / slug(activo).upper()
+        / slug(timeframe).upper()
+    )
 
 
 def resumen_trials_dataframe(trials: list) -> pl.DataFrame:

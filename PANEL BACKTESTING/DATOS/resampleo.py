@@ -57,7 +57,8 @@ def resamplear(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
             f"Timeframe '{timeframe}' no reconocido. Opciones: {_JERARQUIA}"
         )
 
-    timeframe_base = inferir_timeframe(df)
+    df_ordenado = _asegurar_orden_timestamp(df)
+    timeframe_base = inferir_timeframe(df_ordenado)
 
     if timeframe == timeframe_base:
         return df
@@ -73,8 +74,6 @@ def resamplear(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
     duracion = _DURACION[timeframe]
     filas_esperadas = _filas_esperadas_por_ventana(timeframe_base, timeframe)
     aggs = _construir_agregaciones(df.columns)
-
-    df_ordenado = df.sort("timestamp")
 
     # Ventanas [inicio, fin) sin lookahead. El timestamp final no es la apertura
     # de la ventana, sino la última vela base incluida: 00:00..00:14 -> 00:14.
@@ -96,7 +95,6 @@ def resamplear(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
         .filter(pl.col("_filas_ventana") == filas_esperadas)
         .with_columns(pl.col("_timestamp_operativo").alias("timestamp"))
         .drop(["_timestamp_operativo", "_filas_ventana"])
-        .sort("timestamp")
     )
 
     return df_resampled
@@ -140,13 +138,18 @@ def _expresion_agregacion(columna: str, regla: str) -> pl.Expr:
     raise ValueError(f"Regla de resampleo no soportada para '{columna}': {regla}")
 
 
+def _asegurar_orden_timestamp(df: pl.DataFrame) -> pl.DataFrame:
+    if df["timestamp"].is_sorted():
+        return df.set_sorted("timestamp")
+    return df.sort("timestamp").set_sorted("timestamp")
+
+
 def inferir_timeframe(df: pl.DataFrame) -> str:
     if df.height < 2:
         raise ValueError("No se puede inferir timeframe con menos de 2 filas.")
 
     timestamps = (
-        df.sort("timestamp")
-        .select("timestamp")
+        df.select("timestamp")
         .head(min(df.height, 1_000))
         .to_series()
         .to_list()

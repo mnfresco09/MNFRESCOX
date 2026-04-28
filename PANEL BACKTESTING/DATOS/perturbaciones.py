@@ -1,14 +1,13 @@
 """Perturbaciones multivariantes en memoria, sin modificar HISTORICO.
 
-La capa condicional usa priors monotónicos por cubo de retorno. Es deliberado:
-no calcula estadisticas globales del periodo cargado, porque eso introduciria
-lookahead en los primeros tramos del backtest. La calibracion empirica rolling
-puede añadirse despues, siempre que cada fila consulte solo informacion pasada.
+La tabla de condicionales se calibra automaticamente desde el Parquet cargado:
+volumen relativo y order flow observados por cubo de retorno. El usuario solo
+decide la granularidad de los cubos y el percentil que define el rango valido.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 from typing import Any
 
@@ -17,44 +16,82 @@ import polars as pl
 
 try:
     from numba import njit
-except ImportError:  # pragma: no cover - validado en runtime si se activan perturbaciones
+    _NUMBA_IMPORT_ERROR = None
+except ImportError as exc:  # pragma: no cover - validado en runtime si se activan perturbaciones
     njit = None
+    _NUMBA_IMPORT_ERROR = exc
 
 
 _COLUMNAS_PRECIO = ("open", "high", "low", "close")
+
+_BANDA_MAX_PRECIO = 0.15
+_FUERZA_AMORTIGUACION = 0.10
+_ESCALA_VOLATILIDAD = 0.50
+_VENTANA_VOLATILIDAD = 20
+_SIGMA_RANGO_VELA = 0.05
+_RUIDO_POSICION_OHLC = 0.08
+_INERCIA_ORDER_FLOW = 0.30
+_VENTANA_MEDIA_VOLUMEN = 20
+_MIN_MUESTRAS_CUBO = 30
+
+
+@dataclass(frozen=True)
+class TablaCondicionales:
+    bordes: np.ndarray
+    vol_min: np.ndarray
+    vol_max: np.ndarray
+    sell_min: np.ndarray
+    sell_max: np.ndarray
+
+
+@dataclass(frozen=True)
+class BasePerturbaciones:
+    filas: int
+    ts_inicio_us: int | None
+    ts_fin_us: int | None
+    open_orig: np.ndarray
+    high_orig: np.ndarray
+    low_orig: np.ndarray
+    close_orig: np.ndarray
+    volume_orig: np.ndarray
+    media_volumen_orig: np.ndarray
+    midpoint_orig: np.ndarray
+    rango_rel_orig: np.ndarray
+    frac_open_orig: np.ndarray
+    frac_close_orig: np.ndarray
+    volatilidad_local: np.ndarray
+    prop_taker_sell_inicial: float
 
 
 @dataclass(frozen=True)
 class ConfiguracionPerturbaciones:
     activa: bool
     seed_global: int | None
-    banda_max_precio: float
-    fuerza_amortiguacion: float
-    escala_volatilidad: float
-    ventana_volatilidad: int
-    sigma_rango_vela: float
-    ruido_posicion_ohlc: float
-    sigma_volumen: float
     granularidad_cubos: float
-    inercia_order_flow: float
-    ventana_media_volumen: int
+    percentil_tabla: float
+    tabla: TablaCondicionales | None = None
+    base: BasePerturbaciones | None = None
 
     @classmethod
     def desde_config(cls, cfg: Any) -> "ConfiguracionPerturbaciones":
+        usar_seed = bool(getattr(cfg, "USAR_SEED", True))
         return cls(
             activa=bool(getattr(cfg, "PERTURBACIONES_ACTIVAS", False)),
-            seed_global=getattr(cfg, "PERTURBACIONES_SEED", None),
-            banda_max_precio=float(getattr(cfg, "BANDA_MAX_PRECIO", 0.15)),
-            fuerza_amortiguacion=float(getattr(cfg, "FUERZA_AMORTIGUACION", 0.10)),
-            escala_volatilidad=float(getattr(cfg, "ESCALA_VOLATILIDAD", 0.50)),
-            ventana_volatilidad=int(getattr(cfg, "VENTANA_VOLATILIDAD", 20)),
-            sigma_rango_vela=float(getattr(cfg, "SIGMA_RANGO_VELA", 0.05)),
-            ruido_posicion_ohlc=float(getattr(cfg, "RUIDO_POSICION_OHLC", 0.08)),
-            sigma_volumen=float(getattr(cfg, "SIGMA_VOLUMEN", 0.10)),
+            seed_global=getattr(cfg, "PERTURBACIONES_SEED", None) if usar_seed else None,
             granularidad_cubos=float(getattr(cfg, "GRANULARIDAD_CUBOS", 0.005)),
-            inercia_order_flow=float(getattr(cfg, "INERCIA_ORDER_FLOW", 0.30)),
-            ventana_media_volumen=int(getattr(cfg, "VENTANA_MEDIA_VOLUMEN", 20)),
+            percentil_tabla=float(getattr(cfg, "PERCENTIL_TABLA", 0.10)),
         )
+
+    def con_tabla_desde(self, df: pl.DataFrame) -> "ConfiguracionPerturbaciones":
+        if not self.activa:
+            return self
+        base = _precalcular_base(df)
+        tabla = construir_tabla_condicionales(
+            df,
+            granularidad=self.granularidad_cubos,
+            percentil=self.percentil_tabla,
+        )
+        return replace(self, tabla=tabla, base=base)
 
 
 def seed_para_trial(
@@ -97,40 +134,33 @@ def aplicar_perturbaciones(
 
     kernel = _requerir_kernel_numba()
     rng = np.random.default_rng(int(seed))
-    out = {col: df[col].to_numpy().copy() for col in df.columns if col != "timestamp"}
+    base = _base_para_dataframe(df, config)
+    n = base.filas
+    tabla = config.tabla
+    if tabla is None:
+        tabla = construir_tabla_condicionales(
+            df,
+            granularidad=config.granularidad_cubos,
+            percentil=config.percentil_tabla,
+        )
 
-    open_orig = _f64(df, "open")
-    high_orig = _f64(df, "high")
-    low_orig = _f64(df, "low")
-    close_orig = _f64(df, "close")
-    volume_orig = _f64(df, "volume")
-
-    n = df.height
-    rango_orig = np.maximum(high_orig - low_orig, np.maximum(close_orig, 1.0) * 1e-9)
-    midpoint_orig = (high_orig + low_orig) * 0.5
-    midpoint_orig = np.maximum(midpoint_orig, 1e-9)
-    rango_rel_orig = np.maximum(rango_orig / midpoint_orig, 1e-9)
-    frac_open_orig = _fraccion_array(open_orig, low_orig, rango_orig)
-    frac_close_orig = _fraccion_array(close_orig, low_orig, rango_orig)
-    volatilidad_local = _media_rodante_pasada(rango_rel_orig, config.ventana_volatilidad)
-    bordes, vol_min, vol_max, sell_min, sell_max = _arrays_cubos_condicionales(config.granularidad_cubos)
-
-    taker_buy, has_taker_buy = _array_float_opcional(out, "taker_buy_volume", n)
-    taker_sell, has_taker_sell = _array_float_opcional(out, "taker_sell_volume", n)
-    vol_delta, has_vol_delta = _array_float_opcional(out, "vol_delta", n)
-    num_trades, has_num_trades = _array_int_opcional(out, "num_trades", n)
+    taker_buy, has_taker_buy = _array_float_opcional(df, "taker_buy_volume", n)
+    taker_sell, has_taker_sell = _array_float_opcional(df, "taker_sell_volume", n)
+    vol_delta, has_vol_delta = _array_float_opcional(df, "vol_delta", n)
+    num_trades, has_num_trades = _array_int_opcional(df, "num_trades", n)
 
     open_p, high_p, low_p, close_p, volume_p = kernel(
-        open_orig,
-        high_orig,
-        low_orig,
-        close_orig,
-        volume_orig,
-        midpoint_orig,
-        rango_rel_orig,
-        frac_open_orig,
-        frac_close_orig,
-        volatilidad_local,
+        base.open_orig,
+        base.high_orig,
+        base.low_orig,
+        base.close_orig,
+        base.volume_orig,
+        base.media_volumen_orig,
+        base.midpoint_orig,
+        base.rango_rel_orig,
+        base.frac_open_orig,
+        base.frac_close_orig,
+        base.volatilidad_local,
         taker_buy,
         taker_sell,
         vol_delta,
@@ -139,42 +169,51 @@ def aplicar_perturbaciones(
         bool(has_taker_sell),
         bool(has_vol_delta),
         bool(has_num_trades),
-        bordes,
-        vol_min,
-        vol_max,
-        sell_min,
-        sell_max,
-        float(_prop_taker_sell_original(df, 0)),
-        float(config.banda_max_precio),
-        float(config.fuerza_amortiguacion),
-        float(config.escala_volatilidad),
-        int(config.ventana_media_volumen),
-        float(config.sigma_rango_vela),
-        float(config.ruido_posicion_ohlc),
-        float(config.sigma_volumen),
-        float(config.inercia_order_flow),
+        tabla.bordes,
+        tabla.vol_min,
+        tabla.vol_max,
+        tabla.sell_min,
+        tabla.sell_max,
+        float(base.prop_taker_sell_inicial),
+        float(_BANDA_MAX_PRECIO),
+        float(_FUERZA_AMORTIGUACION),
+        float(_ESCALA_VOLATILIDAD),
+        float(_SIGMA_RANGO_VELA),
+        float(_RUIDO_POSICION_OHLC),
+        float(_INERCIA_ORDER_FLOW),
         rng.normal(0.0, 1.0, n).astype(np.float64),
         rng.normal(0.0, 1.0, n).astype(np.float64),
         rng.random(n).astype(np.float64),
         rng.random(n).astype(np.float64),
-        rng.normal(0.0, 1.0, n).astype(np.float64),
+        rng.random(n).astype(np.float64),
         rng.uniform(-1.0, 1.0, n).astype(np.float64),
     )
 
-    out["open"] = open_p
-    out["high"] = high_p
-    out["low"] = low_p
-    out["close"] = close_p
-    out["volume"] = volume_p
+    updates: dict[str, np.ndarray] = {
+        "open": open_p,
+        "high": high_p,
+        "low": low_p,
+        "close": close_p,
+        "volume": volume_p,
+    }
 
-    if "quote_volume" in out:
-        precio_medio = (high_p + low_p) * 0.5
-        out["quote_volume"] = volume_p * precio_medio
-    if "taker_buy_quote_volume" in out:
-        precio_medio = (high_p + low_p) * 0.5
-        out["taker_buy_quote_volume"] = taker_buy * precio_medio
+    if has_taker_buy:
+        updates["taker_buy_volume"] = taker_buy
+    if has_taker_sell:
+        updates["taker_sell_volume"] = taker_sell
+    if has_vol_delta:
+        updates["vol_delta"] = vol_delta
+    if has_num_trades:
+        updates["num_trades"] = num_trades
 
-    perturbado = df.with_columns([pl.Series(col, values) for col, values in out.items()])
+    if "quote_volume" in df.columns:
+        precio_medio = (high_p + low_p) * 0.5
+        updates["quote_volume"] = volume_p * precio_medio
+    if "taker_buy_quote_volume" in df.columns:
+        precio_medio = (high_p + low_p) * 0.5
+        updates["taker_buy_quote_volume"] = taker_buy * precio_medio
+
+    perturbado = df.with_columns([pl.Series(col, values) for col, values in updates.items()])
     _validar_invariantes(perturbado)
     return perturbado
 
@@ -187,6 +226,71 @@ def _validar_columnas_minimas(df: pl.DataFrame) -> None:
 
 def _f64(df: pl.DataFrame, col: str) -> np.ndarray:
     return df[col].cast(pl.Float64).to_numpy()
+
+
+def _precalcular_base(df: pl.DataFrame) -> BasePerturbaciones:
+    _validar_columnas_minimas(df)
+    open_orig = _f64(df, "open")
+    high_orig = _f64(df, "high")
+    low_orig = _f64(df, "low")
+    close_orig = _f64(df, "close")
+    volume_orig = _f64(df, "volume")
+    media_volumen_orig = _media_rodante_pasada(volume_orig, _VENTANA_MEDIA_VOLUMEN)
+
+    rango_orig = np.maximum(high_orig - low_orig, np.maximum(close_orig, 1.0) * 1e-9)
+    midpoint_orig = (high_orig + low_orig) * 0.5
+    midpoint_orig = np.maximum(midpoint_orig, 1e-9)
+    rango_rel_orig = np.maximum(rango_orig / midpoint_orig, 1e-9)
+    frac_open_orig = _fraccion_array(open_orig, low_orig, rango_orig)
+    frac_close_orig = _fraccion_array(close_orig, low_orig, rango_orig)
+    volatilidad_local = _media_rodante_pasada(rango_rel_orig, _VENTANA_VOLATILIDAD)
+    ts_inicio_us, ts_fin_us = _limites_timestamp_us(df)
+
+    return BasePerturbaciones(
+        filas=df.height,
+        ts_inicio_us=ts_inicio_us,
+        ts_fin_us=ts_fin_us,
+        open_orig=open_orig,
+        high_orig=high_orig,
+        low_orig=low_orig,
+        close_orig=close_orig,
+        volume_orig=volume_orig,
+        media_volumen_orig=media_volumen_orig,
+        midpoint_orig=midpoint_orig,
+        rango_rel_orig=rango_rel_orig,
+        frac_open_orig=frac_open_orig,
+        frac_close_orig=frac_close_orig,
+        volatilidad_local=volatilidad_local,
+        prop_taker_sell_inicial=_prop_taker_sell_original(df, 0),
+    )
+
+
+def _base_para_dataframe(df: pl.DataFrame, config: ConfiguracionPerturbaciones) -> BasePerturbaciones:
+    base = config.base
+    if base is None or base.filas != df.height:
+        return _precalcular_base(df)
+
+    ts_inicio_us, ts_fin_us = _limites_timestamp_us(df)
+    if base.ts_inicio_us != ts_inicio_us or base.ts_fin_us != ts_fin_us:
+        return _precalcular_base(df)
+    return base
+
+
+def _limites_timestamp_us(df: pl.DataFrame) -> tuple[int | None, int | None]:
+    if "timestamp" not in df.columns or df.height == 0:
+        return None, None
+    dtype = df.schema.get("timestamp")
+    if isinstance(dtype, pl.Datetime):
+        limites = df.select(
+            pl.col("timestamp").first().dt.epoch("us").alias("inicio"),
+            pl.col("timestamp").last().dt.epoch("us").alias("fin"),
+        ).row(0)
+    else:
+        limites = df.select(
+            pl.col("timestamp").first().cast(pl.Int64).alias("inicio"),
+            pl.col("timestamp").last().cast(pl.Int64).alias("fin"),
+        ).row(0)
+    return int(limites[0]), int(limites[1])
 
 
 def _media_rodante_pasada(valores: np.ndarray, ventana: int) -> np.ndarray:
@@ -209,21 +313,144 @@ def _fraccion_array(valor: np.ndarray, low: np.ndarray, rango: np.ndarray) -> np
     return np.clip(out, 0.01, 0.99)
 
 
-def _arrays_cubos_condicionales(
+def construir_tabla_condicionales(
+    df: pl.DataFrame,
+    *,
     granularidad: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    percentil: float,
+) -> TablaCondicionales:
+    _validar_columnas_tabla(df)
+    if not (0.0 < percentil < 0.5):
+        raise ValueError("[PERT] PERCENTIL_TABLA debe estar entre 0 y 0.5.")
+
+    close = _f64(df, "close")
+    volume = _f64(df, "volume")
+    taker_sell = _f64(df, "taker_sell_volume")
+
+    media_vol = _media_rodante_pasada(volume, _VENTANA_MEDIA_VOLUMEN)
+    retorno = np.empty_like(close)
+    retorno[0] = np.nan
+    retorno[1:] = np.divide(
+        close[1:] - close[:-1],
+        close[:-1],
+        out=np.full(close.shape[0] - 1, np.nan, dtype=np.float64),
+        where=close[:-1] > 0,
+    )
+    volumen_relativo = np.divide(
+        volume,
+        media_vol,
+        out=np.full_like(volume, np.nan),
+        where=media_vol > 0,
+    )
+    prop_sell = np.divide(
+        taker_sell,
+        volume,
+        out=np.full_like(volume, np.nan),
+        where=volume > 0,
+    )
+
+    bordes = _bordes_cubos(granularidad)
+    cubos = np.searchsorted(bordes[1:-1], retorno, side="right")
+    validos = (
+        np.isfinite(retorno)
+        & np.isfinite(volumen_relativo)
+        & np.isfinite(prop_sell)
+        & (volume > 0)
+    )
+    if not validos.any():
+        raise ValueError("[PERT] No hay muestras validas para construir la tabla de condicionales.")
+
+    n_cubos = bordes.shape[0] - 1
+    vol_min, vol_max = _percentiles_por_cubo(
+        volumen_relativo[validos],
+        cubos[validos],
+        n_cubos,
+        percentil,
+        limite_min=0.0,
+        limite_max=None,
+    )
+    sell_min, sell_max = _percentiles_por_cubo(
+        prop_sell[validos],
+        cubos[validos],
+        n_cubos,
+        percentil,
+        limite_min=0.0,
+        limite_max=1.0,
+    )
+    return TablaCondicionales(
+        bordes=bordes,
+        vol_min=vol_min,
+        vol_max=vol_max,
+        sell_min=sell_min,
+        sell_max=sell_max,
+    )
+
+
+def _validar_columnas_tabla(df: pl.DataFrame) -> None:
+    faltantes = [
+        col
+        for col in ("close", "volume", "taker_sell_volume")
+        if col not in df.columns
+    ]
+    if faltantes:
+        raise ValueError(f"[PERT] Faltan columnas para construir la tabla automatica: {faltantes}")
+
+
+def _bordes_cubos(granularidad: float) -> np.ndarray:
     if granularidad <= 0:
         raise ValueError("[PERT] GRANULARIDAD_CUBOS debe ser mayor que 0.")
     g = float(granularidad)
-    bordes = np.array(
+    return np.array(
         [-np.inf, -4*g, -2*g, -g, -0.4*g, -0.1*g, 0.1*g, 0.4*g, g, 2*g, 4*g, np.inf],
         dtype=np.float64,
     )
-    vol_min = np.array([2.5, 1.7, 1.1, 0.8, 0.5, 0.4, 0.5, 0.8, 1.1, 1.7, 2.5], dtype=np.float64)
-    vol_max = np.array([8.5, 5.2, 3.1, 2.0, 1.4, 1.2, 1.4, 2.0, 3.1, 5.2, 8.5], dtype=np.float64)
-    sell_min = np.array([0.62, 0.58, 0.54, 0.51, 0.48, 0.46, 0.36, 0.30, 0.24, 0.20, 0.19], dtype=np.float64)
-    sell_max = np.array([0.81, 0.76, 0.70, 0.64, 0.56, 0.54, 0.49, 0.46, 0.42, 0.38, 0.38], dtype=np.float64)
-    return bordes, vol_min, vol_max, sell_min, sell_max
+
+
+def _percentiles_por_cubo(
+    valores: np.ndarray,
+    cubos: np.ndarray,
+    n_cubos: int,
+    percentil: float,
+    *,
+    limite_min: float | None,
+    limite_max: float | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    lo_global = float(np.quantile(valores, percentil))
+    hi_global = float(np.quantile(valores, 1.0 - percentil))
+    lo = np.full(n_cubos, np.nan, dtype=np.float64)
+    hi = np.full(n_cubos, np.nan, dtype=np.float64)
+
+    for cubo in range(n_cubos):
+        en_cubo = valores[cubos == cubo]
+        if en_cubo.shape[0] >= _MIN_MUESTRAS_CUBO:
+            lo[cubo] = float(np.quantile(en_cubo, percentil))
+            hi[cubo] = float(np.quantile(en_cubo, 1.0 - percentil))
+
+    validos = np.where(np.isfinite(lo) & np.isfinite(hi))[0]
+    for cubo in range(n_cubos):
+        if np.isfinite(lo[cubo]) and np.isfinite(hi[cubo]):
+            continue
+        if validos.size:
+            cercano = int(validos[np.argmin(np.abs(validos - cubo))])
+            lo[cubo] = lo[cercano]
+            hi[cubo] = hi[cercano]
+        else:
+            lo[cubo] = lo_global
+            hi[cubo] = hi_global
+
+    if limite_min is not None:
+        lo = np.maximum(lo, limite_min)
+        hi = np.maximum(hi, limite_min)
+    if limite_max is not None:
+        lo = np.minimum(lo, limite_max)
+        hi = np.minimum(hi, limite_max)
+
+    ancho_minimo = np.maximum(np.abs(lo) * 1e-9, 1e-12)
+    hi = np.maximum(hi, lo + ancho_minimo)
+    if limite_max is not None:
+        hi = np.minimum(hi, limite_max)
+        lo = np.minimum(lo, hi)
+    return lo.astype(np.float64), hi.astype(np.float64)
 
 
 def _prop_taker_sell_original(df: pl.DataFrame, idx: int) -> float:
@@ -235,25 +462,87 @@ def _prop_taker_sell_original(df: pl.DataFrame, idx: int) -> float:
     return min(max(float(df["taker_sell_volume"][idx]) / volumen, 0.0), 1.0)
 
 
-def _array_float_opcional(out: dict[str, np.ndarray], col: str, n: int) -> tuple[np.ndarray, bool]:
-    if col in out:
-        return out[col].astype(np.float64, copy=False), True
+def _array_float_opcional(df: pl.DataFrame, col: str, n: int) -> tuple[np.ndarray, bool]:
+    if col in df.columns:
+        return df[col].cast(pl.Float64).to_numpy().copy(), True
     return np.zeros(n, dtype=np.float64), False
 
 
-def _array_int_opcional(out: dict[str, np.ndarray], col: str, n: int) -> tuple[np.ndarray, bool]:
-    if col in out:
-        return out[col], True
+def _array_int_opcional(df: pl.DataFrame, col: str, n: int) -> tuple[np.ndarray, bool]:
+    if col in df.columns:
+        return df[col].cast(pl.Int64).to_numpy().copy(), True
     return np.zeros(n, dtype=np.int64), False
 
 
 def _requerir_kernel_numba():
     if _kernel_perturbacion is None:
+        detalle = f" Detalle: {_NUMBA_IMPORT_ERROR}" if _NUMBA_IMPORT_ERROR is not None else ""
         raise RuntimeError(
             "[PERT] Las perturbaciones activas requieren numba. "
             "Instala dependencias con `pip install -r requirements.txt`."
+            f"{detalle}"
         )
     return _kernel_perturbacion
+
+
+def validar_kernel_numba() -> None:
+    kernel = _requerir_kernel_numba()
+    try:
+        _smoke_kernel_numba(kernel)
+    except Exception as exc:
+        raise RuntimeError(f"[PERT] No se pudo compilar/ejecutar el kernel Numba: {exc}") from exc
+
+
+def _smoke_kernel_numba(kernel) -> None:
+    n = 2
+    unos = np.ones(n, dtype=np.float64)
+    ceros = np.zeros(n, dtype=np.float64)
+    tabla = TablaCondicionales(
+        bordes=_bordes_cubos(0.005),
+        vol_min=np.full(11, 0.8, dtype=np.float64),
+        vol_max=np.full(11, 1.2, dtype=np.float64),
+        sell_min=np.full(11, 0.45, dtype=np.float64),
+        sell_max=np.full(11, 0.55, dtype=np.float64),
+    )
+    kernel(
+        unos,
+        unos * 1.01,
+        unos * 0.99,
+        unos,
+        unos * 10.0,
+        unos * 10.0,
+        unos,
+        unos * 0.02,
+        unos * 0.5,
+        unos * 0.5,
+        unos * 0.02,
+        ceros.copy(),
+        ceros.copy(),
+        ceros.copy(),
+        np.zeros(n, dtype=np.int64),
+        True,
+        True,
+        True,
+        True,
+        tabla.bordes,
+        tabla.vol_min,
+        tabla.vol_max,
+        tabla.sell_min,
+        tabla.sell_max,
+        0.5,
+        0.15,
+        0.1,
+        0.5,
+        0.05,
+        0.08,
+        0.3,
+        ceros,
+        ceros,
+        unos * 0.5,
+        unos * 0.5,
+        ceros,
+        ceros,
+    )
 
 
 def _kernel_perturbacion_impl(
@@ -262,6 +551,7 @@ def _kernel_perturbacion_impl(
     low_orig: np.ndarray,
     close_orig: np.ndarray,
     volume_orig: np.ndarray,
+    media_volumen_orig: np.ndarray,
     midpoint_orig: np.ndarray,
     rango_rel_orig: np.ndarray,
     frac_open_orig: np.ndarray,
@@ -284,10 +574,8 @@ def _kernel_perturbacion_impl(
     banda_max_precio: float,
     fuerza_amortiguacion: float,
     escala_volatilidad: float,
-    ventana_media_volumen: int,
     sigma_rango_vela: float,
     ruido_posicion_ohlc: float,
-    sigma_volumen: float,
     inercia_order_flow: float,
     ruido_midpoint: np.ndarray,
     ruido_rango: np.ndarray,
@@ -311,19 +599,12 @@ def _kernel_perturbacion_impl(
 
     midpoint_prev = midpoint_orig[0]
     prop_sell_prev = prop_sell_inicial
-    vol_sum = 0.0
     amp_pos = _clip_scalar(ruido_posicion_ohlc, 0.0, 0.49)
     peso_inercia = _clip_scalar(inercia_order_flow, 0.0, 1.0)
     media_log_rango = -(sigma_rango_vela * sigma_rango_vela) * 0.5
-    sigma_vol = sigma_volumen if sigma_volumen > 1e-12 else 1e-12
 
     for i in range(1, n):
-        vol_sum += volume_p[i - 1]
-        fuera = i - ventana_media_volumen - 1
-        if fuera >= 0:
-            vol_sum -= volume_p[fuera]
-        vol_count = i if i < ventana_media_volumen else ventana_media_volumen
-        media_vol_local = vol_sum / vol_count if vol_count > 0 else volume_orig[i]
+        media_vol_local = media_volumen_orig[i]
         if media_vol_local < 0.0:
             media_vol_local = 0.0
 
@@ -375,9 +656,7 @@ def _kernel_perturbacion_impl(
         retorno = close_p[i] / close_p[i - 1] - 1.0 if close_p[i - 1] > 0.0 else 0.0
         cubo = _buscar_cubo(retorno, bordes)
 
-        vol_centro = (vol_min[cubo] + vol_max[cubo]) * 0.5
-        vol_amp = (vol_max[cubo] - vol_min[cubo]) * 0.5
-        vol_rel = vol_centro + np.tanh(ruido_volumen[i] * sigma_vol) * vol_amp
+        vol_rel = vol_min[cubo] + ruido_volumen[i] * (vol_max[cubo] - vol_min[cubo])
         volume = media_vol_local * vol_rel
         if volume < 0.0:
             volume = 0.0
@@ -448,6 +727,14 @@ def _validar_invariantes(df: pl.DataFrame) -> None:
     close = _f64(df, "close")
     volume = _f64(df, "volume")
 
+    if not (
+        np.isfinite(high).all()
+        and np.isfinite(low).all()
+        and np.isfinite(open_).all()
+        and np.isfinite(close).all()
+        and np.isfinite(volume).all()
+    ):
+        raise ValueError("[PERT] La perturbacion genero NaN o infinitos en OHLCV.")
     if (low <= 0).any() or (open_ <= 0).any() or (high <= 0).any() or (close <= 0).any():
         raise ValueError("[PERT] La perturbacion genero precios no positivos.")
     if (high < low).any():
@@ -460,6 +747,8 @@ def _validar_invariantes(df: pl.DataFrame) -> None:
     if {"taker_buy_volume", "taker_sell_volume"}.issubset(df.columns):
         buy = _f64(df, "taker_buy_volume")
         sell = _f64(df, "taker_sell_volume")
+        if not (np.isfinite(buy).all() and np.isfinite(sell).all()):
+            raise ValueError("[PERT] La perturbacion genero NaN o infinitos en taker volume.")
         if (buy < -1e-10).any() or (sell < -1e-10).any():
             raise ValueError("[PERT] La perturbacion genero taker volume negativo.")
         if not np.allclose(buy + sell, volume, rtol=1e-9, atol=1e-9):
@@ -467,5 +756,11 @@ def _validar_invariantes(df: pl.DataFrame) -> None:
 
     if "vol_delta" in df.columns:
         delta = _f64(df, "vol_delta")
+        if not np.isfinite(delta).all():
+            raise ValueError("[PERT] La perturbacion genero NaN o infinitos en vol_delta.")
         if (np.abs(delta) > volume + 1e-9).any():
             raise ValueError("[PERT] La perturbacion genero |vol_delta| > volume.")
+
+    for col in ("quote_volume", "taker_buy_quote_volume"):
+        if col in df.columns and not np.isfinite(_f64(df, col)).all():
+            raise ValueError(f"[PERT] La perturbacion genero NaN o infinitos en {col}.")

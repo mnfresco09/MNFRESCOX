@@ -175,11 +175,17 @@ def verificar_resultado(arrays, senales, trades: dict, equity_curve: np.ndarray,
     precio_salida = trades["precio_salida"]
     cod_sl, cod_tp, cod_bars, cod_custom, cod_end = 0, 1, 2, 3, 4
 
-    # Salidas END/BARS/CUSTOM → close de la vela
-    mask_close = (motivos == cod_end) | (motivos == cod_bars) | (motivos == cod_custom)
+    # Salidas END/BARS -> close de la vela. CUSTOM se confirma en N y ejecuta
+    # en el open de N+1 para evitar cierre en el mismo close usado por la señal.
+    mask_close = (motivos == cod_end) | (motivos == cod_bars)
     if mask_close.any():
         if not np.allclose(precio_salida[mask_close], closes[idx_salida[mask_close]], rtol=TOL, atol=TOL):
-            raise ValueError("[INTEGRIDAD] Salida END/BARS/CUSTOM no usa close.")
+            raise ValueError("[INTEGRIDAD] Salida END/BARS no usa close.")
+
+    mask_custom = motivos == cod_custom
+    if mask_custom.any():
+        if not np.allclose(precio_salida[mask_custom], opens[idx_salida[mask_custom]], rtol=TOL, atol=TOL):
+            raise ValueError("[INTEGRIDAD] Salida CUSTOM no usa open de ejecucion.")
 
     # Salidas SL/TP → dentro del rango low..high
     mask_intra = (motivos == cod_sl) | (motivos == cod_tp)
