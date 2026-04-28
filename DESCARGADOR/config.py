@@ -18,15 +18,13 @@ ACTIVOS = {
         "markPriceKlines":    date(2019, 9, 8),
         "indexPriceKlines":   date(2019, 9, 8),
         "premiumIndexKlines": date(2019, 9, 8),
-        "metrics":            date(2020, 7, 27),
     },
     "GOLDUSDT": {
         "klines":             date(2020, 1, 1),
         "markPriceKlines":    date(2020, 1, 1),
         "indexPriceKlines":   date(2020, 1, 1),
         "premiumIndexKlines": date(2020, 1, 1),
-        "metrics":            date(2020, 1, 1),
     },
 }
 
-TIPOS = ["klines", "markPriceKlines", "indexPriceKlines", "premiumIndexKlines", "metrics"]
+TIPOS = ["klines", "markPriceKlines", "indexPriceKlines", "premiumIndexKlines"]

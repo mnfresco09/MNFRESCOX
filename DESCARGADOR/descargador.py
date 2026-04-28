@@ -190,7 +190,6 @@ def _procesar_activo(simbolo: str, hoy: date) -> None:
         mark     = datos["markPriceKlines"],
         index    = datos["indexPriceKlines"],
         premium  = datos["premiumIndexKlines"],
-        metrics  = datos["metrics"],
     )
 
     log.info("  Rellenando gaps y validando…")

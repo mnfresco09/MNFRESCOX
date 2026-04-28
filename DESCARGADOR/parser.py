@@ -31,12 +31,6 @@ _COLS_CRUDAS = {
         "timestamp", "open", "high", "low", "close", "volume",
         "_close_time", "_i1", "_i2", "_i3", "_i4",
     ],
-    "metrics": [
-        "timestamp", "open_interest", "open_interest_value",
-        "long_short_ratio", "long_account_ratio", "short_account_ratio",
-        "top_trader_long_short_ratio", "top_trader_long_account_ratio",
-        "top_trader_short_account_ratio",
-    ],
 }
 
 # Columnas a conservar en el DataFrame final de cada tipo
@@ -48,12 +42,6 @@ _COLS_MANTENER = {
     "markPriceKlines":    ["timestamp", "open", "high", "low", "close"],
     "indexPriceKlines":   ["timestamp", "open", "high", "low", "close"],
     "premiumIndexKlines": ["timestamp", "open", "high", "low", "close"],
-    "metrics": [
-        "timestamp", "open_interest", "open_interest_value",
-        "long_short_ratio", "long_account_ratio", "short_account_ratio",
-        "top_trader_long_short_ratio", "top_trader_long_account_ratio",
-        "top_trader_short_account_ratio",
-    ],
 }
 
 

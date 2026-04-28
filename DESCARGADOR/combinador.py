@@ -1,5 +1,5 @@
 """
-Une los cinco tipos de datos en un único DataFrame usando klines como columna vertebral.
+Une los cuatro tipos de datos en un único DataFrame usando klines como columna vertebral.
 Aplica prefijos a las columnas OHLC de mark, index y premium para evitar colisiones.
 """
 import polars as pl
@@ -14,7 +14,6 @@ def combinar(
     mark:     pl.DataFrame,
     index:    pl.DataFrame,
     premium:  pl.DataFrame,
-    metrics:  pl.DataFrame,
 ) -> pl.DataFrame:
     """
     Left join de todos los tipos contra los timestamps de klines.
@@ -26,7 +25,7 @@ def combinar(
     premium = _prefixar_ohlc(premium, "premium")
 
     df = klines
-    for otro in (mark, index, premium, metrics):
+    for otro in (mark, index, premium):
         df = df.join(otro, on="timestamp", how="left")
 
     return df

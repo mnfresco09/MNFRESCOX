@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Script de descarga de datos de mercado desde Binance Vision.
-Descarga klines, markPrice, indexPrice, premiumIndex y metrics
+Descarga klines, markPriceKlines, indexPriceKlines y premiumIndexKlines
 para BTCUSDT y GOLDUSDT (Futuros USD-M, 1m) y los guarda en
 PANEL BACKTESTING/HISTORICO/ como Parquet snappy.
 

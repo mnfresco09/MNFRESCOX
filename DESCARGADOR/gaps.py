@@ -5,8 +5,6 @@ Reglas de relleno (por tipo de columna):
   - open/high/low/close (klines):          copiar close anterior a las 4 columnas del gap
   - volume/quote_volume/num_trades/taker*: rellenar con 0
   - mark/index/premium OHLC:              forward-fill
-  - metrics (open_interest, ratios, etc.): forward-fill, luego fill_null(0) para
-                                           el período anterior al inicio de metrics
 
 NO se usa interpolación. Solo forward-fill o cero.
 """
@@ -25,13 +23,6 @@ _OHLC_KLINES  = ["open", "high", "low", "close"]
 _OHLC_MARK    = ["mark_open",    "mark_high",    "mark_low",    "mark_close"]
 _OHLC_INDEX   = ["index_open",   "index_high",   "index_low",   "index_close"]
 _OHLC_PREMIUM = ["premium_open", "premium_high", "premium_low", "premium_close"]
-
-_METRICS = [
-    "open_interest", "open_interest_value",
-    "long_short_ratio", "long_account_ratio", "short_account_ratio",
-    "top_trader_long_short_ratio", "top_trader_long_account_ratio",
-    "top_trader_short_account_ratio",
-]
 
 
 def rellenar_y_validar(df: pl.DataFrame) -> pl.DataFrame:
@@ -88,15 +79,6 @@ def rellenar_y_validar(df: pl.DataFrame) -> pl.DataFrame:
     if ffill_cols:
         df = df.with_columns([pl.col(c).forward_fill() for c in ffill_cols])
 
-    # ----------------------------------------------------------------
-    # metrics: forward-fill + fill_null(0) para período anterior al inicio
-    # ----------------------------------------------------------------
-    metrics_cols = [c for c in _METRICS if c in df.columns]
-    if metrics_cols:
-        df = df.with_columns([
-            pl.col(c).forward_fill().fill_null(0.0) for c in metrics_cols
-        ])
-
     df = df.drop("_gap_klines")
 
     _validar(df)
@@ -134,9 +116,5 @@ def _validar(df: pl.DataFrame) -> None:
     for col in _FLUJO_KLINES:
         if col in df.columns and (df[col] < 0).any():
             raise ValueError(f"Volumen negativo en columna '{col}'")
-
-    # 5. Open interest no negativo
-    if "open_interest" in df.columns and (df["open_interest"] < 0).any():
-        raise ValueError("open_interest tiene valores negativos")
 
     log.info(f"  Validación OK: {len(df):,} filas, sin nulos, timestamps perfectos")

@@ -26,10 +26,6 @@ ORDEN_COLUMNAS = [
     "index_open", "index_high", "index_low", "index_close",
     # premiumIndexKlines
     "premium_open", "premium_high", "premium_low", "premium_close",
-    # metrics
-    "open_interest", "open_interest_value",
-    "toptrader_count_long_short_ratio", "toptrader_sum_long_short_ratio",
-    "global_long_short_ratio", "taker_long_short_ratio",
 ]
 
 
