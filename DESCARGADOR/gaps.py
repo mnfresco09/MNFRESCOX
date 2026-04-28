@@ -4,7 +4,7 @@ Detección y relleno de huecos temporales.
 Reglas de relleno (por tipo de columna):
   - open/high/low/close (klines):          copiar close anterior a las 4 columnas del gap
   - volume/quote_volume/num_trades/taker*: rellenar con 0
-  - mark/index/premium OHLC:              forward-fill
+  - premium OHLC:                         forward-fill
 
 NO se usa interpolación. Solo forward-fill o cero.
 """
@@ -20,8 +20,6 @@ _FLUJO_KLINES = ["volume", "quote_volume", "taker_buy_volume", "taker_buy_quote_
 _INT_KLINES   = ["num_trades"]
 _OHLC_KLINES  = ["open", "high", "low", "close"]
 
-_OHLC_MARK    = ["mark_open",    "mark_high",    "mark_low",    "mark_close"]
-_OHLC_INDEX   = ["index_open",   "index_high",   "index_low",   "index_close"]
 _OHLC_PREMIUM = ["premium_open", "premium_high", "premium_low", "premium_close"]
 
 
@@ -73,9 +71,9 @@ def rellenar_y_validar(df: pl.DataFrame) -> pl.DataFrame:
     ])
 
     # ----------------------------------------------------------------
-    # mark / index / premium: forward-fill
+    # premium: forward-fill
     # ----------------------------------------------------------------
-    ffill_cols = [c for c in _OHLC_MARK + _OHLC_INDEX + _OHLC_PREMIUM if c in df.columns]
+    ffill_cols = [c for c in _OHLC_PREMIUM if c in df.columns]
     if ffill_cols:
         df = df.with_columns([pl.col(c).forward_fill() for c in ffill_cols])
 

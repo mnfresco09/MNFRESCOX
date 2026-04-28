@@ -59,6 +59,15 @@ def _nombre_csv_diario(simbolo: str, fecha: date) -> str:
     return f"{simbolo}-{config.INTERVALO}-{fecha.year:04d}-{fecha.month:02d}-{fecha.day:02d}.csv"
 
 
+def _nombre_parquet(simbolo: str) -> str:
+    if simbolo.endswith("USDT"):
+        activo = f"{simbolo[:-4]}_USDT"
+    else:
+        activo = simbolo
+
+    return f"{activo}_{config.INTERVALO}.parquet"
+
+
 def _descargar_y_extraer_mensual(
     simbolo: str, tipo: str, year: int, month: int, dir_tipo: Path
 ) -> Optional[Path]:
@@ -186,16 +195,14 @@ def _procesar_activo(simbolo: str, hoy: date) -> None:
 
     log.info("\n  Combinando tipos…")
     df = combinar(
-        klines   = datos["klines"],
-        mark     = datos["markPriceKlines"],
-        index    = datos["indexPriceKlines"],
-        premium  = datos["premiumIndexKlines"],
+        klines  = datos["klines"],
+        premium = datos["premiumIndexKlines"],
     )
 
     log.info("  Rellenando gaps y validando…")
     df = rellenar_y_validar(df)
 
-    destino = config.HISTORICO / f"{simbolo}_um_1m.parquet"
+    destino = config.HISTORICO / _nombre_parquet(simbolo)
     log.info(f"  Exportando a {destino}…")
     guardar(df, destino)
 

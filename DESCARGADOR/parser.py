@@ -19,14 +19,6 @@ _COLS_CRUDAS = {
         "_close_time", "quote_volume", "num_trades",
         "taker_buy_volume", "taker_buy_quote_volume", "_ignore",
     ],
-    "markPriceKlines": [
-        "timestamp", "open", "high", "low", "close", "volume",
-        "_close_time", "_i1", "_i2", "_i3", "_i4",
-    ],
-    "indexPriceKlines": [
-        "timestamp", "open", "high", "low", "close", "volume",
-        "_close_time", "_i1", "_i2", "_i3", "_i4",
-    ],
     "premiumIndexKlines": [
         "timestamp", "open", "high", "low", "close", "volume",
         "_close_time", "_i1", "_i2", "_i3", "_i4",
@@ -39,8 +31,6 @@ _COLS_MANTENER = {
         "timestamp", "open", "high", "low", "close", "volume",
         "quote_volume", "num_trades", "taker_buy_volume", "taker_buy_quote_volume",
     ],
-    "markPriceKlines":    ["timestamp", "open", "high", "low", "close"],
-    "indexPriceKlines":   ["timestamp", "open", "high", "low", "close"],
     "premiumIndexKlines": ["timestamp", "open", "high", "low", "close"],
 }
 

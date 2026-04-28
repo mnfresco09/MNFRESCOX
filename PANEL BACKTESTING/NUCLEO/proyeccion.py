@@ -49,9 +49,8 @@ def proyectar_senales_a_base(
     base_len: int,
 ) -> pl.Series:
     """Proyecta señales del TF de estrategia al TF base. Las velas resampleadas
-    están etiquetadas en su cierre, así que la señal se marca en la última vela
-    base disponible dentro de esa ventana; el motor entra siempre en la
-    siguiente vela base.
+    están etiquetadas en la última vela base incluida en la ventana, así que la
+    señal se marca ahí; el motor entra siempre en la siguiente vela base.
     """
     if len(senales_tf) != tf_to_base_idx.shape[0]:
         raise ValueError(

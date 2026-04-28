@@ -23,16 +23,34 @@ _SEGUNDOS_A_TF = {
     14400: "4h",
     86400: "1d",
 }
+_TF_A_SEGUNDOS = {tf: segundos for segundos, tf in _SEGUNDOS_A_TF.items()}
 
-# Columnas OHLCV estándar que se agregan con reglas fijas
-_COLS_OHLCV = {"open", "high", "low", "close", "volume"}
+# Regla de agregación por columna. Si se añade una columna nueva al histórico,
+# debe declararse aquí para evitar resampleos con semántica incorrecta.
+_REGLAS_AGREGACION = {
+    "open": "first",
+    "high": "max",
+    "low": "min",
+    "close": "last",
+    "volume": "sum",
+    "quote_volume": "sum",
+    "num_trades": "sum",
+    "taker_buy_volume": "sum",
+    "taker_buy_quote_volume": "sum",
+    "taker_sell_volume": "sum",
+    "vol_delta": "sum",
+    "premium_close": "last",
+    "predicted_funding_rate": "last",
+    "open_interest": "last",
+    "funding_rate": "last",
+}
 
 
 def resamplear(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
     """
     Construye velas del timeframe pedido a partir del timeframe mas bajo disponible.
     Solo permite ir hacia timeframes más grandes, nunca más pequeños.
-    Las columnas extra (OI, funding rate, etc.) se agregan como media.
+    Cada columna se agrega con una regla explícita según lo que mide.
     """
     if timeframe not in _JERARQUIA:
         raise ValueError(
@@ -53,44 +71,73 @@ def resamplear(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
         )
 
     duracion = _DURACION[timeframe]
-    columnas_presentes = set(df.columns)
-
-    # Reglas de agregación para columnas OHLCV estándar
-    aggs = [
-        pl.col("open").first(),
-        pl.col("high").max(),
-        pl.col("low").min(),
-        pl.col("close").last(),
-    ]
-
-    if "volume" in columnas_presentes:
-        aggs.append(pl.col("volume").sum())
-
-    # Columnas extra: media (conserva información sin inventar valores)
-    extras = columnas_presentes - _COLS_OHLCV - {"timestamp"}
-    for col in sorted(extras):
-        aggs.append(pl.col(col).mean())
+    filas_esperadas = _filas_esperadas_por_ventana(timeframe_base, timeframe)
+    aggs = _construir_agregaciones(df.columns)
 
     df_ordenado = df.sort("timestamp")
-    ultimo_timestamp = df_ordenado["timestamp"][-1]
 
-    # Ventanas estrictamente cerradas y etiquetadas a la derecha:
-    # una vela 10:00-11:00 queda marcada en 11:00, no en 10:00.
+    # Ventanas [inicio, fin) sin lookahead. El timestamp final no es la apertura
+    # de la ventana, sino la última vela base incluida: 00:00..00:14 -> 00:14.
+    # Así la señal queda disponible en 00:14 y el motor entra en N+1 (00:15).
     df_resampled = (
         df_ordenado
         .group_by_dynamic(
             "timestamp",
             every=duracion,
-            closed="right",
-            label="right",
+            closed="left",
+            label="left",
             start_by="window",
         )
-        .agg(aggs)
-        .filter(pl.col("timestamp") <= ultimo_timestamp)
+        .agg([
+            pl.col("timestamp").last().alias("_timestamp_operativo"),
+            pl.len().alias("_filas_ventana"),
+            *aggs,
+        ])
+        .filter(pl.col("_filas_ventana") == filas_esperadas)
+        .with_columns(pl.col("_timestamp_operativo").alias("timestamp"))
+        .drop(["_timestamp_operativo", "_filas_ventana"])
         .sort("timestamp")
     )
 
     return df_resampled
+
+
+def _filas_esperadas_por_ventana(timeframe_base: str, timeframe: str) -> int:
+    segundos_base = _TF_A_SEGUNDOS[timeframe_base]
+    segundos_destino = _TF_A_SEGUNDOS[timeframe]
+    if segundos_destino % segundos_base != 0:
+        raise ValueError(
+            f"No se puede resamplear de '{timeframe_base}' a '{timeframe}': "
+            "la duración destino no es múltiplo exacto de la base."
+        )
+    return segundos_destino // segundos_base
+
+
+def _construir_agregaciones(columnas: list[str]) -> list[pl.Expr]:
+    columnas_datos = [col for col in columnas if col != "timestamp"]
+    desconocidas = sorted(col for col in columnas_datos if col not in _REGLAS_AGREGACION)
+    if desconocidas:
+        raise ValueError(
+            "Columnas sin regla de resampleo declarada: "
+            f"{desconocidas}. Añade su semántica a _REGLAS_AGREGACION."
+        )
+
+    return [_expresion_agregacion(col, _REGLAS_AGREGACION[col]) for col in columnas_datos]
+
+
+def _expresion_agregacion(columna: str, regla: str) -> pl.Expr:
+    if regla == "first":
+        return pl.col(columna).first()
+    if regla == "max":
+        return pl.col(columna).max()
+    if regla == "min":
+        return pl.col(columna).min()
+    if regla == "last":
+        return pl.col(columna).last()
+    if regla == "sum":
+        return pl.col(columna).sum()
+
+    raise ValueError(f"Regla de resampleo no soportada para '{columna}': {regla}")
 
 
 def inferir_timeframe(df: pl.DataFrame) -> str:
