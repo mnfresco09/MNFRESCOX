@@ -41,15 +41,16 @@ def generar_htmls(
     mejores = sorted(candidatos, key=lambda t: t.score, reverse=True)[: min(max_plots, 5)]
     tv_script = obtener_script_libreria()
 
-    df_idx = df.with_row_index("_i_")
-    # idx_to_time resuelve índices del df de ejecución (puede diferir de df del gráfico)
-    idx_to_time: dict[int, int] = {
-        int(row["_i_"]): int(row["timestamp"].timestamp())
-        for row in df_exec_real.with_row_index("_i_").select(["_i_", "timestamp"]).iter_rows(named=True)
-    }
-
     paths = []
     for trial in mejores:
+        df_trial = _df_replay(trial, "df_tf", df)
+        df_exec_trial = _df_replay(trial, "df_exec", df_exec_real)
+        df_indicadores_trial = _df_replay(trial, "df_tf", df_indicadores)
+        df_idx = df_trial.with_row_index("_i_")
+        idx_to_time: dict[int, int] = {
+            int(row["_i_"]): int(row["timestamp"].timestamp())
+            for row in df_exec_trial.with_row_index("_i_").select(["_i_", "timestamp"]).iter_rows(named=True)
+        }
         path = _unique_path(
             html_dir
             / (
@@ -57,12 +58,13 @@ def generar_htmls(
             )
         )
         payload = _crear_payload(
-            df=df,
+            df=df_trial,
             df_idx=df_idx,
-            df_indicadores=df_indicadores,
+            df_indicadores=df_indicadores_trial,
             idx_to_time=idx_to_time,
             trial=trial,
             estrategia=estrategia,
+            indicadores_precalculados=getattr(trial.replay, "indicadores", None),
             grafica_rango=grafica_rango,
             grafica_desde=grafica_desde,
             grafica_hasta=grafica_hasta,
@@ -72,6 +74,14 @@ def generar_htmls(
 
     verificar_htmls(paths)
     return paths
+
+
+def _df_replay(trial, atributo: str, fallback: pl.DataFrame) -> pl.DataFrame:
+    replay = getattr(trial, "replay", None)
+    if replay is None:
+        return fallback
+    df = getattr(replay, atributo, None)
+    return fallback if df is None else df
 
 
 def verificar_htmls(paths: list[Path]) -> None:
@@ -103,6 +113,7 @@ def _crear_payload(
     idx_to_time: dict[int, int],
     trial,
     estrategia,
+    indicadores_precalculados: list[dict] | None,
     grafica_rango: str,
     grafica_desde: str,
     grafica_hasta: str,
@@ -126,7 +137,11 @@ def _crear_payload(
     ]
 
     # Indicadores: calculados sobre el df completo, filtrados al rango visible
-    indicadores_raw = estrategia.indicadores_para_grafica(df_indicadores, trial.parametros)
+    indicadores_raw = (
+        indicadores_precalculados
+        if indicadores_precalculados is not None
+        else estrategia.indicadores_para_grafica(df_indicadores, trial.parametros)
+    )
     indicadores = []
     for ind in indicadores_raw:
         data_rango = [d for d in ind["data"] if ts_min <= d["t"] <= ts_max]

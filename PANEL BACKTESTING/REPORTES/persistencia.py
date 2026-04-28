@@ -127,6 +127,7 @@ def resumen_trials_dataframe(trials: list) -> pl.DataFrame:
             "activo": trial.activo,
             "timeframe": trial.timeframe,
             "timeframe_ejecucion": getattr(trial, "timeframe_ejecucion", trial.timeframe),
+            "perturbacion_seed": getattr(trial, "perturbacion_seed", None),
             "estrategia": trial.estrategia_nombre,
             "salida": trial.salida.tipo,
         }
@@ -366,6 +367,7 @@ def _crear_resumen_optimizacion(
             "total_trials": int(len(trials)),
             "mejor_trial": int(mejor.numero),
             "mejor_score": float(mejor.score),
+            "mejor_perturbacion_seed": getattr(mejor, "perturbacion_seed", None),
             "mejores_parametros": dict(mejor.parametros),
         },
         "metricas_mejor_trial": _normalizar_metricas(mejor.metricas),

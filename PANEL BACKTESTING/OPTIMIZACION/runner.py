@@ -13,6 +13,11 @@ import optuna
 from CONFIGURACION import config as cfg
 from CONFIGURACION.validador_config import validar as validar_config
 from DATOS.cargador import cargar
+from DATOS.perturbaciones import (
+    ConfiguracionPerturbaciones,
+    aplicar_perturbaciones,
+    seed_para_trial,
+)
 from DATOS.resampleo import inferir_timeframe, resamplear
 from DATOS.validador import validar as validar_datos
 from MOTOR import simular_full, simular_metricas
@@ -52,6 +57,10 @@ class ReplayTrial:
     metricas_obj: object  # struct Metricas Rust (para integridad)
     trades: dict[str, np.ndarray]
     equity_curve: np.ndarray
+    df_tf: Any | None = None
+    df_exec: Any | None = None
+    indicadores: list[dict] | None = None
+    perturbacion_seed: int | None = None
 
 
 @dataclass
@@ -68,6 +77,7 @@ class TrialResultado:
     metricas: dict
     conteo_senales: dict[int, int]
     conteo_salidas: dict[int, int] | None = None
+    perturbacion_seed: int | None = None
     replay: Optional[ReplayTrial] = None
 
 
@@ -85,6 +95,10 @@ def main() -> None:
     timeframes = _como_lista(cfg.TIMEFRAMES)
     salidas = list(_salidas_a_ejecutar())
     n_jobs = _normalizar_jobs(cfg.N_JOBS)
+    perturbaciones = ConfiguracionPerturbaciones.desde_config(cfg)
+    if perturbaciones.activa and n_jobs != 1:
+        print("[PERT] Perturbaciones activas: N_JOBS se ajusta a 1 para evitar duplicar caminos en paralelo.")
+        n_jobs = 1
     combinaciones_esperadas = len(activos) * len(timeframes) * len(estrategias) * len(salidas)
     combinaciones_ejecutadas: set[tuple[str, str, int, str]] = set()
 
@@ -118,11 +132,11 @@ def main() -> None:
             ctx = crear_contexto(df_base=df_base, df_tf=df_tf)
 
             for estrategia in estrategias:
-                # bind cubre TODA la combinación: optimización + reportes
-                # (los reportes HTML llaman a indicadores_para_grafica que
-                # también necesita los buffers).
-                cache_indicadores = CacheIndicadores()
-                estrategia.bind(ctx.arrays_tf, cache_indicadores)
+                # Sin perturbaciones los buffers son estables para toda la
+                # combinacion. Con perturbaciones se clona y vincula por trial.
+                if not perturbaciones.activa:
+                    cache_indicadores = CacheIndicadores()
+                    estrategia.bind(ctx.arrays_tf, cache_indicadores)
                 try:
                     for salida in salidas:
                         clave = (str(activo), str(timeframe), int(estrategia.ID), str(salida.tipo))
@@ -141,6 +155,7 @@ def main() -> None:
                                 n_jobs=n_jobs,
                                 fecha_inicio=fecha_inicio,
                                 fecha_fin=fecha_fin,
+                                perturbaciones=perturbaciones,
                             )
                         except Exception as exc:
                             contexto = (
@@ -224,80 +239,106 @@ def _optimizar_combinacion(
     n_jobs: int,
     fecha_inicio: date,
     fecha_fin: date,
+    perturbaciones: ConfiguracionPerturbaciones,
 ) -> list[TrialResultado]:
     sampler = crear_sampler(cfg.OPTUNA_SAMPLER, cfg.OPTUNA_SEED, cfg.N_TRIALS)
     study = optuna.create_study(direction="maximize", sampler=sampler)
     resultados: list[TrialResultado] = []
     lock = Lock()
 
-    # Estrategia ya vinculada por main() a los buffers TF y al cache.
+    # Sin perturbaciones, la estrategia ya esta vinculada por main() a buffers
+    # estables. Con perturbaciones, cada trial crea su propio contexto y clone.
 
     def objective(trial: optuna.Trial) -> float:
+        perturbacion_seed = seed_para_trial(
+            perturbaciones,
+            trial_numero=trial.number,
+            activo=activo,
+            timeframe=timeframe,
+            estrategia_id=estrategia.ID,
+            salida_tipo=salida_base.tipo,
+        )
+        ctx_trial = _ctx_para_trial(
+            ctx=ctx,
+            timeframe=timeframe,
+            perturbaciones=perturbaciones,
+            seed=perturbacion_seed,
+        )
+        estrategia_trial = _estrategia_para_trial(estrategia, perturbaciones)
+        if perturbaciones.activa:
+            estrategia_trial.bind(ctx_trial.arrays_tf, CacheIndicadores())
+
         params_estrategia = estrategia.espacio_busqueda(trial)
         salida_trial, params_salida = _salida_para_trial(salida_base, trial)
         parametros = {**params_estrategia, **params_salida}
 
-        senales_tf = estrategia.generar_señales(ctx.df_tf, params_estrategia)
-        conteo = integridad.verificar_senales(ctx.df_tf, senales_tf)
-        salidas_custom = (
-            estrategia.generar_salidas(ctx.df_tf, params_estrategia)
-            if salida_trial.tipo == "CUSTOM"
-            else None
-        )
-        conteo_salidas = (
-            integridad.verificar_salidas_custom(ctx.df_tf, salidas_custom)
-            if salidas_custom is not None
-            else None
-        )
+        try:
+            senales_tf = estrategia_trial.generar_señales(ctx_trial.df_tf, params_estrategia)
+            conteo = integridad.verificar_senales(ctx_trial.df_tf, senales_tf)
+            salidas_custom = (
+                estrategia_trial.generar_salidas(ctx_trial.df_tf, params_estrategia)
+                if salida_trial.tipo == "CUSTOM"
+                else None
+            )
+            conteo_salidas = (
+                integridad.verificar_salidas_custom(ctx_trial.df_tf, salidas_custom)
+                if salidas_custom is not None
+                else None
+            )
 
-        arrays_exec, senales_exec, salidas_exec = _preparar_ejecucion(
-            ctx=ctx,
-            salida=salida_trial,
-            senales_tf=senales_tf,
-            salidas_custom=salidas_custom,
-        )
-        timeframe_ejecucion = _timeframe_ejecucion(
-            ctx=ctx,
-            salida=salida_trial,
-            timeframe=timeframe,
-            timeframe_base=timeframe_base,
-        )
+            arrays_exec, senales_exec, salidas_exec = _preparar_ejecucion(
+                ctx=ctx_trial,
+                salida=salida_trial,
+                senales_tf=senales_tf,
+                salidas_custom=salidas_custom,
+            )
+            timeframe_ejecucion = _timeframe_ejecucion(
+                ctx=ctx_trial,
+                salida=salida_trial,
+                timeframe=timeframe,
+                timeframe_base=timeframe_base,
+            )
 
-        metricas_obj = simular_metricas(
-            arrays_exec,
-            senales_exec,
-            sim_cfg=_sim_config(salida_trial),
-            salidas_custom=salidas_exec,
-        )
-        metricas = calcular_metricas(metricas_obj, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
-        score = calcular_score(metricas)
-        trial.set_user_attr("metricas", metricas)
-        trial.set_user_attr("conteo_senales", conteo)
-        trial.set_user_attr("conteo_salidas", conteo_salidas)
+            metricas_obj = simular_metricas(
+                arrays_exec,
+                senales_exec,
+                sim_cfg=_sim_config(salida_trial),
+                salidas_custom=salidas_exec,
+            )
+            metricas = calcular_metricas(metricas_obj, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
+            score = calcular_score(metricas)
+            trial.set_user_attr("metricas", metricas)
+            trial.set_user_attr("conteo_senales", conteo)
+            trial.set_user_attr("conteo_salidas", conteo_salidas)
+            trial.set_user_attr("perturbacion_seed", perturbacion_seed)
 
-        trial_resultado = TrialResultado(
-            numero=trial.number,
-            activo=activo,
-            timeframe=timeframe,
-            timeframe_ejecucion=timeframe_ejecucion,
-            estrategia_id=int(estrategia.ID),
-            estrategia_nombre=estrategia.NOMBRE,
-            salida=salida_trial,
-            parametros=parametros,
-            score=float(score),
-            metricas=metricas,
-            conteo_senales=conteo,
-            conteo_salidas=conteo_salidas,
-        )
-        with lock:
-            resultados.append(trial_resultado)
-        monitor.registrar(
-            trial_number=trial.number,
-            score=float(score),
-            metricas=metricas,
-            params=_params_para_monitor(parametros, salida_trial),
-        )
-        return float(score)
+            trial_resultado = TrialResultado(
+                numero=trial.number,
+                activo=activo,
+                timeframe=timeframe,
+                timeframe_ejecucion=timeframe_ejecucion,
+                estrategia_id=int(estrategia.ID),
+                estrategia_nombre=estrategia.NOMBRE,
+                salida=salida_trial,
+                parametros=parametros,
+                score=float(score),
+                metricas=metricas,
+                conteo_senales=conteo,
+                conteo_salidas=conteo_salidas,
+                perturbacion_seed=perturbacion_seed,
+            )
+            with lock:
+                resultados.append(trial_resultado)
+            monitor.registrar(
+                trial_number=trial.number,
+                score=float(score),
+                metricas=metricas,
+                params=_params_para_monitor(parametros, salida_trial),
+            )
+            return float(score)
+        finally:
+            if perturbaciones.activa:
+                estrategia_trial.desvincular()
 
     with MonitorOptimizacion(
         activo=activo,
@@ -328,6 +369,8 @@ def _optimizar_combinacion(
             estrategia=estrategia,
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
+            timeframe=timeframe,
+            perturbaciones=perturbaciones,
         )
 
     return resultados
@@ -340,6 +383,8 @@ def _replay_trial(
     estrategia,
     fecha_inicio: date,
     fecha_fin: date,
+    timeframe: str,
+    perturbaciones: ConfiguracionPerturbaciones,
 ) -> None:
     """Reconstruye trades + equity_curve para un trial que va a generar reporte.
 
@@ -347,28 +392,48 @@ def _replay_trial(
     con los registrados durante la fase Optuna — garantía de determinismo.
     """
     salida = trial_res.salida
+    ctx_trial = _ctx_para_trial(
+        ctx=ctx,
+        timeframe=timeframe,
+        perturbaciones=perturbaciones,
+        seed=trial_res.perturbacion_seed,
+    )
+    estrategia_trial = _estrategia_para_trial(estrategia, perturbaciones)
+    if perturbaciones.activa:
+        estrategia_trial.bind(ctx_trial.arrays_tf, CacheIndicadores())
+
     params_estrategia = {
         k: v for k, v in trial_res.parametros.items()
         if not k.startswith("exit_")
     }
-    senales_tf = estrategia.generar_señales(ctx.df_tf, params_estrategia)
-    salidas_custom = (
-        estrategia.generar_salidas(ctx.df_tf, params_estrategia)
-        if salida.tipo == "CUSTOM"
-        else None
-    )
-    arrays_exec, senales_exec, salidas_exec = _preparar_ejecucion(
-        ctx=ctx,
-        salida=salida,
-        senales_tf=senales_tf,
-        salidas_custom=salidas_custom,
-    )
-    sim_result = simular_full(
-        arrays_exec,
-        senales_exec,
-        sim_cfg=_sim_config(salida),
-        salidas_custom=salidas_exec,
-    )
+    try:
+        senales_tf = estrategia_trial.generar_señales(ctx_trial.df_tf, params_estrategia)
+        salidas_custom = (
+            estrategia_trial.generar_salidas(ctx_trial.df_tf, params_estrategia)
+            if salida.tipo == "CUSTOM"
+            else None
+        )
+        arrays_exec, senales_exec, salidas_exec = _preparar_ejecucion(
+            ctx=ctx_trial,
+            salida=salida,
+            senales_tf=senales_tf,
+            salidas_custom=salidas_custom,
+        )
+        sim_result = simular_full(
+            arrays_exec,
+            senales_exec,
+            sim_cfg=_sim_config(salida),
+            salidas_custom=salidas_exec,
+        )
+        indicadores = (
+            estrategia_trial.indicadores_para_grafica(ctx_trial.df_tf, trial_res.parametros)
+            if perturbaciones.activa
+            else None
+        )
+    finally:
+        if perturbaciones.activa:
+            estrategia_trial.desvincular()
+
     metricas_obj = sim_result.metricas
     trades = sim_result.take_trades()  # consume el SimResult, libera RAM Rust
     equity_curve = trades.pop("equity_curve")
@@ -393,7 +458,31 @@ def _replay_trial(
         metricas_obj=metricas_obj,
         trades=trades,
         equity_curve=equity_curve,
+        df_tf=ctx_trial.df_tf if perturbaciones.activa else None,
+        indicadores=indicadores,
+        perturbacion_seed=trial_res.perturbacion_seed,
     )
+
+
+def _ctx_para_trial(
+    *,
+    ctx: ContextoCombinacion,
+    timeframe: str,
+    perturbaciones: ConfiguracionPerturbaciones,
+    seed: int | None,
+) -> ContextoCombinacion:
+    if not perturbaciones.activa:
+        return ctx
+
+    df_base = aplicar_perturbaciones(ctx.df_base, perturbaciones, seed=seed)
+    df_tf = resamplear(df_base, timeframe)
+    return crear_contexto(df_base=df_base, df_tf=df_tf)
+
+
+def _estrategia_para_trial(estrategia, perturbaciones: ConfiguracionPerturbaciones):
+    if not perturbaciones.activa:
+        return estrategia
+    return type(estrategia)()
 
 
 def _preparar_ejecucion(

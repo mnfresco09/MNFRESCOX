@@ -87,6 +87,8 @@ def validar(cfg) -> None:
     if cfg.N_JOBS == 0:
         errores.append("N_JOBS no puede ser 0. Usa 1, -1 o -2.")
 
+    _validar_perturbaciones(cfg, errores)
+
     # --- Resultados ---
     if not isinstance(cfg.USAR_EXCEL, bool):
         errores.append("USAR_EXCEL debe ser True o False.")
@@ -134,12 +136,67 @@ def _validar_modulos_salida(exit_type: str, errores: list[str]) -> None:
                 _validar_rango(personalizada, "EXIT_SL_MIN", "EXIT_SL_MAX", errores)
 
 
+def _validar_perturbaciones(cfg, errores: list[str]) -> None:
+    activa = bool(getattr(cfg, "PERTURBACIONES_ACTIVAS", False))
+    seed = getattr(cfg, "PERTURBACIONES_SEED", None)
+    if seed is not None and not isinstance(seed, int):
+        errores.append("PERTURBACIONES_SEED debe ser int o None.")
+
+    if not activa:
+        return
+
+    _cfg_float_rango(cfg, "BANDA_MAX_PRECIO", errores, minimo=0.0, maximo=0.90, cerrado_min=False)
+    _cfg_float_rango(cfg, "FUERZA_AMORTIGUACION", errores, minimo=0.0, maximo=1.0)
+    _cfg_float_rango(cfg, "ESCALA_VOLATILIDAD", errores, minimo=0.0, maximo=None)
+    _cfg_int_min(cfg, "VENTANA_VOLATILIDAD", errores, minimo=2)
+    _cfg_float_rango(cfg, "SIGMA_RANGO_VELA", errores, minimo=0.0, maximo=None)
+    _cfg_float_rango(cfg, "RUIDO_POSICION_OHLC", errores, minimo=0.0, maximo=0.49)
+    _cfg_float_rango(cfg, "SIGMA_VOLUMEN", errores, minimo=0.0, maximo=None)
+    _cfg_float_rango(cfg, "GRANULARIDAD_CUBOS", errores, minimo=0.0, maximo=None, cerrado_min=False)
+    _cfg_float_rango(cfg, "INERCIA_ORDER_FLOW", errores, minimo=0.0, maximo=1.0)
+    _cfg_int_min(cfg, "VENTANA_MEDIA_VOLUMEN", errores, minimo=2)
+
+
 def _importar_salida(nombre: str, errores: list[str]):
     try:
         return importlib.import_module(f"SALIDAS.{nombre}")
     except Exception as exc:
         errores.append(f"No se pudo importar SALIDAS/{nombre}.py: {exc}")
         return None
+
+
+def _cfg_float_rango(
+    cfg,
+    nombre: str,
+    errores: list[str],
+    *,
+    minimo: float | None,
+    maximo: float | None,
+    cerrado_min: bool = True,
+) -> None:
+    try:
+        valor = float(getattr(cfg, nombre))
+    except Exception:
+        errores.append(f"{nombre} debe existir y ser numérico cuando PERTURBACIONES_ACTIVAS=True.")
+        return
+
+    if minimo is not None:
+        invalido_min = valor < minimo if cerrado_min else valor <= minimo
+        if invalido_min:
+            op = ">=" if cerrado_min else ">"
+            errores.append(f"{nombre} debe ser {op} {minimo}.")
+    if maximo is not None and valor > maximo:
+        errores.append(f"{nombre} debe ser <= {maximo}.")
+
+
+def _cfg_int_min(cfg, nombre: str, errores: list[str], *, minimo: int) -> None:
+    try:
+        valor = int(getattr(cfg, nombre))
+    except Exception:
+        errores.append(f"{nombre} debe existir y ser entero cuando PERTURBACIONES_ACTIVAS=True.")
+        return
+    if valor < minimo:
+        errores.append(f"{nombre} debe ser >= {minimo}.")
 
 
 def _validar_mayor_cero(modulo, atributo: str, errores: list[str]) -> None:

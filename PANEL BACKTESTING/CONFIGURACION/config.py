@@ -75,6 +75,25 @@ OPTUNA_SAMPLER = "HYBRID"
 OPTUNA_SEED = 42
 
 # ---------------------------------------------------------------------------
+# PERTURBACIONES
+# ---------------------------------------------------------------------------
+# False = todos los trials ven el Parquet original.
+# True  = cada trial ve un camino alternativo plausible, generado en memoria.
+PERTURBACIONES_ACTIVAS = False
+PERTURBACIONES_SEED = 42
+
+BANDA_MAX_PRECIO = 0.15
+FUERZA_AMORTIGUACION = 0.10
+ESCALA_VOLATILIDAD = 0.50
+VENTANA_VOLATILIDAD = 20
+SIGMA_RANGO_VELA = 0.05
+RUIDO_POSICION_OHLC = 0.08
+SIGMA_VOLUMEN = 0.10
+GRANULARIDAD_CUBOS = 0.005
+INERCIA_ORDER_FLOW = 0.30
+VENTANA_MEDIA_VOLUMEN = 20
+
+# ---------------------------------------------------------------------------
 # PARALELISMO
 # ---------------------------------------------------------------------------
 # -1 → todos los cores
