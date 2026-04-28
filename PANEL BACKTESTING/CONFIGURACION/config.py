@@ -11,7 +11,7 @@ CARPETA_RESULTADOS = RAIZ / "RESULTADOS"
 # ACTIVOS Y DATOS
 # ---------------------------------------------------------------------------
 ACTIVOS = ["BTC"]          # Un activo o lista: ["BTC", "GOLD"]
-FORMATO_DATOS = "feather"          # "feather" | "parquet" | "csv"
+FORMATO_DATOS = "parquet"          # "feather" | "parquet" | "csv"
 
 # True = activo continuo 24/7: cualquier hueco temporal es error.
 # False = activo con cierre de mercado: se permiten saltos entre sesiones

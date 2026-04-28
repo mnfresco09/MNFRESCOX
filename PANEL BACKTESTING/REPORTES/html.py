@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import html as _html
 import json
-from datetime import date
+from datetime import date, datetime, timezone
+from math import isfinite
 from pathlib import Path
 
 import polars as pl
@@ -78,9 +79,20 @@ def verificar_htmls(paths: list[Path]) -> None:
         if not path.exists():
             raise ValueError(f"[HTML] No se genero {path}.")
         contenido = path.read_text(encoding="utf-8")
-        for token in ("candles", "markers", "createChart", "addCandlestickSeries"):
+        tokens = (
+            "candles",
+            "markers",
+            "createChart",
+            "addCandlestickSeries",
+            "chart-equity-dd",
+            "addEquityDrawdownPane",
+            "trade-tbody",
+        )
+        for token in tokens:
             if token not in contenido:
                 raise ValueError(f"[HTML] {path.name} no contiene bloque requerido: {token}.")
+        if "exit-strip" in contenido or "var-exit-stats" in contenido:
+            raise ValueError(f"[HTML] {path.name} conserva el bloque legacy de TP/SL/END.")
 
 
 def _crear_payload(
@@ -128,38 +140,58 @@ def _crear_payload(
     motivos_lookup = MOTIVOS
 
     for i in range(n_trades):
+        idx_signal = int(cols["idx_senal"][i])
         idx_e = int(cols["idx_entrada"][i])
         idx_s = int(cols["idx_salida"][i])
-        t_e = idx_to_time.get(idx_e)
-        t_s = idx_to_time.get(idx_s)
+        t_signal = idx_to_time.get(idx_signal) or _segundos_desde_us(cols["ts_senal"][i])
+        t_e = idx_to_time.get(idx_e) or _segundos_desde_us(cols["ts_entrada"][i])
+        t_s = idx_to_time.get(idx_s) or _segundos_desde_us(cols["ts_salida"][i])
         dir_int = int(cols["direccion"][i])
         direccion = "LONG" if dir_int == 1 else "SHORT"
         pnl = float(cols["pnl"][i])
+        comision = float(cols["comision_total"][i])
+        pnl_bruto = pnl + comision
         roi = float(cols["roi"][i])
         precio_e = float(cols["precio_entrada"][i])
         precio_s = float(cols["precio_salida"][i])
+        colateral = float(cols["colateral"][i])
+        tamano_posicion = float(cols["tamano_posicion"][i])
+        saldo_post = float(cols["saldo_post"][i])
         duracion_velas = int(cols["duracion_velas"][i])
         duracion_seg = _segundos_entre_us(
             int(cols["ts_entrada"][i]),
             int(cols["ts_salida"][i]),
         )
         duracion_txt = formatear_duracion(duracion_seg, duracion_velas)
-        motivo = motivos_lookup[int(cols["motivo_salida"][i])]
+        motivo_codigo = int(cols["motivo_salida"][i])
+        motivo = motivos_lookup[motivo_codigo]
         n = i + 1
 
-        trades.append({
+        trade = {
             "n":              n,
+            "idx_senal":      idx_signal,
+            "idx_entrada":    idx_e,
+            "idx_salida":     idx_s,
             "direccion":      direccion,
+            "time_senal":     t_signal,
             "time_entrada":   t_e,
             "time_salida":    t_s,
             "precio_entrada": precio_e,
             "precio_salida":  precio_s,
+            "colateral":      colateral,
+            "tamano_posicion": tamano_posicion,
+            "comision_total": comision,
+            "pnl_bruto":      pnl_bruto,
             "pnl":            pnl,
             "roi":            roi,
+            "saldo_post":     saldo_post,
             "duracion":       duracion_velas,
+            "duracion_seg":   duracion_seg,
             "duracion_txt":   duracion_txt,
+            "motivo_codigo":  motivo_codigo,
             "motivo":         motivo,
-        })
+        }
+        trades.append(trade)
 
         if t_e and ts_min <= t_e <= ts_max:
             markers.append({
@@ -168,9 +200,17 @@ def _crear_payload(
                 "time":         t_e,
                 "direccion":    direccion,
                 "precio":       precio_e,
+                "precio_entrada": precio_e,
+                "precio_salida": precio_s,
+                "colateral":    colateral,
+                "tamano_posicion": tamano_posicion,
+                "comision_total": comision,
+                "pnl_bruto":    pnl_bruto,
                 "pnl":          pnl,
                 "roi":          roi,
+                "saldo_post":   saldo_post,
                 "duracion":     duracion_velas,
+                "duracion_seg": duracion_seg,
                 "duracion_txt": duracion_txt,
                 "motivo":       motivo,
             })
@@ -181,23 +221,57 @@ def _crear_payload(
                 "time":         t_s,
                 "direccion":    direccion,
                 "precio":       precio_s,
+                "precio_entrada": precio_e,
+                "precio_salida": precio_s,
+                "colateral":    colateral,
+                "tamano_posicion": tamano_posicion,
+                "comision_total": comision,
+                "pnl_bruto":    pnl_bruto,
                 "pnl":          pnl,
                 "roi":          roi,
+                "saldo_post":   saldo_post,
                 "duracion":     duracion_velas,
+                "duracion_seg": duracion_seg,
                 "duracion_txt": duracion_txt,
                 "motivo":       motivo,
             })
 
+    equity_drawdown = _crear_equity_drawdown(
+        trial=trial,
+        idx_to_time=idx_to_time,
+        ts_min=ts_min,
+        ts_max=ts_max,
+        ts_inicio_total=int(df_idx["timestamp"][0].timestamp()),
+    )
+
     return {
-        "titulo":      f"{trial.activo} {trial.timeframe} | {trial.estrategia_nombre} | {trial.salida.tipo}",
-        "trial":       int(trial.numero),
-        "score":       float(trial.score),
-        "metricas":    trial.metricas,
-        "parametros":  trial.parametros,
-        "candles":     candles,
-        "markers":     markers,
-        "trades":      trades,
-        "indicadores": indicadores,
+        "generado_utc": datetime.now(timezone.utc).isoformat(),
+        "titulo":       f"{trial.activo} {trial.timeframe} | {trial.estrategia_nombre} | {trial.salida.tipo}",
+        "activo":       str(trial.activo),
+        "timeframe":    str(trial.timeframe),
+        "timeframe_ejecucion": str(getattr(trial, "timeframe_ejecucion", trial.timeframe)),
+        "estrategia":   {
+            "id": int(trial.estrategia_id),
+            "nombre": str(trial.estrategia_nombre),
+        },
+        "salida":       _salida_payload(trial.salida),
+        "trial":        int(trial.numero),
+        "score":        _json_safe(float(trial.score)),
+        "metricas":     _json_safe(trial.metricas),
+        "parametros":   _json_safe(trial.parametros),
+        "conteo_senales": _conteo_payload(getattr(trial, "conteo_senales", None)),
+        "conteo_salidas": _conteo_payload(getattr(trial, "conteo_salidas", None)),
+        "rango": {
+            "inicio": ts_min,
+            "fin": ts_max,
+            "velas": len(candles),
+        },
+        "resumen_trades": _resumen_trades(trades),
+        "candles":      candles,
+        "markers":      markers,
+        "trades":       trades,
+        "equity_drawdown": equity_drawdown,
+        "indicadores":  indicadores,
     }
 
 
@@ -239,6 +313,150 @@ def _segundos_entre_us(inicio_us: int, fin_us: int) -> int:
     return max(0, int((fin_us - inicio_us) / 1_000_000))
 
 
+def _segundos_desde_us(valor_us) -> int:
+    return int(int(valor_us) / 1_000_000)
+
+
+def _salida_payload(salida) -> dict:
+    return {
+        "tipo": str(salida.tipo),
+        "sl_pct": _json_safe(getattr(salida, "sl_pct", None)),
+        "tp_pct": _json_safe(getattr(salida, "tp_pct", None)),
+        "velas": _json_safe(getattr(salida, "velas", None)),
+        "optimizar": bool(getattr(salida, "optimizar", False)),
+        "sl_min": _json_safe(getattr(salida, "sl_min", None)),
+        "sl_max": _json_safe(getattr(salida, "sl_max", None)),
+        "tp_min": _json_safe(getattr(salida, "tp_min", None)),
+        "tp_max": _json_safe(getattr(salida, "tp_max", None)),
+        "velas_min": _json_safe(getattr(salida, "velas_min", None)),
+        "velas_max": _json_safe(getattr(salida, "velas_max", None)),
+    }
+
+
+def _conteo_payload(conteo: dict[int, int] | None) -> dict | None:
+    if conteo is None:
+        return None
+    return {
+        "long": int(conteo.get(1, 0)),
+        "short": int(conteo.get(-1, 0)),
+        "neutral": int(conteo.get(0, 0)),
+        "total": int(sum(conteo.values())),
+    }
+
+
+def _resumen_trades(trades: list[dict]) -> dict:
+    total = len(trades)
+    pnl_neto = sum(float(t["pnl"]) for t in trades)
+    pnl_bruto = sum(float(t["pnl_bruto"]) for t in trades)
+    comisiones = sum(float(t["comision_total"]) for t in trades)
+    ganadores = sum(1 for t in trades if float(t["pnl"]) > 0)
+    perdedores = sum(1 for t in trades if float(t["pnl"]) < 0)
+    neutros = total - ganadores - perdedores
+    por_motivo: dict[str, dict] = {}
+    for trade in trades:
+        motivo = str(trade["motivo"])
+        bucket = por_motivo.setdefault(
+            motivo,
+            {"trades": 0, "pnl": 0.0, "pnl_bruto": 0.0, "comisiones": 0.0, "win": 0, "loss": 0},
+        )
+        pnl = float(trade["pnl"])
+        bucket["trades"] += 1
+        bucket["pnl"] += pnl
+        bucket["pnl_bruto"] += float(trade["pnl_bruto"])
+        bucket["comisiones"] += float(trade["comision_total"])
+        if pnl > 0:
+            bucket["win"] += 1
+        elif pnl < 0:
+            bucket["loss"] += 1
+
+    return {
+        "total": total,
+        "ganadores": ganadores,
+        "perdedores": perdedores,
+        "neutros": neutros,
+        "pnl_neto": pnl_neto,
+        "pnl_bruto": pnl_bruto,
+        "comisiones": comisiones,
+        "win_rate": (ganadores / total) if total else 0.0,
+        "por_motivo": por_motivo,
+    }
+
+
+def _crear_equity_drawdown(
+    *,
+    trial,
+    idx_to_time: dict[int, int],
+    ts_min: int,
+    ts_max: int,
+    ts_inicio_total: int,
+) -> list[dict]:
+    equity_curve = trial.replay.equity_curve
+    if equity_curve.shape[0] == 0:
+        return []
+
+    cols = trial.replay.trades
+    inicial = float(equity_curve[0])
+    peak = inicial
+    puntos = [{"time": int(ts_inicio_total), "saldo": inicial, "peak": peak}]
+    for i in range(int(cols["idx_salida"].shape[0])):
+        saldo = float(equity_curve[i + 1])
+        peak = max(peak, saldo)
+        idx_s = int(cols["idx_salida"][i])
+        ts = idx_to_time.get(idx_s) or _segundos_desde_us(cols["ts_salida"][i])
+        puntos.append({"time": int(ts), "saldo": saldo, "peak": peak})
+
+    puntos = _deduplicar_por_tiempo(sorted(puntos, key=lambda p: p["time"]))
+    visible: list[dict] = []
+    ultimo_previo = puntos[0]
+    for punto in puntos:
+        if punto["time"] <= ts_min:
+            ultimo_previo = punto
+        elif punto["time"] <= ts_max:
+            visible.append(punto)
+        else:
+            break
+
+    serie = [{"time": ts_min, **{k: v for k, v in ultimo_previo.items() if k != "time"}}]
+    serie.extend(visible)
+    if serie[-1]["time"] < ts_max:
+        serie.append({"time": ts_max, "saldo": serie[-1]["saldo"], "peak": serie[-1]["peak"]})
+
+    salida = []
+    for punto in _deduplicar_por_tiempo(serie):
+        saldo = float(punto["saldo"])
+        peak = max(float(punto["peak"]), inicial)
+        equity_pct = ((saldo / inicial) - 1.0) * 100.0 if inicial else 0.0
+        drawdown_pct = ((saldo - peak) / peak) * 100.0 if peak else 0.0
+        salida.append(
+            {
+                "time": int(punto["time"]),
+                "saldo": saldo,
+                "equity_pct": equity_pct,
+                "drawdown_pct": min(0.0, drawdown_pct),
+            }
+        )
+    return salida
+
+
+def _deduplicar_por_tiempo(puntos: list[dict]) -> list[dict]:
+    por_tiempo = {int(p["time"]): p for p in puntos}
+    return [por_tiempo[t] for t in sorted(por_tiempo)]
+
+
+def _json_safe(valor):
+    if valor is None or isinstance(valor, (str, bool, int)):
+        return valor
+    if isinstance(valor, float):
+        return valor if isfinite(valor) else None
+    if isinstance(valor, dict):
+        return {str(k): _json_safe(v) for k, v in valor.items()}
+    if isinstance(valor, (list, tuple)):
+        return [_json_safe(v) for v in valor]
+    if hasattr(valor, "item"):
+        return _json_safe(valor.item())
+    return str(valor)
+
+
 def _base_resultados(run_dir: Path) -> Path:
     run_dir = Path(run_dir)
     if run_dir.parent.name.upper() == "DATOS":
@@ -265,306 +483,143 @@ def _unique_path(path: Path) -> Path:
 
 def _render_html(payload: dict, tv_script: str) -> str:
     titulo = _html.escape(payload["titulo"])
-    data_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    return f"""<!doctype html>
+    data_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    template = """<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{titulo} — Trial {payload['trial']}</title>
+<title>__TITLE__ - Trial __TRIAL__</title>
 <style>
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0d1117;color:#d1d4dc;font-size:13px}}
-header{{padding:12px 18px;background:#131722;border-bottom:1px solid #2a2e39;display:flex;align-items:center;gap:14px;flex-wrap:wrap}}
-#titulo{{font-size:15px;font-weight:700;color:#fff;flex:1;min-width:200px}}
-#trial-badge{{background:#1e2130;color:#818cf8;font-size:11px;font-weight:600;padding:3px 8px;border-radius:12px;white-space:nowrap}}
-#metrics{{display:flex;gap:14px;flex-wrap:wrap;align-items:center}}
-.metric{{display:flex;flex-direction:column;gap:1px}}
-.metric-label{{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.5px}}
-.metric-val{{font-size:13px;font-weight:600;color:#d1d4dc}}
-.pos{{color:#26a69a!important}}
-.neg{{color:#ef5350!important}}
-.long{{color:#26a69a}}
-.short{{color:#ef5350}}
-#app{{display:flex;flex-direction:column;gap:0}}
-#charts{{display:flex;flex-direction:column;background:#131722}}
-#chart-price{{position:relative}}
-.pane-wrapper{{position:relative;border-top:1px solid #1e2130}}
-.pane-label{{position:absolute;top:6px;left:10px;z-index:5;font-size:11px;color:#818cf8;background:#131722cc;padding:2px 6px;border-radius:3px;pointer-events:none;font-weight:600}}
-#tooltip{{position:absolute;display:none;pointer-events:none;background:#1a1d29;border:1px solid #2a2e39;border-radius:6px;padding:10px 13px;font-size:12px;line-height:1.6;max-width:250px;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.6)}}
-.tt-head{{font-weight:700;font-size:13px;margin-bottom:4px}}
-.tt-row{{display:flex;justify-content:space-between;gap:12px;color:#9099a8}}
-.tt-row b{{color:#d1d4dc}}
-.tt-sep{{border:none;border-top:1px solid #2a2e39;margin:6px 0}}
-#params-bar{{padding:8px 18px;background:#0d1117;border-bottom:1px solid #1e2130;display:flex;gap:10px;flex-wrap:wrap}}
-.param-chip{{background:#1a1d29;border:1px solid #2a2e39;border-radius:4px;padding:3px 8px;font-size:11px;color:#9099a8}}
-.param-chip b{{color:#d1d4dc}}
-#trade-section{{padding:16px 18px 24px}}
-#trade-section h2{{font-size:13px;font-weight:700;color:#9099a8;text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px}}
-#trade-table{{width:100%;border-collapse:collapse;font-size:12px}}
-#trade-table th{{background:#1a1d29;color:#64748b;font-weight:600;padding:7px 10px;text-align:left;border-bottom:1px solid #2a2e39;white-space:nowrap}}
-#trade-table td{{padding:5px 10px;border-bottom:1px solid #141720;white-space:nowrap}}
-#trade-table tr.win:hover td{{background:#162620}}
-#trade-table tr.loss:hover td{{background:#261520}}
+:root{
+  --bg:#000000;--panel:#0a0a0a;--panel-2:#101010;
+  --border:#1f1f1f;--border-strong:#2a2a2a;
+  --text:#e8e8e8;--text-mute:#7a7a7a;--text-dim:#4a4a4a;
+  --accent:#ffb000;--accent-2:#ff8a00;
+  --pos:#5cdb5c;--neg:#ff4d4d;
+  --long:#3aa3ff;--short:#ff8a00;--trailing:#ffd84d;
+  --grid:#0d0d0d;--topbar-fg:#000;
+  --font-body:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+  --font-mono:"JetBrains Mono","SFMono-Regular",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{min-height:100%;background:var(--bg)}
+body{font-family:var(--font-body);background:var(--bg);color:var(--text);font-size:12px;-webkit-font-smoothing:antialiased}
+.mono{font-family:var(--font-mono);font-feature-settings:"tnum" 1,"zero" 1}.num{text-align:right}
+.pos{color:var(--pos)!important}.neg{color:var(--neg)!important}.long{color:var(--long)}.short{color:var(--short)}
+.topbar{display:flex;align-items:center;gap:12px;background:var(--accent);color:var(--topbar-fg);padding:3px 14px;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;font-family:var(--font-mono);border-bottom:2px solid #000}
+.topbar .brand{margin-right:8px}.topbar .cmd{flex:1;opacity:.82}.topbar .clock{font-feature-settings:"tnum" 1}
+.title-strip{display:flex;align-items:baseline;gap:18px;padding:7px 14px 6px;background:var(--panel);border-bottom:1px solid var(--border)}
+.title-strip h1{font-family:var(--font-mono);font-size:12px;font-weight:600;letter-spacing:.05em;color:var(--text);text-transform:uppercase}
+.title-strip .sub{font-family:var(--font-mono);font-size:10px;color:var(--text-mute);letter-spacing:.08em;text-transform:uppercase}
+.title-strip .badge{margin-left:auto;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;padding:3px 9px;border:1px solid var(--accent);color:var(--accent);text-transform:uppercase}
+.headline{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));background:var(--panel);border-bottom:1px solid var(--border)}
+.m-cell{padding:7px 14px 8px;border-right:1px solid var(--border);display:flex;flex-direction:column;gap:2px;position:relative;min-width:0}
+.m-cell:last-child{border-right:none}.m-cell::before{content:"";position:absolute;left:0;top:0;height:100%;width:2px;background:var(--accent);opacity:0}.m-cell:nth-child(1)::before{opacity:1}
+.m-label{font-family:var(--font-mono);font-size:9px;color:var(--text-mute);letter-spacing:.14em;font-weight:500;white-space:nowrap}
+.m-val{font-family:var(--font-mono);font-size:17px;font-weight:700;letter-spacing:0;font-feature-settings:"tnum" 1,"zero" 1;white-space:nowrap}
+.secondary{display:flex;flex-wrap:wrap;background:var(--panel-2);border-bottom:1px solid var(--border);padding:0}
+.s-cell{display:flex;align-items:baseline;gap:7px;padding:5px 14px;border-right:1px solid var(--border);font-family:var(--font-mono);min-height:24px}
+.s-k{color:var(--text-mute);font-size:9px;letter-spacing:.12em;white-space:nowrap}.s-v{color:var(--text);font-size:10.5px;font-weight:600;white-space:nowrap}
+.params-row{display:flex;align-items:center;gap:8px;min-height:31px;padding:5px 14px;background:var(--bg);border-bottom:1px solid var(--border);font-family:var(--font-mono);overflow:hidden}
+.params-row .lbl{font-size:9px;color:var(--text-mute);letter-spacing:.14em;margin-right:4px;white-space:nowrap}#var-params{display:flex;gap:6px;flex-wrap:wrap}
+.param{display:flex;align-items:baseline;gap:6px;padding:2px 8px;background:var(--panel);border:1px solid var(--border);font-size:10px}.param span{color:var(--text-mute);text-transform:uppercase;letter-spacing:.06em;font-size:9px}.param b{color:var(--accent);font-weight:700}
+.toolbar{display:flex;flex-wrap:wrap;gap:0;align-items:stretch;background:var(--panel);border-bottom:1px solid var(--border)}
+.tool-group{display:flex;align-items:center;gap:0;border-right:1px solid var(--border)}.tool-group .lbl{font-family:var(--font-mono);font-size:9px;color:var(--text-mute);letter-spacing:.14em;padding:0 12px;white-space:nowrap}.tool-inline{display:flex;align-items:stretch;gap:0}
+.tbtn{font-family:var(--font-mono);background:transparent;color:var(--text-mute);border:none;border-left:1px solid var(--border);padding:7px 11px;font-size:10px;letter-spacing:.08em;cursor:pointer;text-transform:uppercase;font-weight:600;white-space:nowrap}.tbtn:hover{background:var(--panel-2);color:var(--text)}.tbtn.active{color:var(--accent);background:#1a1100}.tbtn[data-toggle]:not(.active){color:var(--text-dim);text-decoration:line-through}
+.legend-inline{display:flex;align-items:center;gap:14px;padding:0 14px;margin-left:auto;font-family:var(--font-mono);font-size:10px;color:var(--text-mute);letter-spacing:.06em;text-transform:uppercase;min-height:31px}.legend-inline .li{display:flex;align-items:center;gap:6px;white-space:nowrap}.legend-inline .ldot{width:8px;height:8px;border-radius:50%;flex:none}.legend-inline .ltri{width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;flex:none}.legend-inline .ltri.up{border-bottom:7px solid var(--long)}.legend-inline .ltri.down{border-top:7px solid var(--short)}
+#charts{background:var(--bg);position:relative;min-height:0;overflow:hidden;display:flex;flex-direction:column}#chart-price{position:relative;overflow:hidden;border-bottom:1px solid var(--border);height:clamp(540px,calc(100vh - 315px),760px)}
+.pane-wrapper{position:relative;border-top:1px solid var(--border);overflow:hidden;background:var(--bg)}.pane-chart{position:relative;height:120px;overflow:hidden}.equity-dd-wrapper .pane-chart{height:160px}.pane-label{position:absolute;top:6px;left:10px;z-index:5;font-family:var(--font-mono);font-size:9.5px;color:var(--accent);background:transparent;padding:0;letter-spacing:.16em;font-weight:700;pointer-events:none;text-transform:uppercase}.pane-label .meta{color:var(--text-mute);margin-left:8px;font-weight:400;letter-spacing:.1em}
+#tv-attr-logo,[id^="tv-attr-logo"],a[href*="tradingview.com"]{display:none!important}
+#tooltip{position:absolute;display:none;pointer-events:none;background:#000;border:1px solid var(--accent);padding:0;font-family:var(--font-mono);font-size:11px;line-height:1.55;min-width:300px;max-width:360px;z-index:200;box-shadow:0 12px 30px rgba(0,0,0,.9)}.tt-head{font-weight:700;font-size:11px;padding:6px 10px;letter-spacing:.1em;border-bottom:1px solid var(--accent);background:#0a0a0a}.tt-grid{padding:8px 10px;display:grid;grid-template-columns:1fr 1fr;gap:4px 14px}.tt-row{display:flex;justify-content:space-between;gap:8px;font-size:10.5px}.tt-row span{color:var(--text-mute);letter-spacing:.05em;font-size:9.5px;text-transform:uppercase}.tt-row b{color:var(--text);font-weight:500;font-feature-settings:"tnum" 1}.tt-sep{display:none}
+.table-section{background:var(--panel);border-top:1px solid var(--border-strong)}.table-header{display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1px solid var(--border)}.table-header h3{font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;color:var(--accent);font-weight:700}.table-header .count{font-family:var(--font-mono);font-size:10px;color:var(--text-mute);white-space:nowrap}.table-filters{margin-left:auto;display:flex;gap:0;flex-wrap:wrap}.table-filters .tbtn{border-left:1px solid var(--border)}.table-wrap{max-height:340px;overflow:auto}.table-wrap::-webkit-scrollbar{width:8px;height:8px}.table-wrap::-webkit-scrollbar-thumb{background:var(--border-strong)}.table-wrap::-webkit-scrollbar-track{background:var(--bg)}
+#trade-table{width:max-content;min-width:100%;border-collapse:collapse;font-size:11px}#trade-table th{background:var(--panel-2);color:var(--text-mute);font-weight:700;padding:7px 12px;text-align:left;font-size:9px;border-bottom:1px solid var(--border);font-family:var(--font-mono);letter-spacing:.08em;text-transform:uppercase;position:sticky;top:0;z-index:2;white-space:nowrap}#trade-table td{padding:5px 12px;border-bottom:1px solid #0a0a0a;font-family:var(--font-mono);font-feature-settings:"tnum" 1;white-space:nowrap}#trade-table td.num,#trade-table th.num{text-align:right}#trade-table tbody tr:hover td{background:#111}#trade-table tbody tr.win:hover td{background:#0a1a0d}#trade-table tbody tr.loss:hover td{background:#1a0a0a}
+@media (max-width:900px){.headline{grid-template-columns:repeat(2,minmax(0,1fr))}#chart-price{height:560px}.legend-inline{margin-left:0;width:100%;border-top:1px solid var(--border)}}
 </style>
 </head>
 <body>
-<header>
-  <div id="titulo">{titulo}</div>
-  <div id="trial-badge">Trial {payload['trial']}</div>
-  <div id="metrics"></div>
-</header>
-<div id="params-bar"></div>
-<div id="app">
-  <div id="charts">
-    <div id="chart-price"></div>
-  </div>
-  <div id="trade-section">
-    <h2>Operaciones</h2>
-    <table id="trade-table">
-      <thead>
-        <tr>
-          <th>#</th><th>Dir</th>
-          <th>Entrada</th><th>P.Entrada</th>
-          <th>Salida</th><th>P.Salida</th>
-          <th>PnL ($)</th><th>ROI</th>
-          <th>Duración</th><th>Motivo</th>
-        </tr>
-      </thead>
-      <tbody id="trade-tbody"></tbody>
-    </table>
-  </div>
+<div class="topbar"><div class="brand">MNFRESCOX TERMINAL</div><div class="cmd">BACKTEST REPORT - V1</div><div class="clock" id="clock">--:--:-- UTC</div></div>
+<div class="title-strip"><h1 id="var-title">-</h1><div class="sub" id="var-subtitle">-</div><div class="badge" id="var-trial">#-</div></div>
+<div class="headline" id="var-headline"></div>
+<div class="secondary" id="var-secondary"></div>
+<div class="params-row"><span class="lbl">PARAMS</span><div id="var-params"></div></div>
+<div class="toolbar">
+  <div class="tool-group"><span class="lbl">MARKERS</span><button class="tbtn" data-toggle="entries">ENTRADAS</button><button class="tbtn" data-toggle="exits">SALIDAS</button><button class="tbtn" data-toggle="trailing">TRAILING</button></div>
+  <div class="tool-group"><span class="lbl">CAPAS</span><div class="tool-inline" id="pane-buttons"></div></div>
+  <div class="legend-inline"><div class="li"><span class="ltri up"></span>LONG</div><div class="li"><span class="ltri down"></span>SHORT</div><div class="li"><span class="ldot" style="background:var(--pos)"></span>WIN</div><div class="li"><span class="ldot" style="background:var(--neg)"></span>LOSS</div><div class="li"><span class="ldot" style="background:var(--trailing)"></span>TRAIL</div></div>
 </div>
+<div id="charts"><div id="chart-price"></div></div>
+<div class="table-section"><div class="table-header"><h3>TRADES</h3><span class="count" id="trade-count">-</span><div class="table-filters" id="table-filters"></div></div><div class="table-wrap"><table id="trade-table"><thead><tr><th class="num">#</th><th>DIR</th><th>SEÑAL</th><th>ENTRADA</th><th class="num">P.E</th><th>SALIDA</th><th class="num">P.S</th><th class="num">COLLAT</th><th class="num">SIZE</th><th class="num">COM</th><th class="num">PNL BR</th><th class="num">PNL NET</th><th class="num">ROI</th><th class="num">BALANCE</th><th>DUR</th><th>MOTIVO</th></tr></thead><tbody id="trade-tbody"></tbody></table></div></div>
 <div id="tooltip"></div>
-{tv_script}
+__TV_SCRIPT__
 <script>
-(function(){{
+(function(){
 'use strict';
-const D={data_json};
-
-// ── Métricas ─────────────────────────────────────────────────────────────────
-function fmtDuration(seconds,candles){{
-  if(seconds==null||isNaN(seconds)||seconds<=0){{
-    if(candles!=null&&!isNaN(candles))return String(candles)+' '+(candles===1?'vela':'velas');
-    return '-';
-  }}
-  const total=Math.round(seconds);
-  const days=Math.floor(total/86400);
-  const hours=Math.floor((total%86400)/3600);
-  const mins=Math.floor((total%3600)/60);
-  if(days)return days+'d '+String(hours).padStart(2,'0')+'h';
-  if(hours)return hours+'h '+String(mins).padStart(2,'0')+'m';
-  if(mins)return mins+'m';
-  return total+'s';
-}}
-
-const metricDefs=[
-  ['Score',       D.score,                  v=>v.toFixed(6),           false],
-  ['ROI',         D.metricas.roi_total,     v=>(v*100).toFixed(2)+'%', true],
-  ['Expect.',     D.metricas.expectancy,    v=>(v*100).toFixed(2)+'%', true],
-  ['Win Rate',    D.metricas.win_rate,      v=>(v*100).toFixed(2)+'%', true],
-  ['PF',          D.metricas.profit_factor, v=>v.toFixed(3),           true],
-  ['Sharpe',      D.metricas.sharpe_ratio,  v=>v.toFixed(3),           true],
-  ['Max DD',      D.metricas.max_drawdown,  v=>(v*100).toFixed(2)+'%', true],
-  ['Dur. media',  D.metricas.duracion_media_seg, v=>fmtDuration(v,D.metricas.duracion_media_velas), false],
-  ['Trades/día',  D.metricas.trades_por_dia,v=>v.toFixed(4),           false],
-  ['Trades',      D.metricas.total_trades,  v=>v.toLocaleString(),     false],
-];
-const metricsEl=document.getElementById('metrics');
-metricDefs.forEach(([label,val,fmt,signed])=>{{
-  const div=document.createElement('div');
-  div.className='metric';
-  const cls=signed?(val<0?'neg':'pos'):'';
-  div.innerHTML=`<span class="metric-label">${{label}}</span><span class="metric-val ${{cls}}">${{fmt(val)}}</span>`;
-  metricsEl.appendChild(div);
-}});
-
-// ── Parámetros ────────────────────────────────────────────────────────────────
-const paramsBar=document.getElementById('params-bar');
-Object.entries(D.parametros||{{}}).forEach(([k,v])=>{{
-  const chip=document.createElement('div');
-  chip.className='param-chip';
-  chip.innerHTML=`<b>${{k}}</b> ${{v}}`;
-  paramsBar.appendChild(chip);
-}});
-
-// ── Configuración de charts ───────────────────────────────────────────────────
+window.TRIAL_DATA=__DATA_JSON__;
+const D=window.TRIAL_DATA;
+const T={chartBg:'#000000',border:'#1f1f1f',gridV:'#0d0d0d',gridH:'#0d0d0d',textMuted:'#7a7a7a',monoFont:'JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace',crosshair:'#ffb000',crosshairLabel:'#ffb000',up:'#5cdb5c',down:'#ff4d4d',entryLong:'#3aa3ff',entryShort:'#ff8a00',exitWin:'#5cdb5c',exitLoss:'#ff4d4d',exitTrailing:'#ffd84d',equityLine:'#ffb000',equityFillTop:'rgba(255,176,0,.28)',equityFillBottom:'rgba(255,176,0,0)',ddLine:'#ff4d4d',ddFillTop:'rgba(255,77,77,0)',ddFillBottom:'rgba(255,77,77,.34)'};
+if(!D||!window.LightweightCharts){throw new Error('HTML report missing TRIAL_DATA or LightweightCharts');}
+const num=v=>Number.isFinite(Number(v))?Number(v):0;
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtPct=(v,dec=2)=>(num(v)>=0?'+':'')+(num(v)*100).toFixed(dec)+'%';
+const fmtPctU=(v,dec=2)=>(num(v)*100).toFixed(dec)+'%';
+const fmtPctPoints=(v,dec=2)=>(num(v)>=0?'+':'')+num(v).toFixed(dec)+'%';
+const fmtNum=(v,dec=2)=>(num(v)>=0?'+':'')+num(v).toFixed(dec);
+const fmtMoney=(v,dec=2)=>(num(v)<0?'-':'')+'$'+Math.abs(num(v)).toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec});
+const fmtMoney0=v=>(num(v)<0?'-':'')+'$'+Math.abs(num(v)).toLocaleString('en-US',{maximumFractionDigits:0});
+const fmtTs=ts=>ts?new Date(ts*1000).toISOString().replace('T',' ').slice(0,16)+'Z':'-';
+function fmtDuration(seconds,candles,text){if(text)return text;if(Number.isFinite(Number(seconds))&&Number(seconds)>0){const total=Math.round(Number(seconds));const d=Math.floor(total/86400),h=Math.floor((total%86400)/3600),m=Math.floor((total%3600)/60);if(d)return d+'d '+String(h).padStart(2,'0')+'h';if(h)return h+'h '+String(m).padStart(2,'0')+'m';if(m)return m+'m';return total+'s';}if(candles!=null)return String(candles)+' velas';return '-';}
+function renderHeader(){
+  document.getElementById('var-title').textContent=D.titulo;
+  document.getElementById('var-subtitle').textContent=`Trial ${D.trial} - Score ${num(D.score).toFixed(4)} - Exec ${D.timeframe_ejecucion}`;
+  document.getElementById('var-trial').textContent='#'+D.trial;
+  const m=D.metricas||{};
+  const headlineDefs=[['ROI',num(m.roi_total),v=>fmtPct(v),true],['PROFIT FACT',num(m.profit_factor),v=>v.toFixed(2),'pf'],['SHARPE',num(m.sharpe_ratio),v=>v.toFixed(2),'signed'],['MAX DD',num(m.max_drawdown),v=>'-'+fmtPctU(v),'dd'],['WIN RATE',num(m.win_rate),v=>fmtPctU(v),false],['EXPECT',num(m.expectancy),v=>fmtPct(v),true]];
+  document.getElementById('var-headline').innerHTML=headlineDefs.map(([label,val,fmt,signed])=>{let cls='';if(signed===true||signed==='signed')cls=val>=0?'pos':'neg';else if(signed==='pf')cls=val>=1?'pos':'neg';else if(signed==='dd')cls='neg';return `<div class="m-cell"><div class="m-label">${esc(label)}</div><div class="m-val ${cls}">${esc(fmt(val))}</div></div>`;}).join('');
+  const sig=D.conteo_senales||{};
+  const secDefs=[['TRADES',num(m.total_trades).toLocaleString()],['LONG',num(m.trades_long).toLocaleString()],['SHORT',num(m.trades_short).toLocaleString()],['WIN',num(m.trades_ganadores).toLocaleString()],['LOSS',num(m.trades_perdedores).toLocaleString()],['T/DAY',num(m.trades_por_dia).toFixed(3)],['AVG DUR',fmtDuration(m.duracion_media_seg,m.duracion_media_velas)],['PNL NET',fmtMoney(m.pnl_total)],['PNL GROSS',fmtMoney(m.pnl_bruto_total)],['BAL FINAL',fmtMoney0(m.saldo_final)],['TF EXEC',D.timeframe_ejecucion],['VELAS',num(D.rango?.velas).toLocaleString()],['SIG L/S',`${num(sig.long).toLocaleString()}/${num(sig.short).toLocaleString()}`]];
+  document.getElementById('var-secondary').innerHTML=secDefs.map(([k,v])=>`<div class="s-cell"><span class="s-k">${esc(k)}</span><span class="s-v">${esc(v)}</span></div>`).join('');
+  const params={...(D.parametros||{}),exit_type:D.salida?.tipo,sl_pct:D.salida?.sl_pct,tp_pct:D.salida?.tp_pct,exit_velas:D.salida?.velas};
+  document.getElementById('var-params').innerHTML=Object.entries(params).filter(([,v])=>v!==null&&v!==undefined).map(([k,v])=>`<div class="param"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
+}
 const chartsEl=document.getElementById('charts');
-const allCharts=[];
-let isSyncing=false;
-
-function baseOpts(h){{
-  return {{
-    layout:{{background:{{type:'solid',color:'#131722'}},textColor:'#787b86',fontSize:12}},
-    grid:{{vertLines:{{color:'#1e2130'}},horzLines:{{color:'#1e2130'}}}},
-    crosshair:{{mode:LightweightCharts.CrosshairMode.Normal,vertLine:{{color:'#758696',labelBackgroundColor:'#2a2e39'}},horzLine:{{color:'#758696',labelBackgroundColor:'#2a2e39'}}}},
-    rightPriceScale:{{borderColor:'#2a2e39',scaleMargins:{{top:0.06,bottom:0.06}}}},
-    timeScale:{{borderColor:'#2a2e39',timeVisible:true,secondsVisible:false,rightOffset:10}},
-    handleScroll:{{mouseWheel:true,pressedMouseMove:true}},
-    handleScale:{{mouseWheel:true,pinch:true}},
-    width:chartsEl.clientWidth,
-    height:h,
-  }};
-}}
-
-function syncTime(src){{
-  src.timeScale().subscribeVisibleLogicalRangeChange(range=>{{
-    if(isSyncing||!range)return;
-    isSyncing=true;
-    allCharts.forEach(c=>{{ if(c!==src) c.timeScale().setVisibleLogicalRange(range); }});
-    isSyncing=false;
-  }});
-}}
-
-// ── Gráfico principal (velas) ─────────────────────────────────────────────────
+const allCharts=[];const overlaySeriesMap={};const paneSeriesMap={};const visState={entries:true,exits:true,trailing:true};let isSyncing=false;
+function baseOpts(el,h){return {layout:{background:{type:'solid',color:T.chartBg},textColor:T.textMuted,fontSize:11,fontFamily:T.monoFont},grid:{vertLines:{color:T.gridV},horzLines:{color:T.gridH}},crosshair:{mode:LightweightCharts.CrosshairMode.Normal,vertLine:{color:T.crosshair,labelBackgroundColor:T.crosshairLabel,width:1,style:LightweightCharts.LineStyle.Dotted},horzLine:{color:T.crosshair,labelBackgroundColor:T.crosshairLabel,width:1,style:LightweightCharts.LineStyle.Dotted}},rightPriceScale:{borderColor:T.border,scaleMargins:{top:0.06,bottom:0.06}},timeScale:{borderColor:T.border,timeVisible:true,secondsVisible:false,rightOffset:6},handleScroll:{mouseWheel:true,pressedMouseMove:true},handleScale:{mouseWheel:true,pinch:true},width:el.clientWidth||chartsEl.clientWidth||1200,height:h||el.clientHeight||120};}
+function syncTime(src){src.timeScale().subscribeVisibleLogicalRangeChange(range=>{if(isSyncing||!range)return;isSyncing=true;allCharts.forEach(c=>{if(c!==src)c.timeScale().setVisibleLogicalRange(range);});isSyncing=false;});}
 const priceEl=document.getElementById('chart-price');
-const mainChart=LightweightCharts.createChart(priceEl,baseOpts(520));
-allCharts.push(mainChart);
-syncTime(mainChart);
-
-const candleSeries=mainChart.addCandlestickSeries({{
-  upColor:'#26a69a',downColor:'#ef5350',
-  borderVisible:false,
-  wickUpColor:'#26a69a',wickDownColor:'#ef5350',
-}});
-candleSeries.setData(D.candles);
-
-// ── Overlays (EMAs, SMAs, Bollinger…) ─────────────────────────────────────────
-(D.indicadores||[]).filter(i=>i.tipo==='overlay').forEach(ind=>{{
-  const s=mainChart.addLineSeries({{
-    color:ind.color,lineWidth:1.5,title:ind.nombre,
-    lastValueVisible:true,priceLineVisible:false,
-  }});
-  s.setData(ind.data.map(d=>({{time:d.t,value:d.v}})));
-}});
-
-// ── Markers de trades ─────────────────────────────────────────────────────────
-const tvMarkers=(D.markers||[]).map(m=>{{
-  const isEntry=m.tipo==='entrada';
-  const isLong=m.direccion==='LONG';
-  return {{
-    time:m.time,
-    position:isEntry?(isLong?'belowBar':'aboveBar'):(isLong?'aboveBar':'belowBar'),
-    color:isEntry?(isLong?'#22c55e':'#f97316'):(m.pnl>=0?'#22c55e':'#ef5350'),
-    shape:isEntry?(isLong?'arrowUp':'arrowDown'):'circle',
-    text:String(m.trade),
-    size:1.5,
-  }};
-}}).sort((a,b)=>a.time-b.time);
-candleSeries.setMarkers(tvMarkers);
-
-// ── Paneles de indicadores (RSI, MACD…) ───────────────────────────────────────
-(D.indicadores||[]).filter(i=>i.tipo==='pane').forEach(ind=>{{
-  const wrapper=document.createElement('div');
-  wrapper.className='pane-wrapper';
-  chartsEl.appendChild(wrapper);
-
-  const lbl=document.createElement('div');
-  lbl.className='pane-label';
-  lbl.textContent=ind.nombre;
-  wrapper.appendChild(lbl);
-
-  const paneEl=document.createElement('div');
-  wrapper.appendChild(paneEl);
-
-  const paneChart=LightweightCharts.createChart(paneEl,baseOpts(140));
-  allCharts.push(paneChart);
-  syncTime(paneChart);
-
-  const paneSeries=paneChart.addLineSeries({{
-    color:ind.color,lineWidth:1.5,
-    lastValueVisible:true,priceLineVisible:false,
-  }});
-  paneSeries.setData(ind.data.map(d=>({{time:d.t,value:d.v}})));
-
-  if(ind.min!==undefined&&ind.max!==undefined){{
-    paneSeries.applyOptions({{
-      autoscaleInfoProvider:()=>({{
-        priceRange:{{minValue:ind.min,maxValue:ind.max}},
-        margins:{{above:8,below:8}},
-      }}),
-    }});
-  }}
-
-  (ind.niveles||[]).forEach(n=>{{
-    paneSeries.createPriceLine({{
-      price:n.valor,color:n.color,lineWidth:1,
-      lineStyle:LightweightCharts.LineStyle.Dashed,
-      axisLabelVisible:true,
-    }});
-  }});
-}});
-
-// ── Tooltip ───────────────────────────────────────────────────────────────────
-const tooltipEl=document.getElementById('tooltip');
-const byTime={{}};
-(D.markers||[]).forEach(m=>{{
-  if(!byTime[m.time])byTime[m.time]=[];
-  byTime[m.time].push(m);
-}});
-
-mainChart.subscribeCrosshairMove(param=>{{
-  if(!param.time||!param.point){{tooltipEl.style.display='none';return;}}
-  const ms=byTime[param.time];
-  if(!ms||!ms.length){{tooltipEl.style.display='none';return;}}
-
-  tooltipEl.innerHTML=ms.map((m,i)=>{{
-    const pnlStr=(m.pnl>=0?'+':'')+m.pnl.toFixed(2);
-    const roiStr=(m.roi>=0?'+':'')+(m.roi*100).toFixed(2)+'%';
-    const pColor=m.pnl>=0?'#26a69a':'#ef5350';
-    const sep=i>0?'<hr class="tt-sep">':'';
-    if(m.tipo==='entrada'){{
-      const dColor=m.direccion==='LONG'?'#26a69a':'#ef5350';
-      return `${{sep}}<div class="tt-head" style="color:${{dColor}}">${{m.direccion}} ENTRADA #${{m.trade}}</div>
-        <div class="tt-row"><span>Precio</span><b>${{m.precio.toFixed(2)}}</b></div>`;
-    }}else{{
-      return `${{sep}}<div class="tt-head">SALIDA #${{m.trade}} — ${{m.motivo}}</div>
-        <div class="tt-row"><span>Precio</span><b>${{m.precio.toFixed(2)}}</b></div>
-        <div class="tt-row"><span>PnL</span><b style="color:${{pColor}}">${{pnlStr}} (${{roiStr}})</b></div>
-        <div class="tt-row"><span>Duración</span><b>${{m.duracion_txt||fmtDuration(null,m.duracion)}}</b></div>`;
-    }}
-  }}).join('');
-
-  tooltipEl.style.display='block';
-  let lx=param.point.x+16, ly=param.point.y+8;
-  const tw=tooltipEl.offsetWidth||220;
-  if(lx+tw>priceEl.clientWidth-10) lx=param.point.x-tw-8;
-  tooltipEl.style.left=lx+'px';
-  tooltipEl.style.top=ly+'px';
-}});
-
-// ── Tabla de trades ───────────────────────────────────────────────────────────
-const tbody=document.getElementById('trade-tbody');
-(D.trades||[]).forEach(t=>{{
-  const tr=document.createElement('tr');
-  tr.className=t.pnl>=0?'win':'loss';
-  const fmtTs=ts=>ts?new Date(ts*1000).toISOString().replace('T',' ').slice(0,16)+'Z':'—';
-  const pnlStr=(t.pnl>=0?'+':'')+t.pnl.toFixed(2);
-  const roiStr=(t.roi>=0?'+':'')+(t.roi*100).toFixed(2)+'%';
-  tr.innerHTML=`
-    <td>${{t.n}}</td>
-    <td class="${{t.direccion.toLowerCase()}}">${{t.direccion}}</td>
-    <td>${{fmtTs(t.time_entrada)}}</td>
-    <td>${{t.precio_entrada.toFixed(2)}}</td>
-    <td>${{fmtTs(t.time_salida)}}</td>
-    <td>${{t.precio_salida.toFixed(2)}}</td>
-    <td class="${{t.pnl>=0?'pos':'neg'}}">${{pnlStr}}</td>
-    <td class="${{t.pnl>=0?'pos':'neg'}}">${{roiStr}}</td>
-    <td>${{t.duracion_txt||fmtDuration(null,t.duracion)}}</td>
-    <td>${{t.motivo}}</td>`;
-  tbody.appendChild(tr);
-}});
-
-// ── Resize responsive ─────────────────────────────────────────────────────────
-function fitAll(){{
-  const w=chartsEl.clientWidth;
-  allCharts.forEach(c=>c.applyOptions({{width:w}}));
-}}
-const ro=new ResizeObserver(fitAll);
-ro.observe(chartsEl);
-fitAll();
-
-}})();
+const mainChart=LightweightCharts.createChart(priceEl,baseOpts(priceEl,priceEl.clientHeight||620));allCharts.push(mainChart);syncTime(mainChart);
+const candleSeries=mainChart.addCandlestickSeries({upColor:T.up,downColor:T.down,borderVisible:false,wickUpColor:T.up,wickDownColor:T.down});candleSeries.setData(D.candles);
+function addToggleButton(key,label){const host=document.getElementById('pane-buttons');if(!host||host.querySelector(`[data-toggle="${key.replace(/"/g,'\\"')}"]`))return;visState[key]=true;const btn=document.createElement('button');btn.className='tbtn';btn.dataset.toggle=key;btn.textContent=label;host.appendChild(btn);}
+function shortLabel(name){return String(name||'IND').replace(/\\(.+\\)/,'').slice(0,12).toUpperCase();}
+(D.indicadores||[]).filter(i=>i.tipo==='overlay').forEach(ind=>{const s=mainChart.addLineSeries({color:ind.color,lineWidth:1,title:ind.nombre,lastValueVisible:true,priceLineVisible:false});s.setData((ind.data||[]).map(d=>({time:d.t,value:d.v})));overlaySeriesMap[ind.nombre]=s;addToggleButton(ind.nombre,shortLabel(ind.nombre));});
+function isTrailing(m){return /TRAIL|TS\\b/i.test(m.motivo||'');}
+function buildMarkers(){return (D.markers||[]).filter(m=>{if(m.tipo==='entrada'&&!visState.entries)return false;if(m.tipo==='salida'&&!visState.exits)return false;if(m.tipo==='salida'&&isTrailing(m)&&!visState.trailing)return false;return true;}).map(m=>{const isEntry=m.tipo==='entrada';const isLong=m.direccion==='LONG';return {time:m.time,position:isEntry?(isLong?'belowBar':'aboveBar'):(isLong?'aboveBar':'belowBar'),color:isEntry?(isLong?T.entryLong:T.entryShort):(isTrailing(m)?T.exitTrailing:(m.pnl>=0?T.exitWin:T.exitLoss)),shape:isEntry?(isLong?'arrowUp':'arrowDown'):'circle',text:'',size:1.2};}).sort((a,b)=>a.time-b.time);}
+candleSeries.setMarkers(buildMarkers());
+(D.indicadores||[]).filter(i=>i.tipo==='pane').forEach(ind=>{const wrapper=document.createElement('div');wrapper.className='pane-wrapper';wrapper.dataset.indicator=ind.nombre;chartsEl.appendChild(wrapper);const lbl=document.createElement('div');lbl.className='pane-label';lbl.textContent=ind.nombre;wrapper.appendChild(lbl);const paneEl=document.createElement('div');paneEl.className='pane-chart';wrapper.appendChild(paneEl);const paneChart=LightweightCharts.createChart(paneEl,baseOpts(paneEl,120));allCharts.push(paneChart);syncTime(paneChart);const paneSeries=paneChart.addLineSeries({color:ind.color,lineWidth:1.2,lastValueVisible:true,priceLineVisible:false});paneSeries.setData((ind.data||[]).map(d=>({time:d.t,value:d.v})));if(ind.min!==undefined&&ind.max!==undefined){paneSeries.applyOptions({autoscaleInfoProvider:()=>({priceRange:{minValue:ind.min,maxValue:ind.max},margins:{above:8,below:8}})});} (ind.niveles||[]).forEach(n=>paneSeries.createPriceLine({price:n.valor,color:n.color,lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true}));paneSeriesMap[ind.nombre]={wrapper,chart:paneChart,el:paneEl};addToggleButton(ind.nombre,shortLabel(ind.nombre));});
+function addEquityDrawdownPane(){const wrapper=document.createElement('div');wrapper.className='pane-wrapper equity-dd-wrapper';chartsEl.appendChild(wrapper);const lbl=document.createElement('div');lbl.className='pane-label';const eqArr=D.equity_drawdown||[];const last=eqArr.length?eqArr[eqArr.length-1]:{};lbl.innerHTML=`EQUITY / DRAWDOWN <span class="meta">equity <span class="${num(last.equity_pct)>=0?'pos':'neg'}">${fmtPctPoints(last.equity_pct||0)}</span> · dd <span class="neg">${fmtPctPoints(last.drawdown_pct||0)}</span></span>`;wrapper.appendChild(lbl);const paneEl=document.createElement('div');paneEl.id='chart-equity-dd';paneEl.className='pane-chart';wrapper.appendChild(paneEl);const chart=LightweightCharts.createChart(paneEl,baseOpts(paneEl,160));allCharts.push(chart);syncTime(chart);const equityData=eqArr.map(p=>({time:p.time,value:num(p.equity_pct)}));const ddData=eqArr.map(p=>({time:p.time,value:num(p.drawdown_pct)}));const eqSeries=chart.addAreaSeries({lineColor:T.equityLine,topColor:T.equityFillTop,bottomColor:T.equityFillBottom,lineWidth:1.4,lastValueVisible:true,priceLineVisible:false});eqSeries.setData(equityData);const ddSeries=chart.addAreaSeries({lineColor:T.ddLine,topColor:T.ddFillTop,bottomColor:T.ddFillBottom,lineWidth:1.4,lastValueVisible:true,priceLineVisible:false});ddSeries.setData(ddData);eqSeries.createPriceLine({price:0,color:'#7a7a7a66',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true});paneSeriesMap.EQUITY_DD={wrapper,chart,el:paneEl};addToggleButton('EQUITY_DD','EQUITY/DD');}
+addEquityDrawdownPane();
+const tooltipEl=document.getElementById('tooltip');const byTime={};(D.markers||[]).forEach(m=>{if(!byTime[m.time])byTime[m.time]=[];byTime[m.time].push(m);});const tradeByN={};(D.trades||[]).forEach(t=>{tradeByN[t.n]=t;});
+mainChart.subscribeCrosshairMove(param=>{if(!param.time||!param.point){tooltipEl.style.display='none';return;}const ms=byTime[param.time];if(!ms||!ms.length){tooltipEl.style.display='none';return;}tooltipEl.innerHTML=ms.map(m=>{const t=tradeByN[m.trade]||m;const pnl=num(t.pnl),roi=num(t.roi),pnlCls=pnl>=0?'pos':'neg';const isEntry=m.tipo==='entrada';const headColor=isEntry?(m.direccion==='LONG'?T.entryLong:T.entryShort):(isTrailing(m)?T.exitTrailing:(pnl>=0?T.exitWin:T.exitLoss));const headLabel=isEntry?`${m.direccion} ENTRADA #${m.trade}`:`SALIDA ${t.motivo||m.motivo} #${m.trade}`;return `<div class="tt-head" style="color:${headColor}">${esc(headLabel)}</div><div class="tt-grid"><div class="tt-row"><span>P. ENTRADA</span><b>${fmtMoney(t.precio_entrada,2)}</b></div><div class="tt-row"><span>P. SALIDA</span><b>${fmtMoney(t.precio_salida,2)}</b></div><div class="tt-row"><span>COLLATERAL</span><b>${fmtMoney(t.colateral,2)}</b></div><div class="tt-row"><span>SIZE</span><b>${num(t.tamano_posicion).toFixed(6)}</b></div><div class="tt-row"><span>COMISION</span><b>${fmtMoney(t.comision_total,2)}</b></div><div class="tt-row"><span>PNL BRUTO</span><b>${fmtNum(t.pnl_bruto,2)}</b></div><div class="tt-row"><span>PNL NETO</span><b class="${pnlCls}">${fmtNum(pnl,2)}</b></div><div class="tt-row"><span>ROI</span><b class="${pnlCls}">${fmtPct(roi)}</b></div><div class="tt-row"><span>BALANCE</span><b>${fmtMoney(t.saldo_post,2)}</b></div><div class="tt-row"><span>DURACION</span><b>${esc(t.duracion_txt||fmtDuration(t.duracion_seg,t.duracion))}</b></div></div>`;}).join('');tooltipEl.style.display='block';let lx=param.point.x+16,ly=param.point.y+8;const tw=tooltipEl.offsetWidth||300;if(lx+tw>priceEl.clientWidth-10)lx=param.point.x-tw-8;tooltipEl.style.left=lx+'px';tooltipEl.style.top=ly+'px';});
+let tableFilter='ALL';
+function renderFilterButtons(){const host=document.getElementById('table-filters');const motivos=[...new Set((D.trades||[]).map(t=>t.motivo).filter(Boolean))];const defs=['ALL','LONG','SHORT','WIN','LOSS',...motivos];host.innerHTML=defs.map((f,i)=>`<button class="tbtn ${i===0?'active':''}" data-filter="${esc(f)}">${esc(f)}</button>`).join('');}
+function renderTable(){let trades=D.trades||[];if(tableFilter==='LONG')trades=trades.filter(t=>t.direccion==='LONG');else if(tableFilter==='SHORT')trades=trades.filter(t=>t.direccion==='SHORT');else if(tableFilter==='WIN')trades=trades.filter(t=>num(t.pnl)>=0);else if(tableFilter==='LOSS')trades=trades.filter(t=>num(t.pnl)<0);else if(tableFilter!=='ALL')trades=trades.filter(t=>t.motivo===tableFilter);document.getElementById('trade-tbody').innerHTML=trades.map(t=>{const pnlCls=num(t.pnl)>=0?'pos':'neg';const dirCls=t.direccion==='LONG'?'long':'short';return `<tr class="${num(t.pnl)>=0?'win':'loss'}"><td class="num">${esc(t.n)}</td><td class="${dirCls}">${esc(t.direccion)}</td><td class="mono">${esc(fmtTs(t.time_senal))}</td><td class="mono">${esc(fmtTs(t.time_entrada))}</td><td class="mono num">${num(t.precio_entrada).toFixed(2)}</td><td class="mono">${esc(fmtTs(t.time_salida))}</td><td class="mono num">${num(t.precio_salida).toFixed(2)}</td><td class="mono num">${fmtMoney(t.colateral,2)}</td><td class="mono num">${num(t.tamano_posicion).toFixed(6)}</td><td class="mono num">${fmtMoney(t.comision_total,2)}</td><td class="mono num ${num(t.pnl_bruto)>=0?'pos':'neg'}">${fmtNum(t.pnl_bruto,2)}</td><td class="mono num ${pnlCls}">${fmtNum(t.pnl,2)}</td><td class="mono num ${pnlCls}">${fmtPct(t.roi)}</td><td class="mono num">${fmtMoney(t.saldo_post,2)}</td><td class="mono">${esc(t.duracion_txt||fmtDuration(t.duracion_seg,t.duracion))}</td><td>${esc(t.motivo)}</td></tr>`;}).join('');document.getElementById('trade-count').textContent=`${trades.length} / ${(D.trades||[]).length}`;}
+function wireFilters(){document.querySelectorAll('[data-filter]').forEach(btn=>btn.addEventListener('click',()=>{tableFilter=btn.dataset.filter;document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b===btn));renderTable();}));}
+function applyMarkerVisibility(){candleSeries.setMarkers(buildMarkers());}
+function applyPaneVisibility(key){const entry=paneSeriesMap[key];if(!entry)return;entry.wrapper.style.display=visState[key]?'':'none';setTimeout(fitAll,30);}
+function applyOverlayVisibility(key){const s=overlaySeriesMap[key];if(s&&typeof s.applyOptions==='function')s.applyOptions({visible:!!visState[key]});}
+function wireToggles(){document.querySelectorAll('[data-toggle]').forEach(btn=>{const key=btn.dataset.toggle;if(!(key in visState))visState[key]=true;btn.classList.toggle('active',!!visState[key]);btn.addEventListener('click',()=>{visState[key]=!visState[key];btn.classList.toggle('active',visState[key]);if(key==='entries'||key==='exits'||key==='trailing')applyMarkerVisibility();else if(paneSeriesMap[key])applyPaneVisibility(key);else if(overlaySeriesMap[key])applyOverlayVisibility(key);});});}
+function fitAll(){const priceW=priceEl.clientWidth||chartsEl.clientWidth;mainChart.applyOptions({width:priceW,height:priceEl.clientHeight||620});Object.values(paneSeriesMap).forEach(({chart,el})=>chart.applyOptions({width:(el?.clientWidth||priceW),height:(el?.clientHeight||120)}));}
+const ro=new ResizeObserver(fitAll);ro.observe(chartsEl);window.addEventListener('resize',fitAll);
+function tick(){const d=new Date(),pad=n=>String(n).padStart(2,'0');document.getElementById('clock').textContent=pad(d.getUTCHours())+':'+pad(d.getUTCMinutes())+':'+pad(d.getUTCSeconds())+' UTC';}
+renderHeader();renderFilterButtons();renderTable();wireFilters();wireToggles();fitAll();setTimeout(()=>{fitAll();mainChart.timeScale().fitContent();},50);setInterval(tick,1000);tick();
+})();
 </script>
 </body>
 </html>"""
+    return (
+        template
+        .replace("__TITLE__", titulo)
+        .replace("__TRIAL__", str(int(payload["trial"])))
+        .replace("__TV_SCRIPT__", tv_script)
+        .replace("__DATA_JSON__", data_json)
+    )
