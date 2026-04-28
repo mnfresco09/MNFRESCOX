@@ -60,7 +60,11 @@ class ContextoCombinacion:
     es_min_tf: bool
 
 
-def crear_contexto(df_base: pl.DataFrame, df_tf: pl.DataFrame) -> ContextoCombinacion:
+def crear_contexto(
+    df_base: pl.DataFrame,
+    df_tf: pl.DataFrame,
+    timeframe: str | None = None,
+) -> ContextoCombinacion:
     arrays_base = construir_arrays_motor(df_base)
     if _mismo_dataframe_temporal(df_base, df_tf):
         arrays_tf = arrays_base
@@ -68,7 +72,7 @@ def crear_contexto(df_base: pl.DataFrame, df_tf: pl.DataFrame) -> ContextoCombin
         es_min_tf = True
     else:
         arrays_tf = construir_arrays_motor(df_tf)
-        tf_to_base_idx = construir_mapeo(df_base, df_tf)
+        tf_to_base_idx = construir_mapeo(df_base, df_tf, timeframe=timeframe)
         es_min_tf = False
 
     return ContextoCombinacion(

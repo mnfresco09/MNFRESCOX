@@ -26,19 +26,19 @@ MERCADO_24_7 = {
 # ---------------------------------------------------------------------------
 # El sistema resamplea desde 1m automáticamente.
 # Opciones: "1m" "5m" "15m" "30m" "1h" "4h" "1d"
-TIMEFRAMES = ["15m"]
+TIMEFRAMES = ["1h"]
 
 # ---------------------------------------------------------------------------
 # FECHAS 2020-01-01 hasta 2025-12-31
 # ---------------------------------------------------------------------------
-FECHA_INICIO = "2022-01-01"
-FECHA_FIN    = "2024-12-31"
+FECHA_INICIO = "2020-01-01"
+FECHA_FIN    = "2025-12-31"
 
 # ---------------------------------------------------------------------------
 # ESTRATEGIAS
 # ---------------------------------------------------------------------------
 # ID numérico, lista de IDs, o "all" para ejecutar todas.
-ESTRATEGIA_ID = 1
+ESTRATEGIA_ID = 4
 
 # ---------------------------------------------------------------------------
 # CAPITAL Y COMISIONES
@@ -63,16 +63,16 @@ EXIT_TYPE = "FIXED"
 # OPTIMIZACIÓN (OPTUNA)
 # ---------------------------------------------------------------------------
 # Potencias de 2 recomendadas para QMC: 64, 128, 256, 512
-N_TRIALS = 64
+N_TRIALS = 1024
 
 # "QMC"    → Exploración uniforme (secuencias Sobol). Bueno para primera pasada.
 # "TPE"    → Guiado por resultados anteriores. Bueno para refinar.
 # "HYBRID" → QMC primera mitad + TPE segunda mitad. Recomendado por defecto.
-OPTUNA_SAMPLER = "HYBRID"
+OPTUNA_SAMPLER = "QMC"
 
 # True  = usa las semillas configuradas y permite reproducibilidad.
 # False = ignora las semillas y cada ejecución explora caminos aleatorios.
-USAR_SEED = False
+USAR_SEED = True
 
 # Entero obligatorio cuando USAR_SEED = True.
 OPTUNA_SEED = 42
@@ -82,7 +82,7 @@ OPTUNA_SEED = 42
 # ---------------------------------------------------------------------------
 # False = todos los trials ven el Parquet original.
 # True  = cada trial ve un camino alternativo plausible, generado en memoria.
-PERTURBACIONES_ACTIVAS = True
+PERTURBACIONES_ACTIVAS = False
 # Entero obligatorio cuando USAR_SEED = True y PERTURBACIONES_ACTIVAS = True.
 PERTURBACIONES_SEED = 42
 

@@ -176,7 +176,8 @@ PANEL BACKTESTING/
 │   ├── GUIA_ESTRATEGIAS.md         ← Contrato serio para crear estrategias:
 │   │                                 anti-lookahead, salidas custom, checklist y auditoría.
 │   ├── rsi_reversion.py            ← Estrategia de reversión a la media por cruce de RSI.
-│   └── ema_tendencia.py            ← Estrategia tendencial por cruce de EMAs.
+│   ├── ema_tendencia.py            ← Estrategia tendencial por cruce de EMAs.
+│   └── vat_absorcion.py            ← VWAP Absorption Trend, tendencia con order flow.
 │
 └── RESULTADOS/                     ← Outputs de cada run.
     │                                 Estructura:

@@ -75,9 +75,10 @@ def resamplear(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
     filas_esperadas = _filas_esperadas_por_ventana(timeframe_base, timeframe)
     aggs = _construir_agregaciones(df.columns)
 
-    # Ventanas [inicio, fin) sin lookahead. El timestamp final no es la apertura
-    # de la ventana, sino la última vela base incluida: 00:00..00:14 -> 00:14.
-    # Así la señal queda disponible en 00:14 y el motor entra en N+1 (00:15).
+    # Ventanas [inicio, fin) sin lookahead. El timestamp visible es la apertura
+    # natural de la vela: 00:00..00:14 -> 00:00. La proyección al timeframe base
+    # calcula aparte el cierre operativo para que el motor siga entrando despues
+    # de que la vela resampleada este confirmada.
     df_resampled = (
         df_ordenado
         .group_by_dynamic(
@@ -88,16 +89,22 @@ def resamplear(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
             start_by="window",
         )
         .agg([
-            pl.col("timestamp").last().alias("_timestamp_operativo"),
             pl.len().alias("_filas_ventana"),
             *aggs,
         ])
         .filter(pl.col("_filas_ventana") == filas_esperadas)
-        .with_columns(pl.col("_timestamp_operativo").alias("timestamp"))
-        .drop(["_timestamp_operativo", "_filas_ventana"])
+        .drop("_filas_ventana")
     )
 
     return df_resampled
+
+
+def segundos_timeframe(timeframe: str) -> int:
+    if timeframe not in _TF_A_SEGUNDOS:
+        raise ValueError(
+            f"Timeframe '{timeframe}' no reconocido. Opciones: {_JERARQUIA}"
+        )
+    return int(_TF_A_SEGUNDOS[timeframe])
 
 
 def _filas_esperadas_por_ventana(timeframe_base: str, timeframe: str) -> int:

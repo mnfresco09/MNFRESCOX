@@ -7,13 +7,13 @@
 # Se mide en el timeframe de ejecucion mas bajo disponible en HISTORICO,
 # no necesariamente en el timeframe de la estrategia.
 # Cuando se alcanza, se cierra al precio de cierre de esa vela.
-EXIT_VELAS = 48
+EXIT_VELAS = 20
 
 # Stop Loss de seguridad activo en paralelo.
 # Si el precio lo toca antes de llegar a EXIT_VELAS, cierra el trade.
 # El primero en cumplirse tiene preferencia.
 # Ejemplo: 20 → cierra si la pérdida llega al 20% del colateral.
-EXIT_SL_PCT = 20
+EXIT_SL_PCT = 25
 
 # Si True, Optuna también buscará el número óptimo de velas y el SL
 # en lugar de usar los valores fijos definidos arriba.

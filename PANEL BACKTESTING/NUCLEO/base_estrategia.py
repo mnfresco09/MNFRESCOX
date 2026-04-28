@@ -26,14 +26,14 @@ Lo que aporta esta clase:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
 import polars as pl
 
 
 class CacheIndicadores:
-    """Cache key→ndarray, vivo lo que dura una combinación (un par
+    """Cache key→resultado, vivo lo que dura una combinación (un par
     `activo×timeframe`). Es opcional: una estrategia puede ignorarlo y
     recalcular siempre.
     """
@@ -41,12 +41,12 @@ class CacheIndicadores:
     __slots__ = ("_cache",)
 
     def __init__(self) -> None:
-        self._cache: dict[tuple, np.ndarray] = {}
+        self._cache: dict[tuple, Any] = {}
 
-    def get(self, key: tuple) -> Optional[np.ndarray]:
+    def get(self, key: tuple) -> Optional[Any]:
         return self._cache.get(key)
 
-    def put(self, key: tuple, value: np.ndarray) -> None:
+    def put(self, key: tuple, value: Any) -> None:
         self._cache[key] = value
 
     def clear(self) -> None:
@@ -130,7 +130,7 @@ class BaseEstrategia(ABC):
 
     # ── Memoización opcional ──────────────────────────────────────────────
 
-    def memo(self, *clave_partes, calcular: Callable[[], np.ndarray]) -> np.ndarray:
+    def memo(self, *clave_partes, calcular: Callable[[], Any]) -> Any:
         """Devuelve el resultado de `calcular()` cacheándolo bajo la clave
         `(nombre_estrategia, *clave_partes)`. Pensado para indicadores
         cuyo cálculo es caro y cuyos parámetros se repiten entre trials.

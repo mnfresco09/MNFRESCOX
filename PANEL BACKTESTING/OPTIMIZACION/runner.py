@@ -136,7 +136,7 @@ def main() -> None:
             integridad.verificar_resampleo(df_base, df_tf, timeframe)
             huella_tf = integridad.huella_dataframe(f"{activo} {timeframe}", df_tf)
             mostrar_huella_datos(huella_tf)
-            ctx = crear_contexto(df_base=df_base, df_tf=df_tf)
+            ctx = crear_contexto(df_base=df_base, df_tf=df_tf, timeframe=timeframe)
 
             for estrategia in estrategias:
                 # Sin perturbaciones los buffers son estables para toda la
@@ -503,7 +503,7 @@ def _ctx_para_trial(
 
     df_base = aplicar_perturbaciones(ctx.df_base, perturbaciones, seed=seed)
     df_tf = resamplear(df_base, timeframe)
-    return crear_contexto(df_base=df_base, df_tf=df_tf)
+    return crear_contexto(df_base=df_base, df_tf=df_tf, timeframe=timeframe)
 
 
 def _estrategia_para_trial(estrategia, perturbaciones: ConfiguracionPerturbaciones):

@@ -19,6 +19,15 @@ import polars as pl
 from MOTOR.wrapper import MOTIVOS
 
 TOL = 1e-7
+_TIMEFRAME_US = {
+    "1m": 60_000_000,
+    "5m": 5 * 60_000_000,
+    "15m": 15 * 60_000_000,
+    "30m": 30 * 60_000_000,
+    "1h": 60 * 60_000_000,
+    "4h": 4 * 60 * 60_000_000,
+    "1d": 24 * 60 * 60_000_000,
+}
 
 
 @dataclass(frozen=True)
@@ -56,7 +65,12 @@ def verificar_resampleo(origen: pl.DataFrame, destino: pl.DataFrame, timeframe: 
         return
 
     if "volume" in origen.columns and "volume" in destino.columns:
-        origen_cubierto = origen.filter(pl.col("timestamp") <= destino["timestamp"][-1])
+        origen_ts_us = _timestamp_us(origen)
+        destino_ts_us = _timestamp_us(destino)
+        fin_cubierto_us = int(destino_ts_us[-1])
+        if timeframe in _TIMEFRAME_US and timeframe != "1m":
+            fin_cubierto_us += int(_TIMEFRAME_US[timeframe]) - _intervalo_us(origen)
+        origen_cubierto = origen.filter(origen_ts_us <= fin_cubierto_us)
         vol_origen = float(origen_cubierto["volume"].sum())
         vol_destino = float(destino["volume"].sum())
         if not isclose(vol_origen, vol_destino, rel_tol=TOL, abs_tol=TOL):
@@ -65,10 +79,16 @@ def verificar_resampleo(origen: pl.DataFrame, destino: pl.DataFrame, timeframe: 
                 f"origen={vol_origen}, destino={vol_destino}."
             )
 
-    if destino["timestamp"][0] < origen["timestamp"][0]:
+    origen_ts_us = _timestamp_us(origen)
+    destino_ts_us = _timestamp_us(destino)
+    if int(destino_ts_us[0]) < int(origen_ts_us[0]):
         raise ValueError("[INTEGRIDAD] Resampleo creo timestamp inicial anterior al origen.")
-    if destino["timestamp"][-1] > origen["timestamp"][-1]:
+    if int(destino_ts_us[-1]) > int(origen_ts_us[-1]):
         raise ValueError("[INTEGRIDAD] Resampleo creo timestamp final posterior al origen.")
+    if timeframe in _TIMEFRAME_US and timeframe != "1m":
+        fin_operativo_us = int(destino_ts_us[-1]) + int(_TIMEFRAME_US[timeframe]) - _intervalo_us(origen)
+        if fin_operativo_us > int(origen_ts_us[-1]):
+            raise ValueError("[INTEGRIDAD] Resampleo termina despues del origen disponible.")
 
 
 def verificar_senales(df: pl.DataFrame, senales) -> dict[int, int]:
@@ -235,3 +255,20 @@ def _verificar_ohlc(etapa: str, df: pl.DataFrame) -> None:
     ).height
     if invalidas:
         raise ValueError(f"[INTEGRIDAD] {etapa}: {invalidas:,} velas OHLC incoherentes.")
+
+
+def _timestamp_us(df: pl.DataFrame) -> pl.Series:
+    dtype = df.schema.get("timestamp")
+    if isinstance(dtype, pl.Datetime):
+        return df.select(pl.col("timestamp").dt.epoch("us")).to_series()
+    return df["timestamp"].cast(pl.Int64)
+
+
+def _intervalo_us(df: pl.DataFrame) -> int:
+    if df.height < 2:
+        raise ValueError("[INTEGRIDAD] No se puede inferir intervalo con menos de 2 filas.")
+    diffs = _timestamp_us(df).diff().drop_nulls()
+    diffs = diffs.filter(diffs > 0)
+    if diffs.is_empty():
+        raise ValueError("[INTEGRIDAD] No se pudo inferir intervalo temporal.")
+    return int(diffs.min())
