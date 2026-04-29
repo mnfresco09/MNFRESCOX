@@ -41,6 +41,7 @@ from REPORTES.rich import (
     mostrar_inicio_motor,
     mostrar_resumen_run,
 )
+from SALIDAS import paridad as paridad_salida
 
 
 @dataclass(frozen=True)
@@ -636,14 +637,14 @@ def _sim_config(
         exit_trail_dist_pct=salida.trail_dist_pct,
         paridad_riesgo=bool(paridad.activa),
         paridad_riesgo_max_pct=float(paridad.riesgo_max_pct),
-        paridad_apalancamiento_min=float(getattr(cfg, "PARIDAD_APALANCAMIENTO_MIN", 1.0)),
-        paridad_apalancamiento_max=float(getattr(cfg, "PARIDAD_APALANCAMIENTO_MAX", cfg.APALANCAMIENTO)),
+        paridad_apalancamiento_min=float(paridad_salida.PARIDAD_APALANCAMIENTO_MIN),
+        paridad_apalancamiento_max=float(paridad_salida.PARIDAD_APALANCAMIENTO_MAX),
         risk_vol_ewma=risk_vol_ewma,
         exit_sl_ewma_mult=float(paridad.sl_ewma_mult),
         exit_tp_ewma_mult=float(paridad.tp_ewma_mult),
         exit_trail_act_ewma_mult=float(paridad.trail_act_ewma_mult),
         exit_trail_dist_ewma_mult=float(paridad.trail_dist_ewma_mult),
-        paridad_skip_bajo_min=bool(paridad_riesgo.SKIP_SI_APALANCAMIENTO_MENOR_MIN),
+        paridad_skip_bajo_min=bool(paridad_salida.SKIP_SI_APALANCAMIENTO_MENOR_MIN),
     )
 
 

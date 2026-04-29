@@ -65,20 +65,10 @@ class VWAPCVD(BaseEstrategia):
 
     def espacio_busqueda(self, trial) -> dict:
         return {
-            "halflife_bars": trial.suggest_int("halflife_bars", 5, 100, step=5),
-            "normalization_multiplier": trial.suggest_float(
-                "normalization_multiplier",
-                2.0,
-                5.0,
-                step=0.5,
-            ),
-            "vwap_clip_sigmas": trial.suggest_float("vwap_clip_sigmas", 2.0, 4.0, step=0.5),
-            "umbral_cvd": trial.suggest_float(
-                "umbral_cvd",
-                0.5,
-                3.0,
-                step=0.1,
-            ),
+            "halflife_bars": trial.suggest_int("halflife_bars", 45, 75, step=1),
+            "normalization_multiplier": trial.suggest_float("normalization_multiplier",3.0,5.0,step=0.5,),
+            "vwap_clip_sigmas": trial.suggest_float("vwap_clip_sigmas", 2.5, 3.5, step=0.1),
+            "umbral_cvd": trial.suggest_float("umbral_cvd",1.3,2.0,step=0.1,),
         }
 
     def bind(self, arrays, cache=None) -> None:

@@ -1,8 +1,8 @@
 """Paridad de riesgo por volatilidad EWMA.
 
-Este modulo concentra los valores por defecto y rangos de optimizacion para
-no saturar `CONFIGURACION/config.py`. La estrategia solo genera senales; el
-riesgo dinamico se calcula aqui y el motor aplica el apalancamiento por trade.
+Este modulo contiene la matematica y el contrato interno de paridad. Los
+valores editables por el usuario viven en `SALIDAS/paridad.py`, junto al resto
+de parametros de salida.
 """
 
 from __future__ import annotations
@@ -14,50 +14,23 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from SALIDAS import paridad as paridad_cfg
+
 try:
     from numba import njit
 except ImportError:  # pragma: no cover - numba es opcional
     njit = None
 
 
-# Valores operativos por defecto. Optuna puede optimizarlos cuando
-# OPTIMIZAR_PARIDAD_RIESGO=True.
-RIESGO_MAXIMO_PCT = 5.0
-RIESGO_MAXIMO_MIN = 2.0
-RIESGO_MAXIMO_MAX = 8.0
-
-VOL_HALFLIFE = 50
-VOL_HALFLIFE_MIN = 20
-VOL_HALFLIFE_MAX = 300
-
-SL_EWMA_MULT = 2.0
-SL_EWMA_MULT_MIN = 0.5
-SL_EWMA_MULT_MAX = 6.0
-
-TP_EWMA_MULT = 4.0
-TP_EWMA_MULT_MIN = 0.5
-TP_EWMA_MULT_MAX = 12.0
-
-TRAIL_ACT_EWMA_MULT = 3.0
-TRAIL_ACT_EWMA_MULT_MIN = 0.5
-TRAIL_ACT_EWMA_MULT_MAX = 12.0
-
-TRAIL_DIST_EWMA_MULT = 1.0
-TRAIL_DIST_EWMA_MULT_MIN = 0.25
-TRAIL_DIST_EWMA_MULT_MAX = 6.0
-
-SKIP_SI_APALANCAMIENTO_MENOR_MIN = True
-
-
 @dataclass(frozen=True)
 class ParametrosParidadRiesgo:
     activa: bool
-    riesgo_max_pct: float = RIESGO_MAXIMO_PCT
-    vol_halflife: int = VOL_HALFLIFE
-    sl_ewma_mult: float = SL_EWMA_MULT
-    tp_ewma_mult: float = TP_EWMA_MULT
-    trail_act_ewma_mult: float = TRAIL_ACT_EWMA_MULT
-    trail_dist_ewma_mult: float = TRAIL_DIST_EWMA_MULT
+    riesgo_max_pct: float = paridad_cfg.RIESGO_MAXIMO_PCT
+    vol_halflife: int = paridad_cfg.VOL_HALFLIFE
+    sl_ewma_mult: float = paridad_cfg.SL_EWMA_MULT
+    tp_ewma_mult: float = paridad_cfg.TP_EWMA_MULT
+    trail_act_ewma_mult: float = paridad_cfg.TRAIL_ACT_EWMA_MULT
+    trail_dist_ewma_mult: float = paridad_cfg.TRAIL_DIST_EWMA_MULT
 
 
 def parametros_para_trial(
@@ -74,52 +47,52 @@ def parametros_para_trial(
     if optimizar:
         riesgo = trial.suggest_float(
             "risk_max_pct",
-            RIESGO_MAXIMO_MIN,
-            RIESGO_MAXIMO_MAX,
+            paridad_cfg.RIESGO_MAXIMO_MIN,
+            paridad_cfg.RIESGO_MAXIMO_MAX,
             step=0.5,
         )
         halflife = trial.suggest_int(
             "risk_vol_halflife",
-            VOL_HALFLIFE_MIN,
-            VOL_HALFLIFE_MAX,
+            paridad_cfg.VOL_HALFLIFE_MIN,
+            paridad_cfg.VOL_HALFLIFE_MAX,
         )
         sl_mult = trial.suggest_float(
             "risk_sl_ewma_mult",
-            SL_EWMA_MULT_MIN,
-            SL_EWMA_MULT_MAX,
+            paridad_cfg.SL_EWMA_MULT_MIN,
+            paridad_cfg.SL_EWMA_MULT_MAX,
             step=0.1,
         )
-        tp_mult = TP_EWMA_MULT
-        trail_act = TRAIL_ACT_EWMA_MULT
-        trail_dist = TRAIL_DIST_EWMA_MULT
+        tp_mult = paridad_cfg.TP_EWMA_MULT
+        trail_act = paridad_cfg.TRAIL_ACT_EWMA_MULT
+        trail_dist = paridad_cfg.TRAIL_DIST_EWMA_MULT
         if exit_type == "FIXED":
             tp_mult = trial.suggest_float(
                 "risk_tp_ewma_mult",
-                TP_EWMA_MULT_MIN,
-                TP_EWMA_MULT_MAX,
+                paridad_cfg.TP_EWMA_MULT_MIN,
+                paridad_cfg.TP_EWMA_MULT_MAX,
                 step=0.1,
             )
         elif exit_type == "TRAILING":
             trail_act = trial.suggest_float(
                 "risk_trail_act_ewma_mult",
-                TRAIL_ACT_EWMA_MULT_MIN,
-                TRAIL_ACT_EWMA_MULT_MAX,
+                paridad_cfg.TRAIL_ACT_EWMA_MULT_MIN,
+                paridad_cfg.TRAIL_ACT_EWMA_MULT_MAX,
                 step=0.1,
             )
             trail_dist = trial.suggest_float(
                 "risk_trail_dist_ewma_mult",
-                TRAIL_DIST_EWMA_MULT_MIN,
-                TRAIL_DIST_EWMA_MULT_MAX,
+                paridad_cfg.TRAIL_DIST_EWMA_MULT_MIN,
+                paridad_cfg.TRAIL_DIST_EWMA_MULT_MAX,
                 step=0.1,
             )
             trail_act, trail_dist = normalizar_trailing_mult(trail_act, trail_dist)
     else:
-        riesgo = RIESGO_MAXIMO_PCT
-        halflife = VOL_HALFLIFE
-        sl_mult = SL_EWMA_MULT
-        tp_mult = TP_EWMA_MULT
-        trail_act = TRAIL_ACT_EWMA_MULT
-        trail_dist = TRAIL_DIST_EWMA_MULT
+        riesgo = paridad_cfg.RIESGO_MAXIMO_PCT
+        halflife = paridad_cfg.VOL_HALFLIFE
+        sl_mult = paridad_cfg.SL_EWMA_MULT
+        tp_mult = paridad_cfg.TP_EWMA_MULT
+        trail_act = paridad_cfg.TRAIL_ACT_EWMA_MULT
+        trail_dist = paridad_cfg.TRAIL_DIST_EWMA_MULT
 
     params = ParametrosParidadRiesgo(
         activa=True,
@@ -160,24 +133,28 @@ def params_desde_dict(
 ) -> ParametrosParidadRiesgo:
     if not activa:
         return ParametrosParidadRiesgo(activa=False)
-    trail_act = float(parametros.get("risk_trail_act_ewma_mult", TRAIL_ACT_EWMA_MULT))
-    trail_dist = float(parametros.get("risk_trail_dist_ewma_mult", TRAIL_DIST_EWMA_MULT))
+    trail_act = float(
+        parametros.get("risk_trail_act_ewma_mult", paridad_cfg.TRAIL_ACT_EWMA_MULT)
+    )
+    trail_dist = float(
+        parametros.get("risk_trail_dist_ewma_mult", paridad_cfg.TRAIL_DIST_EWMA_MULT)
+    )
     if exit_type == "TRAILING":
         trail_act, trail_dist = normalizar_trailing_mult(trail_act, trail_dist)
     return ParametrosParidadRiesgo(
         activa=True,
-        riesgo_max_pct=float(parametros.get("risk_max_pct", RIESGO_MAXIMO_PCT)),
-        vol_halflife=int(parametros.get("risk_vol_halflife", VOL_HALFLIFE)),
-        sl_ewma_mult=float(parametros.get("risk_sl_ewma_mult", SL_EWMA_MULT)),
-        tp_ewma_mult=float(parametros.get("risk_tp_ewma_mult", TP_EWMA_MULT)),
+        riesgo_max_pct=float(parametros.get("risk_max_pct", paridad_cfg.RIESGO_MAXIMO_PCT)),
+        vol_halflife=int(parametros.get("risk_vol_halflife", paridad_cfg.VOL_HALFLIFE)),
+        sl_ewma_mult=float(parametros.get("risk_sl_ewma_mult", paridad_cfg.SL_EWMA_MULT)),
+        tp_ewma_mult=float(parametros.get("risk_tp_ewma_mult", paridad_cfg.TP_EWMA_MULT)),
         trail_act_ewma_mult=trail_act,
         trail_dist_ewma_mult=trail_dist,
     )
 
 
 def normalizar_trailing_mult(act_mult: float, dist_mult: float) -> tuple[float, float]:
-    act = abs(float(act_mult)) if float(act_mult) != 0.0 else TRAIL_ACT_EWMA_MULT
-    dist = abs(float(dist_mult)) if float(dist_mult) != 0.0 else TRAIL_DIST_EWMA_MULT
+    act = abs(float(act_mult)) if float(act_mult) != 0.0 else paridad_cfg.TRAIL_ACT_EWMA_MULT
+    dist = abs(float(dist_mult)) if float(dist_mult) != 0.0 else paridad_cfg.TRAIL_DIST_EWMA_MULT
     if dist >= act:
         act, dist = dist, act
     if act == dist:

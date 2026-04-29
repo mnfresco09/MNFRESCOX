@@ -26,6 +26,7 @@ Lo que aporta esta clase:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from typing import Any, Callable, Optional
 
 import numpy as np
@@ -33,27 +34,81 @@ import polars as pl
 
 
 class CacheIndicadores:
-    """Cache key→resultado, vivo lo que dura una combinación (un par
-    `activo×timeframe`). Es opcional: una estrategia puede ignorarlo y
-    recalcular siempre.
+    """Cache LRU key→resultado, vivo lo que dura una combinación.
+
+    El runner puede reutilizarlo durante miles de trials para un mismo
+    `activo×timeframe`. Por eso debe estar acotado: indicadores como
+    VWAP-CVD guardan varias series numpy completas por cada combinación de
+    parámetros, y una cache sin límite degrada la optimización por presión de
+    memoria. `max_entries=None` o `max_bytes=None` desactiva cada límite.
     """
 
-    __slots__ = ("_cache",)
+    __slots__ = ("_cache", "_bytes", "_max_bytes", "_max_entries")
 
-    def __init__(self) -> None:
-        self._cache: dict[tuple, Any] = {}
+    MAX_ENTRIES_DEFECTO = 64
+    MAX_BYTES_DEFECTO = 512 * 1024 * 1024
+
+    def __init__(
+        self,
+        max_entries: int | None = MAX_ENTRIES_DEFECTO,
+        max_bytes: int | None = MAX_BYTES_DEFECTO,
+    ) -> None:
+        if max_entries is not None and int(max_entries) <= 0:
+            raise ValueError("max_entries debe ser None o un entero positivo.")
+        if max_bytes is not None and int(max_bytes) <= 0:
+            raise ValueError("max_bytes debe ser None o un entero positivo.")
+        self._cache: OrderedDict[tuple, tuple[Any, int]] = OrderedDict()
+        self._bytes = 0
+        self._max_entries = None if max_entries is None else int(max_entries)
+        self._max_bytes = None if max_bytes is None else int(max_bytes)
 
     def get(self, key: tuple) -> Optional[Any]:
-        return self._cache.get(key)
+        item = self._cache.get(key)
+        if item is None:
+            return None
+        self._cache.move_to_end(key)
+        return item[0]
 
     def put(self, key: tuple, value: Any) -> None:
-        self._cache[key] = value
+        previo = self._cache.pop(key, None)
+        if previo is not None:
+            self._bytes -= previo[1]
+
+        size = self._estimar_bytes(value)
+        self._cache[key] = (value, size)
+        self._bytes += size
+        self._evictar_si_procede()
 
     def clear(self) -> None:
         self._cache.clear()
+        self._bytes = 0
 
     def __len__(self) -> int:
         return len(self._cache)
+
+    @property
+    def bytes_estimados(self) -> int:
+        return self._bytes
+
+    def _evictar_si_procede(self) -> None:
+        while self._max_entries is not None and len(self._cache) > self._max_entries:
+            _, (_, size) = self._cache.popitem(last=False)
+            self._bytes -= size
+
+        while self._max_bytes is not None and self._bytes > self._max_bytes and len(self._cache) > 1:
+            _, (_, size) = self._cache.popitem(last=False)
+            self._bytes -= size
+
+    @classmethod
+    def _estimar_bytes(cls, value: Any) -> int:
+        nbytes = getattr(value, "nbytes", None)
+        if nbytes is not None:
+            return int(nbytes)
+        if isinstance(value, (tuple, list)):
+            return sum(cls._estimar_bytes(item) for item in value)
+        if isinstance(value, dict):
+            return sum(cls._estimar_bytes(item) for item in value.values())
+        return 0
 
 
 class BaseEstrategia(ABC):

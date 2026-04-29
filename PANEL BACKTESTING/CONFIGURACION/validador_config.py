@@ -187,21 +187,44 @@ def _validar_paridad_riesgo(cfg, errores: list[str]) -> None:
     if not isinstance(optimizar, bool):
         errores.append("OPTIMIZAR_PARIDAD_RIESGO debe ser True o False.")
 
+    paridad = _importar_salida("paridad", errores)
+    if paridad is None:
+        return
+
+    _validar_mayor_cero(paridad, "RIESGO_MAXIMO_PCT", errores)
+    _validar_rango(paridad, "RIESGO_MAXIMO_MIN", "RIESGO_MAXIMO_MAX", errores)
+    _validar_entero_mayor_cero(paridad, "VOL_HALFLIFE", errores)
+    _validar_rango(paridad, "VOL_HALFLIFE_MIN", "VOL_HALFLIFE_MAX", errores)
+    _validar_mayor_cero(paridad, "SL_EWMA_MULT", errores)
+    _validar_rango(paridad, "SL_EWMA_MULT_MIN", "SL_EWMA_MULT_MAX", errores)
+    _validar_mayor_cero(paridad, "TP_EWMA_MULT", errores)
+    _validar_rango(paridad, "TP_EWMA_MULT_MIN", "TP_EWMA_MULT_MAX", errores)
+    _validar_mayor_cero(paridad, "TRAIL_ACT_EWMA_MULT", errores)
+    _validar_rango(paridad, "TRAIL_ACT_EWMA_MULT_MIN", "TRAIL_ACT_EWMA_MULT_MAX", errores)
+    _validar_mayor_cero(paridad, "TRAIL_DIST_EWMA_MULT", errores)
+    _validar_rango(paridad, "TRAIL_DIST_EWMA_MULT_MIN", "TRAIL_DIST_EWMA_MULT_MAX", errores)
+
     try:
-        lev_min = float(getattr(cfg, "PARIDAD_APALANCAMIENTO_MIN"))
-        lev_max = float(getattr(cfg, "PARIDAD_APALANCAMIENTO_MAX"))
+        lev_min = float(getattr(paridad, "PARIDAD_APALANCAMIENTO_MIN"))
+        lev_max = float(getattr(paridad, "PARIDAD_APALANCAMIENTO_MAX"))
     except Exception:
         errores.append(
-            "PARIDAD_APALANCAMIENTO_MIN/MAX deben existir y ser numericos."
+            "SALIDAS.paridad.PARIDAD_APALANCAMIENTO_MIN/MAX deben existir y ser numericos."
         )
         return
 
     if not math.isfinite(lev_min) or lev_min <= 0.0:
-        errores.append("PARIDAD_APALANCAMIENTO_MIN debe ser finito y > 0.")
+        errores.append("SALIDAS.paridad.PARIDAD_APALANCAMIENTO_MIN debe ser finito y > 0.")
     if not math.isfinite(lev_max) or lev_max <= 0.0:
-        errores.append("PARIDAD_APALANCAMIENTO_MAX debe ser finito y > 0.")
+        errores.append("SALIDAS.paridad.PARIDAD_APALANCAMIENTO_MAX debe ser finito y > 0.")
     if lev_min > lev_max:
-        errores.append("PARIDAD_APALANCAMIENTO_MIN no puede ser mayor que PARIDAD_APALANCAMIENTO_MAX.")
+        errores.append(
+            "SALIDAS.paridad.PARIDAD_APALANCAMIENTO_MIN no puede ser mayor que "
+            "PARIDAD_APALANCAMIENTO_MAX."
+        )
+    skip = getattr(paridad, "SKIP_SI_APALANCAMIENTO_MENOR_MIN", True)
+    if not isinstance(skip, bool):
+        errores.append("SALIDAS.paridad.SKIP_SI_APALANCAMIENTO_MENOR_MIN debe ser True o False.")
 
 
 def _validar_kernel_perturbaciones(errores: list[str]) -> None:

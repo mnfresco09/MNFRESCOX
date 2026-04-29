@@ -31,7 +31,7 @@ TIMEFRAMES = ["1h"]
 # ---------------------------------------------------------------------------
 # FECHAS 2020-01-01 hasta 2025-12-31
 # ---------------------------------------------------------------------------
-FECHA_INICIO = "2020-01-01"
+FECHA_INICIO = "2025-01-01"
 FECHA_FIN    = "2025-12-31"
 
 # ---------------------------------------------------------------------------
@@ -55,10 +55,9 @@ COMISION_LADOS         = 2          # 1 = solo apertura | 2 = apertura y cierre
 # ---------------------------------------------------------------------------
 # False = usa APALANCAMIENTO y porcentajes de SALIDAS como hasta ahora.
 # True  = usa volatilidad EWMA para calcular SL/TP y apalancamiento por trade.
+# Los valores, rangos y limites de apalancamiento estan en SALIDAS/paridad.py.
 USAR_PARIDAD_RIESGO = True
 OPTIMIZAR_PARIDAD_RIESGO = True
-PARIDAD_APALANCAMIENTO_MIN = 1.0
-PARIDAD_APALANCAMIENTO_MAX = 50.0
 
 # ---------------------------------------------------------------------------
 # SALIDAS
@@ -67,6 +66,7 @@ PARIDAD_APALANCAMIENTO_MAX = 50.0
 # "BARS"  → Cierre por número máximo de velas   → parámetros en SALIDAS/velas.py
 # "TRAILING" → SL de seguridad + trailing stop  → parámetros en SALIDAS/trailing.py
 # "CUSTOM"→ Cierre por generar_salidas()         → parámetros en SALIDAS/personalizada.py
+# Paridad de riesgo, si esta activa, usa parametros en SALIDAS/paridad.py.
 # "ALL"   → Ejecuta todos por separado y guarda cada resultado
 EXIT_TYPE = "TRAILING"
 
@@ -74,16 +74,16 @@ EXIT_TYPE = "TRAILING"
 # OPTIMIZACIÓN (OPTUNA)
 # ---------------------------------------------------------------------------
 # Potencias de 2 recomendadas para QMC: 64, 128, 256, 512
-N_TRIALS = 128
+N_TRIALS = 2000
 
-# "QMC"    → Exploración uniforme (secuencias Sobol). Bueno para primera pasada.
-# "TPE"    → Guiado por resultados anteriores. Bueno para refinar.
-# "HYBRID" → QMC primera mitad + TPE segunda mitad. Recomendado por defecto.
-OPTUNA_SAMPLER = "QMC"
+# "QMC"    → Exploración uniforme (Sobol). Recomendado para campañas grandes.
+# "TPE"    → Guiado por resultados anteriores; su coste crece con el histórico.
+# "HYBRID" → QMC primera mitad + TPE segunda mitad; útil sólo en campañas moderadas.
+OPTUNA_SAMPLER = "TPE"
 
 # True  = usa las semillas configuradas y permite reproducibilidad.
 # False = ignora las semillas y cada ejecución explora caminos aleatorios.
-USAR_SEED = True
+USAR_SEED = False
 
 # Entero obligatorio cuando USAR_SEED = True.
 OPTUNA_SEED = 42
