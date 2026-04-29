@@ -549,9 +549,25 @@ def _panel_finanzas(metricas: dict[str, Any]) -> Panel:
 
 def _panel_parametros(params: dict[str, Any], salida_base: str) -> Panel:
     exit_type = str(params.get("__exit_type", salida_base)).upper()
+    paridad = bool(params.get("__paridad_riesgo", False))
     grid = _grid(16, 14)
     grid.add_row(f"[bold {THEME.TEXT}]EXIT[/]", f"[bold {THEME.TEXT}]{exit_type}[/]")
-    if exit_type == "BARS":
+
+    if paridad:
+        grid.add_row("MODO", "PARIDAD")
+        grid.add_row("RIESGO", f"{_float_param(params, 'risk_max_pct'):.2f}%")
+        grid.add_row("VOL HL", str(int(_float_param(params, "risk_vol_halflife"))))
+        grid.add_row("SL EWMA", _fmt_param(params.get("risk_sl_ewma_mult", 0.0)))
+        if exit_type == "FIXED":
+            grid.add_row("TP EWMA", _fmt_param(params.get("risk_tp_ewma_mult", 0.0)))
+        elif exit_type == "TRAILING":
+            grid.add_row("TRAIL ACT", _fmt_param(params.get("risk_trail_act_ewma_mult", 0.0)))
+            grid.add_row("TRAIL DIST", _fmt_param(params.get("risk_trail_dist_ewma_mult", 0.0)))
+        elif exit_type == "BARS":
+            grid.add_row("VELAS", str(int(_float_param(params, "__exit_velas"))))
+        elif exit_type == "CUSTOM":
+            grid.add_row("CIERRE", "ESTRATEGIA")
+    elif exit_type == "BARS":
         grid.add_row("SL", f"{_float_param(params, '__exit_sl_pct'):.1f}%")
         grid.add_row("VELAS", str(int(_float_param(params, "__exit_velas"))))
     elif exit_type == "CUSTOM":
@@ -569,6 +585,7 @@ def _panel_parametros(params: dict[str, Any], salida_base: str) -> Panel:
         k: v
         for k, v in params.items()
         if not str(k).startswith("__")
+        and not str(k).startswith("risk_")
         and k
         not in {
             "exit_sl_pct",

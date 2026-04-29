@@ -654,7 +654,37 @@ function addEquityDrawdownPane(){
 }
 addEquityDrawdownPane();
 const tooltipEl=document.getElementById('tooltip');const byTime={};(D.markers||[]).forEach(m=>{if(!byTime[m.time])byTime[m.time]=[];byTime[m.time].push(m);});const tradeByN={};(D.trades||[]).forEach(t=>{tradeByN[t.n]=t;});
-mainChart.subscribeCrosshairMove(param=>{moveGlobalCrosshair(param);if(!param.time||!param.point){tooltipEl.style.display='none';return;}const ms=byTime[param.time];if(!ms||!ms.length){tooltipEl.style.display='none';return;}tooltipEl.innerHTML=ms.map(m=>{const t=tradeByN[m.trade]||m;const pnl=num(t.pnl),roi=num(t.roi),pnlCls=pnl>=0?'pos':'neg';const isEntry=m.tipo==='entrada';const headColor=isEntry?(m.direccion==='LONG'?T.entryLong:T.entryShort):(isTrailing(m)?T.exitTrailing:(pnl>=0?T.exitWin:T.exitLoss));const headLabel=isEntry?`${m.direccion} ENTRADA #${m.trade}`:`SALIDA ${t.motivo||m.motivo} #${m.trade}`;return `<div class="tt-head" style="color:${headColor}">${esc(headLabel)}</div><div class="tt-grid"><div class="tt-row"><span>P. ENTRADA</span><b>${fmtMoney(t.precio_entrada,2)}</b></div><div class="tt-row"><span>P. SALIDA</span><b>${fmtMoney(t.precio_salida,2)}</b></div><div class="tt-row"><span>COLLATERAL</span><b>${fmtMoney(t.colateral,2)}</b></div><div class="tt-row"><span>LEV</span><b>${num(t.apalancamiento).toFixed(2)}x</b></div><div class="tt-row"><span>SIZE</span><b>${num(t.tamano_posicion).toFixed(6)}</b></div><div class="tt-row"><span>VOL EWMA</span><b>${fmtPct(t.risk_vol_ewma)}</b></div><div class="tt-row"><span>COMISION</span><b>${fmtMoney(t.comision_total,2)}</b></div><div class="tt-row"><span>SL DIST</span><b>${fmtPct(t.risk_sl_dist_pct)}</b></div><div class="tt-row"><span>PNL BRUTO</span><b>${fmtNum(t.pnl_bruto,2)}</b></div><div class="tt-row"><span>PNL NETO</span><b class="${pnlCls}">${fmtNum(pnl,2)}</b></div><div class="tt-row"><span>ROI</span><b class="${pnlCls}">${fmtPct(roi)}</b></div><div class="tt-row"><span>BALANCE</span><b>${fmtMoney(t.saldo_post,2)}</b></div><div class="tt-row"><span>DURACION</span><b>${esc(t.duracion_txt||fmtDuration(t.duracion_seg,t.duracion))}</b></div></div>`;}).join('');tooltipEl.style.display='block';let lx=param.point.x+16,ly=param.point.y+8;const tw=tooltipEl.offsetWidth||300;if(lx+tw>priceEl.clientWidth-10)lx=param.point.x-tw-8;tooltipEl.style.left=lx+'px';tooltipEl.style.top=ly+'px';});
+const riskMode=!!(D.parametros&&D.parametros.risk_sl_ewma_mult!=null);
+const fmtRiskPct=v=>Number.isFinite(Number(v))&&Number(v)>0?fmtPctU(v):'-';
+function tooltipRow(label,value,cls=''){return `<div class="tt-row"><span>${esc(label)}</span><b class="${cls}">${value}</b></div>`;}
+function riskTpPct(t){const mult=num(D.parametros?.risk_tp_ewma_mult);return mult>0?num(t.risk_vol_ewma)*mult:0;}
+function tooltipRiskRows(t,pnl,roi,pnlCls){return [
+  tooltipRow('P. ENTRADA',fmtMoney(t.precio_entrada,2)),
+  tooltipRow('P. SALIDA',fmtMoney(t.precio_salida,2)),
+  tooltipRow('COLLATERAL',fmtMoney(t.colateral,2)),
+  tooltipRow('SIZE',num(t.tamano_posicion).toFixed(6)),
+  tooltipRow('COMISION',fmtMoney(t.comision_total,2)),
+  tooltipRow('APALANC.',num(t.apalancamiento).toFixed(2)+'x'),
+  tooltipRow('TP %',fmtRiskPct(riskTpPct(t))),
+  tooltipRow('SL %',fmtRiskPct(t.risk_sl_dist_pct)),
+  tooltipRow('PNL NETO',fmtNum(pnl,2),pnlCls),
+  tooltipRow('ROI',fmtPct(roi),pnlCls),
+  tooltipRow('BALANCE',fmtMoney(t.saldo_post,2)),
+  tooltipRow('DURACION',esc(t.duracion_txt||fmtDuration(t.duracion_seg,t.duracion))),
+].join('');}
+function tooltipStandardRows(t,pnl,roi,pnlCls){return [
+  tooltipRow('P. ENTRADA',fmtMoney(t.precio_entrada,2)),
+  tooltipRow('P. SALIDA',fmtMoney(t.precio_salida,2)),
+  tooltipRow('COLLATERAL',fmtMoney(t.colateral,2)),
+  tooltipRow('SIZE',num(t.tamano_posicion).toFixed(6)),
+  tooltipRow('COMISION',fmtMoney(t.comision_total,2)),
+  tooltipRow('PNL BRUTO',fmtNum(t.pnl_bruto,2)),
+  tooltipRow('PNL NETO',fmtNum(pnl,2),pnlCls),
+  tooltipRow('ROI',fmtPct(roi),pnlCls),
+  tooltipRow('BALANCE',fmtMoney(t.saldo_post,2)),
+  tooltipRow('DURACION',esc(t.duracion_txt||fmtDuration(t.duracion_seg,t.duracion))),
+].join('');}
+mainChart.subscribeCrosshairMove(param=>{moveGlobalCrosshair(param);if(!param.time||!param.point){tooltipEl.style.display='none';return;}const ms=byTime[param.time];if(!ms||!ms.length){tooltipEl.style.display='none';return;}tooltipEl.innerHTML=ms.map(m=>{const t=tradeByN[m.trade]||m;const pnl=num(t.pnl),roi=num(t.roi),pnlCls=pnl>=0?'pos':'neg';const isEntry=m.tipo==='entrada';const headColor=isEntry?(m.direccion==='LONG'?T.entryLong:T.entryShort):(isTrailing(m)?T.exitTrailing:(pnl>=0?T.exitWin:T.exitLoss));const headLabel=isEntry?`${m.direccion} ENTRADA #${m.trade}`:`SALIDA ${t.motivo||m.motivo} #${m.trade}`;const rows=riskMode?tooltipRiskRows(t,pnl,roi,pnlCls):tooltipStandardRows(t,pnl,roi,pnlCls);return `<div class="tt-head" style="color:${headColor}">${esc(headLabel)}</div><div class="tt-grid">${rows}</div>`;}).join('');tooltipEl.style.display='block';let lx=param.point.x+16,ly=param.point.y+8;const tw=tooltipEl.offsetWidth||300;if(lx+tw>priceEl.clientWidth-10)lx=param.point.x-tw-8;tooltipEl.style.left=lx+'px';tooltipEl.style.top=ly+'px';});
 let tableFilter='ALL';
 function renderFilterButtons(){const host=document.getElementById('table-filters');const motivos=[...new Set((D.trades||[]).map(t=>t.motivo).filter(Boolean))];const defs=['ALL','LONG','SHORT','WIN','LOSS',...motivos];host.innerHTML=defs.map((f,i)=>`<button class="tbtn ${i===0?'active':''}" data-filter="${esc(f)}">${esc(f)}</button>`).join('');}
 function renderTable(){let trades=D.trades||[];if(tableFilter==='LONG')trades=trades.filter(t=>t.direccion==='LONG');else if(tableFilter==='SHORT')trades=trades.filter(t=>t.direccion==='SHORT');else if(tableFilter==='WIN')trades=trades.filter(t=>num(t.pnl)>=0);else if(tableFilter==='LOSS')trades=trades.filter(t=>num(t.pnl)<0);else if(tableFilter!=='ALL')trades=trades.filter(t=>t.motivo===tableFilter);document.getElementById('trade-tbody').innerHTML=trades.map(t=>{const pnlCls=num(t.pnl)>=0?'pos':'neg';const dirCls=t.direccion==='LONG'?'long':'short';return `<tr class="${num(t.pnl)>=0?'win':'loss'}"><td class="num">${esc(t.n)}</td><td class="${dirCls}">${esc(t.direccion)}</td><td class="mono">${esc(fmtTs(t.time_senal))}</td><td class="mono">${esc(fmtTs(t.time_entrada))}</td><td class="mono num">${num(t.precio_entrada).toFixed(2)}</td><td class="mono">${esc(fmtTs(t.time_salida))}</td><td class="mono num">${num(t.precio_salida).toFixed(2)}</td><td class="mono num">${fmtMoney(t.colateral,2)}</td><td class="mono num">${num(t.apalancamiento).toFixed(2)}x</td><td class="mono num">${num(t.tamano_posicion).toFixed(6)}</td><td class="mono num">${fmtMoney(t.comision_total,2)}</td><td class="mono num ${num(t.pnl_bruto)>=0?'pos':'neg'}">${fmtNum(t.pnl_bruto,2)}</td><td class="mono num ${pnlCls}">${fmtNum(t.pnl,2)}</td><td class="mono num ${pnlCls}">${fmtPct(t.roi)}</td><td class="mono num">${fmtMoney(t.saldo_post,2)}</td><td class="mono">${esc(t.duracion_txt||fmtDuration(t.duracion_seg,t.duracion))}</td><td>${esc(t.motivo)}</td></tr>`;}).join('');document.getElementById('trade-count').textContent=`${trades.length} / ${(D.trades||[]).length}`;}

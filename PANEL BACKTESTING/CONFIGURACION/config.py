@@ -55,7 +55,7 @@ COMISION_LADOS         = 2          # 1 = solo apertura | 2 = apertura y cierre
 # ---------------------------------------------------------------------------
 # False = usa APALANCAMIENTO y porcentajes de SALIDAS como hasta ahora.
 # True  = usa volatilidad EWMA para calcular SL/TP y apalancamiento por trade.
-USAR_PARIDAD_RIESGO = False
+USAR_PARIDAD_RIESGO = True
 OPTIMIZAR_PARIDAD_RIESGO = True
 PARIDAD_APALANCAMIENTO_MIN = 1.0
 PARIDAD_APALANCAMIENTO_MAX = 50.0
