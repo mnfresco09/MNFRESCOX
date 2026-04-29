@@ -21,7 +21,7 @@ from DATOS.perturbaciones import (
 from DATOS.resampleo import inferir_timeframe, resamplear
 from DATOS.validador import validar as validar_datos
 from MOTOR import simular_full, simular_metricas
-from NUCLEO import integridad
+from NUCLEO import integridad, paridad_riesgo
 from NUCLEO.base_estrategia import CacheIndicadores
 from NUCLEO.contexto import ArraysMotor, ContextoCombinacion, SimConfigMotor, crear_contexto
 from NUCLEO.proyeccion import proyectar_senales_a_base
@@ -49,6 +49,8 @@ class ExitConfig:
     sl_pct: float
     tp_pct: float
     velas: int
+    trail_act_pct: float = 0.0
+    trail_dist_pct: float = 0.0
     optimizar: bool = False
     sl_min: float | None = None
     sl_max: float | None = None
@@ -56,6 +58,10 @@ class ExitConfig:
     tp_max: float | None = None
     velas_min: int | None = None
     velas_max: int | None = None
+    trail_act_min: float | None = None
+    trail_act_max: float | None = None
+    trail_dist_min: float | None = None
+    trail_dist_max: float | None = None
 
 
 @dataclass
@@ -293,7 +299,13 @@ def _optimizar_combinacion(
 
         params_estrategia = estrategia.espacio_busqueda(trial)
         salida_trial, params_salida = _salida_para_trial(salida_base, trial)
-        parametros = {**params_estrategia, **params_salida}
+        paridad_trial, params_paridad = paridad_riesgo.parametros_para_trial(
+            trial,
+            salida_trial.tipo,
+            activa=_paridad_activa(),
+            optimizar=bool(getattr(cfg, "OPTIMIZAR_PARIDAD_RIESGO", True)),
+        )
+        parametros = {**params_estrategia, **params_salida, **params_paridad}
 
         try:
             senales_tf = estrategia_trial.generar_señales(ctx_trial.df_tf, params_estrategia)
@@ -315,6 +327,10 @@ def _optimizar_combinacion(
                 senales_tf=senales_tf,
                 salidas_custom=salidas_custom,
             )
+            risk_vol_exec = _preparar_volatilidad_paridad(
+                ctx=ctx_trial,
+                params=paridad_trial,
+            )
             timeframe_ejecucion = _timeframe_ejecucion(
                 ctx=ctx_trial,
                 timeframe=timeframe,
@@ -324,7 +340,7 @@ def _optimizar_combinacion(
             metricas_obj = simular_metricas(
                 arrays_exec,
                 senales_exec,
-                sim_cfg=_sim_config(salida_trial),
+                sim_cfg=_sim_config(salida_trial, paridad_trial, risk_vol_exec),
                 salidas_custom=salidas_exec,
             )
             metricas = calcular_metricas(metricas_obj, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
@@ -431,8 +447,13 @@ def _replay_trial(
 
     params_estrategia = {
         k: v for k, v in trial_res.parametros.items()
-        if not k.startswith("exit_")
+        if not k.startswith("exit_") and not k.startswith("risk_")
     }
+    paridad_replay = paridad_riesgo.params_desde_dict(
+        trial_res.parametros,
+        salida.tipo,
+        activa=_paridad_activa(),
+    )
     try:
         senales_tf = estrategia_trial.generar_señales(ctx_trial.df_tf, params_estrategia)
         salidas_custom = (
@@ -446,10 +467,14 @@ def _replay_trial(
             senales_tf=senales_tf,
             salidas_custom=salidas_custom,
         )
+        risk_vol_exec = _preparar_volatilidad_paridad(
+            ctx=ctx_trial,
+            params=paridad_replay,
+        )
         sim_result = simular_full(
             arrays_exec,
             senales_exec,
-            sim_cfg=_sim_config(salida),
+            sim_cfg=_sim_config(salida, paridad_replay, risk_vol_exec),
             salidas_custom=salidas_exec,
         )
         indicadores = (
@@ -522,6 +547,10 @@ def _optuna_seed() -> int | None:
     return getattr(cfg, "OPTUNA_SEED", None)
 
 
+def _paridad_activa() -> bool:
+    return bool(getattr(cfg, "USAR_PARIDAD_RIESGO", False))
+
+
 def _preparar_ejecucion(
     *,
     ctx: ContextoCombinacion,
@@ -550,6 +579,31 @@ def _preparar_ejecucion(
     return ctx.arrays_base, senales_base, None
 
 
+def _preparar_volatilidad_paridad(
+    *,
+    ctx: ContextoCombinacion,
+    params: paridad_riesgo.ParametrosParidadRiesgo,
+) -> np.ndarray | None:
+    if not params.activa:
+        return None
+
+    vol_tf = paridad_riesgo.calcular_volatilidad_ewma(ctx.df_tf, params.vol_halflife)
+    if ctx.es_min_tf:
+        return _array_f64_contiguo(vol_tf)
+    vol_base = paridad_riesgo.proyectar_volatilidad_a_base(
+        vol_tf,
+        ctx.tf_to_base_idx,
+        ctx.df_base.height,
+    )
+    return _array_f64_contiguo(vol_base)
+
+
+def _array_f64_contiguo(arr: np.ndarray) -> np.ndarray:
+    if arr.dtype == np.float64 and arr.flags["C_CONTIGUOUS"]:
+        return arr
+    return np.ascontiguousarray(arr, dtype=np.float64)
+
+
 def _timeframe_ejecucion(
     *,
     ctx: ContextoCombinacion,
@@ -561,7 +615,12 @@ def _timeframe_ejecucion(
     return str(timeframe_base)
 
 
-def _sim_config(salida: ExitConfig) -> SimConfigMotor:
+def _sim_config(
+    salida: ExitConfig,
+    paridad: paridad_riesgo.ParametrosParidadRiesgo | None = None,
+    risk_vol_ewma: np.ndarray | None = None,
+) -> SimConfigMotor:
+    paridad = paridad or paridad_riesgo.ParametrosParidadRiesgo(activa=False)
     return SimConfigMotor(
         saldo_inicial=cfg.SALDO_INICIAL,
         saldo_por_trade=cfg.SALDO_USADO_POR_TRADE,
@@ -573,10 +632,37 @@ def _sim_config(salida: ExitConfig) -> SimConfigMotor:
         exit_sl_pct=salida.sl_pct,
         exit_tp_pct=salida.tp_pct,
         exit_velas=salida.velas,
+        exit_trail_act_pct=salida.trail_act_pct,
+        exit_trail_dist_pct=salida.trail_dist_pct,
+        paridad_riesgo=bool(paridad.activa),
+        paridad_riesgo_max_pct=float(paridad.riesgo_max_pct),
+        paridad_apalancamiento_min=float(getattr(cfg, "PARIDAD_APALANCAMIENTO_MIN", 1.0)),
+        paridad_apalancamiento_max=float(getattr(cfg, "PARIDAD_APALANCAMIENTO_MAX", cfg.APALANCAMIENTO)),
+        risk_vol_ewma=risk_vol_ewma,
+        exit_sl_ewma_mult=float(paridad.sl_ewma_mult),
+        exit_tp_ewma_mult=float(paridad.tp_ewma_mult),
+        exit_trail_act_ewma_mult=float(paridad.trail_act_ewma_mult),
+        exit_trail_dist_ewma_mult=float(paridad.trail_dist_ewma_mult),
+        paridad_skip_bajo_min=bool(paridad_riesgo.SKIP_SI_APALANCAMIENTO_MENOR_MIN),
     )
 
 
 def _salida_para_trial(salida: ExitConfig, trial: optuna.Trial) -> tuple[ExitConfig, dict]:
+    if _paridad_activa():
+        if salida.tipo == "BARS" and salida.optimizar:
+            velas = trial.suggest_int("exit_velas", int(salida.velas_min), int(salida.velas_max))
+            return (
+                ExitConfig(
+                    tipo="BARS",
+                    sl_pct=salida.sl_pct,
+                    tp_pct=0.0,
+                    velas=velas,
+                    optimizar=True,
+                ),
+                {"exit_velas": velas},
+            )
+        return salida, {}
+
     if not salida.optimizar:
         return salida, {}
 
@@ -594,6 +680,34 @@ def _salida_para_trial(salida: ExitConfig, trial: optuna.Trial) -> tuple[ExitCon
         return (
             ExitConfig(tipo="BARS", sl_pct=sl, tp_pct=0.0, velas=velas, optimizar=True),
             {"exit_sl_pct": sl, "exit_velas": velas},
+        )
+
+    if salida.tipo == "TRAILING":
+        sl = trial.suggest_float("exit_sl_pct", float(salida.sl_min), float(salida.sl_max), step=1.0)
+        act = trial.suggest_float(
+            "exit_trail_act_pct",
+            float(salida.trail_act_min),
+            float(salida.trail_act_max),
+            step=1.0,
+        )
+        dist = trial.suggest_float(
+            "exit_trail_dist_pct",
+            float(salida.trail_dist_min),
+            float(salida.trail_dist_max),
+            step=1.0,
+        )
+        act, dist = _normalizar_trailing(act, dist)
+        return (
+            ExitConfig(
+                tipo="TRAILING",
+                sl_pct=sl,
+                tp_pct=0.0,
+                velas=0,
+                trail_act_pct=act,
+                trail_dist_pct=dist,
+                optimizar=True,
+            ),
+            {"exit_sl_pct": sl, "exit_trail_act_pct": act, "exit_trail_dist_pct": dist},
         )
 
     if salida.tipo == "CUSTOM":
@@ -614,6 +728,9 @@ def _params_para_monitor(parametros: dict, salida: ExitConfig) -> dict:
             "__exit_sl_pct": salida.sl_pct,
             "__exit_tp_pct": salida.tp_pct,
             "__exit_velas": salida.velas,
+            "__exit_trail_act_pct": salida.trail_act_pct,
+            "__exit_trail_dist_pct": salida.trail_dist_pct,
+            "__paridad_riesgo": _paridad_activa(),
         }
     )
     return params
@@ -651,6 +768,29 @@ def _salidas_a_ejecutar():
             velas_max=int(getattr(velas, "EXIT_VELAS_MAX", 240)),
         )
 
+    if exit_type in {"TRAILING", "ALL"}:
+        from SALIDAS import trailing
+
+        act, dist = _normalizar_trailing(
+            float(trailing.EXIT_TRAIL_ACT_PCT),
+            float(trailing.EXIT_TRAIL_DIST_PCT),
+        )
+        yield ExitConfig(
+            tipo="TRAILING",
+            sl_pct=float(trailing.EXIT_SL_PCT),
+            tp_pct=0.0,
+            velas=0,
+            trail_act_pct=act,
+            trail_dist_pct=dist,
+            optimizar=bool(getattr(trailing, "OPTIMIZAR_SALIDAS", False)),
+            sl_min=float(getattr(trailing, "EXIT_SL_MIN", 5)),
+            sl_max=float(getattr(trailing, "EXIT_SL_MAX", 50)),
+            trail_act_min=float(getattr(trailing, "EXIT_TRAIL_ACT_MIN", 10)),
+            trail_act_max=float(getattr(trailing, "EXIT_TRAIL_ACT_MAX", 80)),
+            trail_dist_min=float(getattr(trailing, "EXIT_TRAIL_DIST_MIN", 2)),
+            trail_dist_max=float(getattr(trailing, "EXIT_TRAIL_DIST_MAX", 30)),
+        )
+
     if exit_type in {"CUSTOM", "ALL"}:
         from SALIDAS import personalizada
 
@@ -663,6 +803,16 @@ def _salidas_a_ejecutar():
             sl_min=float(getattr(personalizada, "EXIT_SL_MIN", 5)),
             sl_max=float(getattr(personalizada, "EXIT_SL_MAX", 50)),
         )
+
+
+def _normalizar_trailing(act_pct: float, dist_pct: float) -> tuple[float, float]:
+    act = abs(float(act_pct)) if float(act_pct) != 0.0 else 0.5
+    dist = abs(float(dist_pct)) if float(dist_pct) != 0.0 else 0.25
+    if dist >= act:
+        act, dist = dist, act
+    if act == dist:
+        act += 0.5
+    return float(act), float(dist)
 
 
 def _verificar_mejor_de_study(study: optuna.Study, resultados: list[TrialResultado]) -> None:

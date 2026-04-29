@@ -42,6 +42,7 @@ impl Direccion {
 pub enum ExitType {
     Fixed,
     Bars,
+    Trailing,
     Custom,
 }
 
@@ -50,9 +51,10 @@ impl ExitType {
         match val {
             "FIXED" => Ok(ExitType::Fixed),
             "BARS" => Ok(ExitType::Bars),
+            "TRAILING" => Ok(ExitType::Trailing),
             "CUSTOM" => Ok(ExitType::Custom),
             _ => Err(format!(
-                "EXIT_TYPE inválido: '{val}'. Opciones: FIXED, BARS, CUSTOM."
+                "EXIT_TYPE inválido: '{val}'. Opciones: FIXED, BARS, TRAILING, CUSTOM."
             )),
         }
     }
@@ -66,7 +68,8 @@ pub mod motivo {
     pub const TP: u8 = 1;
     pub const BARS: u8 = 2;
     pub const CUSTOM: u8 = 3;
-    pub const END: u8 = 4;
+    pub const TRAILING: u8 = 4;
+    pub const END: u8 = 5;
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +84,17 @@ pub struct SimConfig {
     pub exit_sl_pct: f64,
     pub exit_tp_pct: f64,
     pub exit_velas: usize,
+    pub exit_trail_act_pct: f64,
+    pub exit_trail_dist_pct: f64,
+    pub paridad_riesgo: bool,
+    pub paridad_riesgo_max_pct: f64,
+    pub paridad_apalancamiento_min: f64,
+    pub paridad_apalancamiento_max: f64,
+    pub exit_sl_ewma_mult: f64,
+    pub exit_tp_ewma_mult: f64,
+    pub exit_trail_act_ewma_mult: f64,
+    pub exit_trail_dist_ewma_mult: f64,
+    pub paridad_skip_bajo_min: bool,
 }
 
 /// Vista SoA (Struct-of-Arrays) sobre las velas. No copia datos: las slices
@@ -105,27 +119,47 @@ impl<'a> VelasSoA<'a> {
 #[derive(Debug, Clone)]
 #[pyclass(skip_from_py_object)]
 pub struct Metricas {
-    #[pyo3(get)] pub saldo_inicial: f64,
-    #[pyo3(get)] pub saldo_final: f64,
-    #[pyo3(get)] pub total_trades: u64,
-    #[pyo3(get)] pub trades_long: u64,
-    #[pyo3(get)] pub trades_short: u64,
-    #[pyo3(get)] pub trades_ganadores: u64,
-    #[pyo3(get)] pub trades_perdedores: u64,
-    #[pyo3(get)] pub trades_neutros: u64,
-    #[pyo3(get)] pub win_rate: f64,
-    #[pyo3(get)] pub roi_total: f64,
-    #[pyo3(get)] pub expectancy: f64,
-    #[pyo3(get)] pub pnl_bruto_total: f64,
-    #[pyo3(get)] pub pnl_total: f64,
-    #[pyo3(get)] pub pnl_promedio: f64,
-    #[pyo3(get)] pub max_drawdown: f64,
+    #[pyo3(get)]
+    pub saldo_inicial: f64,
+    #[pyo3(get)]
+    pub saldo_final: f64,
+    #[pyo3(get)]
+    pub total_trades: u64,
+    #[pyo3(get)]
+    pub trades_long: u64,
+    #[pyo3(get)]
+    pub trades_short: u64,
+    #[pyo3(get)]
+    pub trades_ganadores: u64,
+    #[pyo3(get)]
+    pub trades_perdedores: u64,
+    #[pyo3(get)]
+    pub trades_neutros: u64,
+    #[pyo3(get)]
+    pub win_rate: f64,
+    #[pyo3(get)]
+    pub roi_total: f64,
+    #[pyo3(get)]
+    pub expectancy: f64,
+    #[pyo3(get)]
+    pub pnl_bruto_total: f64,
+    #[pyo3(get)]
+    pub pnl_total: f64,
+    #[pyo3(get)]
+    pub pnl_promedio: f64,
+    #[pyo3(get)]
+    pub max_drawdown: f64,
     /// f64::INFINITY si hay ganancias y no hay pérdidas; 0.0 si no hay ganancias.
-    #[pyo3(get)] pub profit_factor: f64,
-    #[pyo3(get)] pub sharpe_ratio: f64,
-    #[pyo3(get)] pub duracion_media_seg: f64,
-    #[pyo3(get)] pub duracion_media_velas: f64,
-    #[pyo3(get)] pub parado_por_saldo: bool,
+    #[pyo3(get)]
+    pub profit_factor: f64,
+    #[pyo3(get)]
+    pub sharpe_ratio: f64,
+    #[pyo3(get)]
+    pub duracion_media_seg: f64,
+    #[pyo3(get)]
+    pub duracion_media_velas: f64,
+    #[pyo3(get)]
+    pub parado_por_saldo: bool,
 }
 
 impl Metricas {
@@ -174,7 +208,10 @@ pub struct SimResultFull {
     pub precio_entrada: Vec<f64>,
     pub precio_salida: Vec<f64>,
     pub colateral: Vec<f64>,
+    pub apalancamiento: Vec<f64>,
     pub tamano_posicion: Vec<f64>,
+    pub risk_vol_ewma: Vec<f64>,
+    pub risk_sl_dist_pct: Vec<f64>,
     pub comision_total: Vec<f64>,
     pub pnl: Vec<f64>,
     pub roi: Vec<f64>,
@@ -198,7 +235,10 @@ impl SimResultFull {
             precio_entrada: Vec::new(),
             precio_salida: Vec::new(),
             colateral: Vec::new(),
+            apalancamiento: Vec::new(),
             tamano_posicion: Vec::new(),
+            risk_vol_ewma: Vec::new(),
+            risk_sl_dist_pct: Vec::new(),
             comision_total: Vec::new(),
             pnl: Vec::new(),
             roi: Vec::new(),
@@ -220,7 +260,10 @@ impl SimResultFull {
         self.precio_entrada.reserve(capacidad);
         self.precio_salida.reserve(capacidad);
         self.colateral.reserve(capacidad);
+        self.apalancamiento.reserve(capacidad);
         self.tamano_posicion.reserve(capacidad);
+        self.risk_vol_ewma.reserve(capacidad);
+        self.risk_sl_dist_pct.reserve(capacidad);
         self.comision_total.reserve(capacidad);
         self.pnl.reserve(capacidad);
         self.roi.reserve(capacidad);
@@ -243,6 +286,11 @@ mod tests {
     #[test]
     fn test_exit_type_acepta_custom() {
         assert_eq!(ExitType::from_str("CUSTOM").unwrap(), ExitType::Custom);
+    }
+
+    #[test]
+    fn test_exit_type_acepta_trailing() {
+        assert_eq!(ExitType::from_str("TRAILING").unwrap(), ExitType::Trailing);
     }
 
     #[test]

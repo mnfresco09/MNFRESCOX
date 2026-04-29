@@ -25,7 +25,7 @@ MOTOR_DIR = Path(__file__).resolve().parent
 EXTENSION_NAME = "motor_backtesting"
 
 # Códigos compactos del motor → strings (mismo orden que `tipos::motivo` en Rust).
-MOTIVOS = ("SL", "TP", "BARS", "CUSTOM", "END")
+MOTIVOS = ("SL", "TP", "BARS", "CUSTOM", "TRAILING", "END")
 
 
 def simular_metricas(arrays, senales, *, sim_cfg, salidas_custom=None):
@@ -38,13 +38,15 @@ def simular_metricas(arrays, senales, *, sim_cfg, salidas_custom=None):
     motor = cargar_motor()
     salidas = arrays.salidas_neutras if salidas_custom is None else _ensure_int8(salidas_custom)
     senales_arr = _ensure_int8(senales)
-    _validar_longitud(arrays, senales_arr, salidas)
+    risk_vol = _risk_vol_array(arrays, sim_cfg)
+    _validar_longitud(arrays, senales_arr, salidas, risk_vol)
     return motor.simulate_metrics(
         arrays.timestamps,
         arrays.opens,
         arrays.highs,
         arrays.lows,
         arrays.closes,
+        risk_vol,
         senales_arr,
         salidas,
         float(sim_cfg.saldo_inicial),
@@ -57,6 +59,17 @@ def simular_metricas(arrays, senales, *, sim_cfg, salidas_custom=None):
         float(sim_cfg.exit_sl_pct),
         float(sim_cfg.exit_tp_pct),
         int(sim_cfg.exit_velas),
+        float(getattr(sim_cfg, "exit_trail_act_pct", 0.0)),
+        float(getattr(sim_cfg, "exit_trail_dist_pct", 0.0)),
+        bool(getattr(sim_cfg, "paridad_riesgo", False)),
+        float(getattr(sim_cfg, "paridad_riesgo_max_pct", 0.0)),
+        float(getattr(sim_cfg, "paridad_apalancamiento_min", 1.0)),
+        float(getattr(sim_cfg, "paridad_apalancamiento_max", 1.0)),
+        float(getattr(sim_cfg, "exit_sl_ewma_mult", 0.0)),
+        float(getattr(sim_cfg, "exit_tp_ewma_mult", 0.0)),
+        float(getattr(sim_cfg, "exit_trail_act_ewma_mult", 0.0)),
+        float(getattr(sim_cfg, "exit_trail_dist_ewma_mult", 0.0)),
+        bool(getattr(sim_cfg, "paridad_skip_bajo_min", True)),
     )
 
 
@@ -70,13 +83,15 @@ def simular_full(arrays, senales, *, sim_cfg, salidas_custom=None):
     motor = cargar_motor()
     salidas = arrays.salidas_neutras if salidas_custom is None else _ensure_int8(salidas_custom)
     senales_arr = _ensure_int8(senales)
-    _validar_longitud(arrays, senales_arr, salidas)
+    risk_vol = _risk_vol_array(arrays, sim_cfg)
+    _validar_longitud(arrays, senales_arr, salidas, risk_vol)
     return motor.simulate_full(
         arrays.timestamps,
         arrays.opens,
         arrays.highs,
         arrays.lows,
         arrays.closes,
+        risk_vol,
         senales_arr,
         salidas,
         float(sim_cfg.saldo_inicial),
@@ -89,6 +104,17 @@ def simular_full(arrays, senales, *, sim_cfg, salidas_custom=None):
         float(sim_cfg.exit_sl_pct),
         float(sim_cfg.exit_tp_pct),
         int(sim_cfg.exit_velas),
+        float(getattr(sim_cfg, "exit_trail_act_pct", 0.0)),
+        float(getattr(sim_cfg, "exit_trail_dist_pct", 0.0)),
+        bool(getattr(sim_cfg, "paridad_riesgo", False)),
+        float(getattr(sim_cfg, "paridad_riesgo_max_pct", 0.0)),
+        float(getattr(sim_cfg, "paridad_apalancamiento_min", 1.0)),
+        float(getattr(sim_cfg, "paridad_apalancamiento_max", 1.0)),
+        float(getattr(sim_cfg, "exit_sl_ewma_mult", 0.0)),
+        float(getattr(sim_cfg, "exit_tp_ewma_mult", 0.0)),
+        float(getattr(sim_cfg, "exit_trail_act_ewma_mult", 0.0)),
+        float(getattr(sim_cfg, "exit_trail_dist_ewma_mult", 0.0)),
+        bool(getattr(sim_cfg, "paridad_skip_bajo_min", True)),
     )
 
 
@@ -117,7 +143,36 @@ def _ensure_int8(serie_o_array) -> np.ndarray:
     return arr
 
 
-def _validar_longitud(arrays, senales: np.ndarray, salidas: np.ndarray) -> None:
+def _risk_vol_array(arrays, sim_cfg) -> np.ndarray:
+    if bool(getattr(sim_cfg, "paridad_riesgo", False)):
+        risk_vol = getattr(sim_cfg, "risk_vol_ewma", None)
+        if risk_vol is None:
+            raise ValueError("[PARIDAD] Falta risk_vol_ewma en SimConfigMotor.")
+        return _ensure_float64(risk_vol)
+    # Buffer f64 ya existente, sin asignar un array nuevo por trial.
+    volumes = getattr(arrays, "volumes", None)
+    if volumes is not None:
+        return _ensure_float64(volumes)
+    return np.zeros(arrays.timestamps.shape[0], dtype=np.float64)
+
+
+def _ensure_float64(serie_o_array) -> np.ndarray:
+    if isinstance(serie_o_array, np.ndarray):
+        if serie_o_array.dtype == np.float64 and serie_o_array.flags["C_CONTIGUOUS"]:
+            return serie_o_array
+        return np.ascontiguousarray(serie_o_array, dtype=np.float64)
+    arr = serie_o_array.to_numpy()
+    if arr.dtype != np.float64 or not arr.flags["C_CONTIGUOUS"]:
+        arr = np.ascontiguousarray(arr, dtype=np.float64)
+    return arr
+
+
+def _validar_longitud(
+    arrays,
+    senales: np.ndarray,
+    salidas: np.ndarray,
+    risk_vol: np.ndarray,
+) -> None:
     n = arrays.timestamps.shape[0]
     if senales.shape[0] != n:
         raise ValueError(
@@ -126,6 +181,10 @@ def _validar_longitud(arrays, senales: np.ndarray, salidas: np.ndarray) -> None:
     if salidas.shape[0] != n:
         raise ValueError(
             f"Arrays y salidas no coinciden: arrays={n:,}, salidas={salidas.shape[0]:,}."
+        )
+    if risk_vol.shape[0] != n:
+        raise ValueError(
+            f"Arrays y risk_vol_ewma no coinciden: arrays={n:,}, risk_vol={risk_vol.shape[0]:,}."
         )
 
 

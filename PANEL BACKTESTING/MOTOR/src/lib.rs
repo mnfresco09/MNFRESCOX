@@ -31,10 +31,18 @@ fn validar_longitudes(
     highs: usize,
     lows: usize,
     closes: usize,
+    risk_vol_ewma: usize,
     senales: usize,
     salidas_custom: usize,
 ) -> PyResult<()> {
-    if opens != n || highs != n || lows != n || closes != n || senales != n || salidas_custom != n {
+    if opens != n
+        || highs != n
+        || lows != n
+        || closes != n
+        || risk_vol_ewma != n
+        || senales != n
+        || salidas_custom != n
+    {
         return value_error(
             "Todas las columnas deben tener el mismo número de filas que `timestamps`.",
         );
@@ -57,6 +65,17 @@ fn construir_config(
     exit_sl_pct: f64,
     exit_tp_pct: f64,
     exit_velas: usize,
+    exit_trail_act_pct: f64,
+    exit_trail_dist_pct: f64,
+    paridad_riesgo: bool,
+    paridad_riesgo_max_pct: f64,
+    paridad_apalancamiento_min: f64,
+    paridad_apalancamiento_max: f64,
+    exit_sl_ewma_mult: f64,
+    exit_tp_ewma_mult: f64,
+    exit_trail_act_ewma_mult: f64,
+    exit_trail_dist_ewma_mult: f64,
+    paridad_skip_bajo_min: bool,
 ) -> PyResult<SimConfig> {
     if !saldo_inicial.is_finite() || saldo_inicial <= 0.0 {
         return value_error("saldo_inicial debe ser finito y mayor que 0.");
@@ -73,7 +92,7 @@ fn construir_config(
     if !saldo_minimo.is_finite() || saldo_minimo < 0.0 {
         return value_error("saldo_minimo debe ser finito y >= 0.");
     }
-    if !comision_pct.is_finite() || !(0.0..1.0).contains(&comision_pct) {
+    if !comision_pct.is_finite() || comision_pct < 0.0 || comision_pct >= 1.0 {
         return value_error("comision_pct debe ser finito y estar entre 0 y 1.");
     }
     if comision_lados != 1 && comision_lados != 2 {
@@ -85,13 +104,50 @@ fn construir_config(
     if !exit_tp_pct.is_finite() || exit_tp_pct < 0.0 {
         return value_error("exit_tp_pct debe ser finito y >= 0.");
     }
+    if !exit_trail_act_pct.is_finite() || exit_trail_act_pct < 0.0 {
+        return value_error("exit_trail_act_pct debe ser finito y >= 0.");
+    }
+    if !exit_trail_dist_pct.is_finite() || exit_trail_dist_pct < 0.0 {
+        return value_error("exit_trail_dist_pct debe ser finito y >= 0.");
+    }
+    if !paridad_apalancamiento_min.is_finite() || paridad_apalancamiento_min <= 0.0 {
+        return value_error("paridad_apalancamiento_min debe ser finito y > 0.");
+    }
+    if !paridad_apalancamiento_max.is_finite() || paridad_apalancamiento_max <= 0.0 {
+        return value_error("paridad_apalancamiento_max debe ser finito y > 0.");
+    }
+    if paridad_apalancamiento_min > paridad_apalancamiento_max {
+        return value_error(
+            "paridad_apalancamiento_min no puede ser mayor que paridad_apalancamiento_max.",
+        );
+    }
+    if paridad_riesgo {
+        if !paridad_riesgo_max_pct.is_finite() || paridad_riesgo_max_pct <= 0.0 {
+            return value_error("paridad_riesgo_max_pct debe ser finito y > 0.");
+        }
+        if !exit_sl_ewma_mult.is_finite() || exit_sl_ewma_mult <= 0.0 {
+            return value_error("paridad activa requiere exit_sl_ewma_mult > 0.");
+        }
+        if !exit_tp_ewma_mult.is_finite() || exit_tp_ewma_mult < 0.0 {
+            return value_error("exit_tp_ewma_mult debe ser finito y >= 0.");
+        }
+        if !exit_trail_act_ewma_mult.is_finite() || exit_trail_act_ewma_mult < 0.0 {
+            return value_error("exit_trail_act_ewma_mult debe ser finito y >= 0.");
+        }
+        if !exit_trail_dist_ewma_mult.is_finite() || exit_trail_dist_ewma_mult < 0.0 {
+            return value_error("exit_trail_dist_ewma_mult debe ser finito y >= 0.");
+        }
+    }
     let parsed = ExitType::from_str(exit_type).map_err(pyo3::exceptions::PyValueError::new_err)?;
     match parsed {
         ExitType::Fixed => {
-            if exit_sl_pct <= 0.0 {
+            if !paridad_riesgo && exit_sl_pct <= 0.0 {
                 return value_error("FIXED requiere exit_sl_pct > 0.");
             }
-            if exit_tp_pct <= 0.0 {
+            if paridad_riesgo && exit_tp_ewma_mult <= 0.0 {
+                return value_error("FIXED con paridad requiere exit_tp_ewma_mult > 0.");
+            }
+            if !paridad_riesgo && exit_tp_pct <= 0.0 {
                 return value_error("FIXED requiere exit_tp_pct > 0.");
             }
         }
@@ -100,8 +156,44 @@ fn construir_config(
                 return value_error("BARS requiere exit_velas > 0.");
             }
         }
+        ExitType::Trailing => {
+            if !paridad_riesgo && exit_sl_pct <= 0.0 {
+                return value_error("TRAILING requiere exit_sl_pct > 0.");
+            }
+            if exit_tp_pct > 0.0 {
+                return value_error("TRAILING no usa exit_tp_pct; debe ser 0.");
+            }
+            if exit_velas != 0 {
+                return value_error("TRAILING no usa exit_velas; debe ser 0.");
+            }
+            if paridad_riesgo {
+                if exit_trail_act_ewma_mult <= 0.0 {
+                    return value_error(
+                        "TRAILING con paridad requiere exit_trail_act_ewma_mult > 0.",
+                    );
+                }
+                if exit_trail_dist_ewma_mult <= 0.0 {
+                    return value_error(
+                        "TRAILING con paridad requiere exit_trail_dist_ewma_mult > 0.",
+                    );
+                }
+                if exit_trail_dist_ewma_mult >= exit_trail_act_ewma_mult {
+                    return value_error(
+                        "TRAILING con paridad requiere exit_trail_dist_ewma_mult < exit_trail_act_ewma_mult.",
+                    );
+                }
+            } else if exit_trail_act_pct <= 0.0 {
+                return value_error("TRAILING requiere exit_trail_act_pct > 0.");
+            }
+            if !paridad_riesgo && exit_trail_dist_pct <= 0.0 {
+                return value_error("TRAILING requiere exit_trail_dist_pct > 0.");
+            }
+            if !paridad_riesgo && exit_trail_dist_pct >= exit_trail_act_pct {
+                return value_error("TRAILING requiere exit_trail_dist_pct < exit_trail_act_pct.");
+            }
+        }
         ExitType::Custom => {
-            if exit_sl_pct <= 0.0 {
+            if !paridad_riesgo && exit_sl_pct <= 0.0 {
                 return value_error("CUSTOM requiere exit_sl_pct > 0.");
             }
             if exit_tp_pct > 0.0 {
@@ -123,6 +215,17 @@ fn construir_config(
         exit_sl_pct,
         exit_tp_pct,
         exit_velas,
+        exit_trail_act_pct,
+        exit_trail_dist_pct,
+        paridad_riesgo,
+        paridad_riesgo_max_pct,
+        paridad_apalancamiento_min,
+        paridad_apalancamiento_max,
+        exit_sl_ewma_mult,
+        exit_tp_ewma_mult,
+        exit_trail_act_ewma_mult,
+        exit_trail_dist_ewma_mult,
+        paridad_skip_bajo_min,
     })
 }
 
@@ -131,10 +234,13 @@ fn construir_config(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 #[pyo3(signature = (
-    timestamps, opens, highs, lows, closes, senales, salidas_custom,
+    timestamps, opens, highs, lows, closes, risk_vol_ewma, senales, salidas_custom,
     saldo_inicial, saldo_por_trade, apalancamiento, saldo_minimo,
     comision_pct, comision_lados,
-    exit_type, exit_sl_pct, exit_tp_pct, exit_velas
+    exit_type, exit_sl_pct, exit_tp_pct, exit_velas, exit_trail_act_pct, exit_trail_dist_pct,
+    paridad_riesgo, paridad_riesgo_max_pct, paridad_apalancamiento_min,
+    paridad_apalancamiento_max, exit_sl_ewma_mult, exit_tp_ewma_mult,
+    exit_trail_act_ewma_mult, exit_trail_dist_ewma_mult, paridad_skip_bajo_min
 ))]
 fn simulate_metrics<'py>(
     py: Python<'py>,
@@ -143,6 +249,7 @@ fn simulate_metrics<'py>(
     highs: PyReadonlyArray1<'py, f64>,
     lows: PyReadonlyArray1<'py, f64>,
     closes: PyReadonlyArray1<'py, f64>,
+    risk_vol_ewma: PyReadonlyArray1<'py, f64>,
     senales: PyReadonlyArray1<'py, i8>,
     salidas_custom: PyReadonlyArray1<'py, i8>,
     saldo_inicial: f64,
@@ -155,15 +262,36 @@ fn simulate_metrics<'py>(
     exit_sl_pct: f64,
     exit_tp_pct: f64,
     exit_velas: usize,
+    exit_trail_act_pct: f64,
+    exit_trail_dist_pct: f64,
+    paridad_riesgo: bool,
+    paridad_riesgo_max_pct: f64,
+    paridad_apalancamiento_min: f64,
+    paridad_apalancamiento_max: f64,
+    exit_sl_ewma_mult: f64,
+    exit_tp_ewma_mult: f64,
+    exit_trail_act_ewma_mult: f64,
+    exit_trail_dist_ewma_mult: f64,
+    paridad_skip_bajo_min: bool,
 ) -> PyResult<Metricas> {
     let ts = timestamps.as_slice()?;
     let op = opens.as_slice()?;
     let hi = highs.as_slice()?;
     let lo = lows.as_slice()?;
     let cl = closes.as_slice()?;
+    let rv = risk_vol_ewma.as_slice()?;
     let se = senales.as_slice()?;
     let sx = salidas_custom.as_slice()?;
-    validar_longitudes(ts.len(), op.len(), hi.len(), lo.len(), cl.len(), se.len(), sx.len())?;
+    validar_longitudes(
+        ts.len(),
+        op.len(),
+        hi.len(),
+        lo.len(),
+        cl.len(),
+        rv.len(),
+        se.len(),
+        sx.len(),
+    )?;
 
     let config = construir_config(
         saldo_inicial,
@@ -176,6 +304,17 @@ fn simulate_metrics<'py>(
         exit_sl_pct,
         exit_tp_pct,
         exit_velas,
+        exit_trail_act_pct,
+        exit_trail_dist_pct,
+        paridad_riesgo,
+        paridad_riesgo_max_pct,
+        paridad_apalancamiento_min,
+        paridad_apalancamiento_max,
+        exit_sl_ewma_mult,
+        exit_tp_ewma_mult,
+        exit_trail_act_ewma_mult,
+        exit_trail_dist_ewma_mult,
+        paridad_skip_bajo_min,
     )?;
 
     let velas = VelasSoA {
@@ -186,7 +325,7 @@ fn simulate_metrics<'py>(
         closes: cl,
     };
 
-    let metricas = py.detach(|| simulador::simular_metricas(velas, se, sx, &config));
+    let metricas = py.detach(|| simulador::simular_metricas(velas, rv, se, sx, &config));
     Ok(metricas)
 }
 
@@ -211,14 +350,24 @@ impl SimResult {
             .clone())
     }
 
-    #[getter] fn saldo_inicial(&self) -> PyResult<f64> { self.metricas().map(|m| m.saldo_inicial) }
-    #[getter] fn saldo_final(&self)   -> PyResult<f64> { self.metricas().map(|m| m.saldo_final) }
-    #[getter] fn parado_por_saldo(&self) -> PyResult<bool> { self.metricas().map(|m| m.parado_por_saldo) }
+    #[getter]
+    fn saldo_inicial(&self) -> PyResult<f64> {
+        self.metricas().map(|m| m.saldo_inicial)
+    }
+    #[getter]
+    fn saldo_final(&self) -> PyResult<f64> {
+        self.metricas().map(|m| m.saldo_final)
+    }
+    #[getter]
+    fn parado_por_saldo(&self) -> PyResult<bool> {
+        self.metricas().map(|m| m.parado_por_saldo)
+    }
 
     fn equity_curve<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let r = self.inner.as_ref().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("SimResult ya consumido")
-        })?;
+        let r = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("SimResult ya consumido"))?;
         Ok(PyArray1::from_slice(py, &r.equity_curve))
     }
 
@@ -226,9 +375,10 @@ impl SimResult {
     /// Consume el SimResult: tras llamarlo, los buffers internos quedan vacíos
     /// para liberar memoria inmediatamente.
     fn take_trades<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-        let r = self.inner.take().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("SimResult ya consumido")
-        })?;
+        let r = self
+            .inner
+            .take()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("SimResult ya consumido"))?;
         let dict = pyo3::types::PyDict::new(py);
         dict.set_item("idx_senal", r.idx_senal.into_pyarray(py))?;
         dict.set_item("idx_entrada", r.idx_entrada.into_pyarray(py))?;
@@ -240,7 +390,10 @@ impl SimResult {
         dict.set_item("precio_entrada", r.precio_entrada.into_pyarray(py))?;
         dict.set_item("precio_salida", r.precio_salida.into_pyarray(py))?;
         dict.set_item("colateral", r.colateral.into_pyarray(py))?;
+        dict.set_item("apalancamiento", r.apalancamiento.into_pyarray(py))?;
         dict.set_item("tamano_posicion", r.tamano_posicion.into_pyarray(py))?;
+        dict.set_item("risk_vol_ewma", r.risk_vol_ewma.into_pyarray(py))?;
+        dict.set_item("risk_sl_dist_pct", r.risk_sl_dist_pct.into_pyarray(py))?;
         dict.set_item("comision_total", r.comision_total.into_pyarray(py))?;
         dict.set_item("pnl", r.pnl.into_pyarray(py))?;
         dict.set_item("roi", r.roi.into_pyarray(py))?;
@@ -255,10 +408,13 @@ impl SimResult {
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 #[pyo3(signature = (
-    timestamps, opens, highs, lows, closes, senales, salidas_custom,
+    timestamps, opens, highs, lows, closes, risk_vol_ewma, senales, salidas_custom,
     saldo_inicial, saldo_por_trade, apalancamiento, saldo_minimo,
     comision_pct, comision_lados,
-    exit_type, exit_sl_pct, exit_tp_pct, exit_velas
+    exit_type, exit_sl_pct, exit_tp_pct, exit_velas, exit_trail_act_pct, exit_trail_dist_pct,
+    paridad_riesgo, paridad_riesgo_max_pct, paridad_apalancamiento_min,
+    paridad_apalancamiento_max, exit_sl_ewma_mult, exit_tp_ewma_mult,
+    exit_trail_act_ewma_mult, exit_trail_dist_ewma_mult, paridad_skip_bajo_min
 ))]
 fn simulate_full<'py>(
     py: Python<'py>,
@@ -267,6 +423,7 @@ fn simulate_full<'py>(
     highs: PyReadonlyArray1<'py, f64>,
     lows: PyReadonlyArray1<'py, f64>,
     closes: PyReadonlyArray1<'py, f64>,
+    risk_vol_ewma: PyReadonlyArray1<'py, f64>,
     senales: PyReadonlyArray1<'py, i8>,
     salidas_custom: PyReadonlyArray1<'py, i8>,
     saldo_inicial: f64,
@@ -279,15 +436,36 @@ fn simulate_full<'py>(
     exit_sl_pct: f64,
     exit_tp_pct: f64,
     exit_velas: usize,
+    exit_trail_act_pct: f64,
+    exit_trail_dist_pct: f64,
+    paridad_riesgo: bool,
+    paridad_riesgo_max_pct: f64,
+    paridad_apalancamiento_min: f64,
+    paridad_apalancamiento_max: f64,
+    exit_sl_ewma_mult: f64,
+    exit_tp_ewma_mult: f64,
+    exit_trail_act_ewma_mult: f64,
+    exit_trail_dist_ewma_mult: f64,
+    paridad_skip_bajo_min: bool,
 ) -> PyResult<SimResult> {
     let ts = timestamps.as_slice()?;
     let op = opens.as_slice()?;
     let hi = highs.as_slice()?;
     let lo = lows.as_slice()?;
     let cl = closes.as_slice()?;
+    let rv = risk_vol_ewma.as_slice()?;
     let se = senales.as_slice()?;
     let sx = salidas_custom.as_slice()?;
-    validar_longitudes(ts.len(), op.len(), hi.len(), lo.len(), cl.len(), se.len(), sx.len())?;
+    validar_longitudes(
+        ts.len(),
+        op.len(),
+        hi.len(),
+        lo.len(),
+        cl.len(),
+        rv.len(),
+        se.len(),
+        sx.len(),
+    )?;
 
     let config = construir_config(
         saldo_inicial,
@@ -300,6 +478,17 @@ fn simulate_full<'py>(
         exit_sl_pct,
         exit_tp_pct,
         exit_velas,
+        exit_trail_act_pct,
+        exit_trail_dist_pct,
+        paridad_riesgo,
+        paridad_riesgo_max_pct,
+        paridad_apalancamiento_min,
+        paridad_apalancamiento_max,
+        exit_sl_ewma_mult,
+        exit_tp_ewma_mult,
+        exit_trail_act_ewma_mult,
+        exit_trail_dist_ewma_mult,
+        paridad_skip_bajo_min,
     )?;
 
     let velas = VelasSoA {
@@ -310,7 +499,7 @@ fn simulate_full<'py>(
         closes: cl,
     };
 
-    let full = py.detach(|| simulador::simular_full(velas, se, sx, &config));
+    let full = py.detach(|| simulador::simular_full(velas, rv, se, sx, &config));
     Ok(SimResult { inner: Some(full) })
 }
 

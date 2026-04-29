@@ -48,6 +48,18 @@ class SimConfigMotor:
     exit_sl_pct: float
     exit_tp_pct: float
     exit_velas: int
+    exit_trail_act_pct: float = 0.0
+    exit_trail_dist_pct: float = 0.0
+    paridad_riesgo: bool = False
+    paridad_riesgo_max_pct: float = 0.0
+    paridad_apalancamiento_min: float = 1.0
+    paridad_apalancamiento_max: float = 1.0
+    risk_vol_ewma: np.ndarray | None = None
+    exit_sl_ewma_mult: float = 0.0
+    exit_tp_ewma_mult: float = 0.0
+    exit_trail_act_ewma_mult: float = 0.0
+    exit_trail_dist_ewma_mult: float = 0.0
+    paridad_skip_bajo_min: bool = True
 
 
 @dataclass(frozen=True)

@@ -70,6 +70,15 @@ pub fn calcular_precio_tp(
     }
 }
 
+#[inline]
+pub fn calcular_distancia_por_pct_colateral(
+    precio_entrada: f64,
+    pct_colateral: f64,
+    apalancamiento: f64,
+) -> f64 {
+    precio_entrada * pct_colateral / 100.0 / apalancamiento
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,5 +121,11 @@ mod tests {
     fn test_precio_tp_long() {
         let tp = calcular_precio_tp(Direccion::Long, 50_000.0, 40.0, 10.0);
         assert!((tp - 52_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_distancia_pct_colateral() {
+        let distancia = calcular_distancia_por_pct_colateral(50_000.0, 6.0, 10.0);
+        assert!((distancia - 300.0).abs() < 1e-10);
     }
 }

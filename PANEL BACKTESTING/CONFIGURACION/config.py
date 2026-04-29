@@ -45,19 +45,30 @@ ESTRATEGIA_ID = 4
 # ---------------------------------------------------------------------------
 SALDO_INICIAL          = 10_000     # Capital inicial en USD
 SALDO_USADO_POR_TRADE  = 500        # Colateral por operación en USD
-APALANCAMIENTO         = 10         # Multiplicador sobre el colateral
+APALANCAMIENTO         = 35         # Multiplicador sobre el colateral
 SALDO_MINIMO_OPERATIVO = 1_000      # El backtest para si el saldo cae aquí
 COMISION_PCT           = 0.0005     # 0.05% por operación (ej. Binance taker)
 COMISION_LADOS         = 2          # 1 = solo apertura | 2 = apertura y cierre
+
+# ---------------------------------------------------------------------------
+# PARIDAD DE RIESGO
+# ---------------------------------------------------------------------------
+# False = usa APALANCAMIENTO y porcentajes de SALIDAS como hasta ahora.
+# True  = usa volatilidad EWMA para calcular SL/TP y apalancamiento por trade.
+USAR_PARIDAD_RIESGO = False
+OPTIMIZAR_PARIDAD_RIESGO = True
+PARIDAD_APALANCAMIENTO_MIN = 1.0
+PARIDAD_APALANCAMIENTO_MAX = 50.0
 
 # ---------------------------------------------------------------------------
 # SALIDAS
 # ---------------------------------------------------------------------------
 # "FIXED" → Stop Loss y Take Profit fijos       → parámetros en SALIDAS/fijo.py
 # "BARS"  → Cierre por número máximo de velas   → parámetros en SALIDAS/velas.py
+# "TRAILING" → SL de seguridad + trailing stop  → parámetros en SALIDAS/trailing.py
 # "CUSTOM"→ Cierre por generar_salidas()         → parámetros en SALIDAS/personalizada.py
 # "ALL"   → Ejecuta todos por separado y guarda cada resultado
-EXIT_TYPE = "FIXED"
+EXIT_TYPE = "TRAILING"
 
 # ---------------------------------------------------------------------------
 # OPTIMIZACIÓN (OPTUNA)

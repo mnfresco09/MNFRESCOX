@@ -22,7 +22,10 @@ struct TradeAbierto {
     direccion: Direccion,
     precio_entrada: f64,
     colateral: f64,
+    apalancamiento: f64,
     tamano_posicion: f64,
+    risk_vol_ewma: f64,
+    risk_sl_dist_pct: f64,
     /// Comisión cobrada al abrir (sobre nocional de entrada). Es fija y
     /// se conoce nada más entrar.
     comision_entrada: f64,
@@ -33,8 +36,23 @@ struct TradeAbierto {
     comision_lados: u8,
     precio_sl: f64,
     precio_tp: f64,
+    trail_act_price: f64,
+    trail_dist_price: f64,
+    trail_stop: f64,
+    trail_best_price: f64,
+    trailing_activo: bool,
     max_velas: usize,
     usar_custom: bool,
+}
+
+struct RiesgoEntrada {
+    apalancamiento: f64,
+    precio_sl: f64,
+    precio_tp: f64,
+    trail_act_price: f64,
+    trail_dist_price: f64,
+    risk_vol_ewma: f64,
+    risk_sl_dist_pct: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -49,7 +67,10 @@ pub struct TradeEvent {
     pub precio_entrada: f64,
     pub precio_salida: f64,
     pub colateral: f64,
+    pub apalancamiento: f64,
     pub tamano_posicion: f64,
+    pub risk_vol_ewma: f64,
+    pub risk_sl_dist_pct: f64,
     pub comision_total: f64,
     pub pnl: f64,
     pub roi: f64,
@@ -213,12 +234,21 @@ impl Acumuladores {
 /// Versión "slim": sólo devuelve métricas. Usada por Optuna en cada trial.
 pub fn simular_metricas(
     velas: VelasSoA,
+    risk_vol_ewma: &[f64],
     senales: &[i8],
     salidas_custom: &[i8],
     config: &SimConfig,
 ) -> Metricas {
     let mut acc = Acumuladores::nuevo(config.saldo_inicial);
-    simular_core(velas, senales, salidas_custom, config, &mut acc, |_| {});
+    simular_core(
+        velas,
+        risk_vol_ewma,
+        senales,
+        salidas_custom,
+        config,
+        &mut acc,
+        |_| {},
+    );
     acc.finalizar()
 }
 
@@ -226,6 +256,7 @@ pub fn simular_metricas(
 /// Sólo se usa en el replay de los top-N trials para alimentar reportes.
 pub fn simular_full(
     velas: VelasSoA,
+    risk_vol_ewma: &[f64],
     senales: &[i8],
     salidas_custom: &[i8],
     config: &SimConfig,
@@ -235,26 +266,37 @@ pub fn simular_full(
     // Estimación grosera: como mucho un trade cada 2 velas.
     full.reservar((velas.len() / 2).max(64));
 
-    simular_core(velas, senales, salidas_custom, config, &mut acc, |ev| {
-        full.idx_senal.push(ev.idx_senal as u64);
-        full.idx_entrada.push(ev.idx_entrada as u64);
-        full.idx_salida.push(ev.idx_salida as u64);
-        full.ts_senal.push(ev.ts_senal);
-        full.ts_entrada.push(ev.ts_entrada);
-        full.ts_salida.push(ev.ts_salida);
-        full.direccion.push(ev.direccion.as_i8());
-        full.precio_entrada.push(ev.precio_entrada);
-        full.precio_salida.push(ev.precio_salida);
-        full.colateral.push(ev.colateral);
-        full.tamano_posicion.push(ev.tamano_posicion);
-        full.comision_total.push(ev.comision_total);
-        full.pnl.push(ev.pnl);
-        full.roi.push(ev.roi);
-        full.saldo_post.push(ev.saldo_post);
-        full.motivo_salida.push(ev.motivo);
-        full.duracion_velas.push(ev.duracion_velas as u64);
-        full.equity_curve.push(ev.saldo_post);
-    });
+    simular_core(
+        velas,
+        risk_vol_ewma,
+        senales,
+        salidas_custom,
+        config,
+        &mut acc,
+        |ev| {
+            full.idx_senal.push(ev.idx_senal as u64);
+            full.idx_entrada.push(ev.idx_entrada as u64);
+            full.idx_salida.push(ev.idx_salida as u64);
+            full.ts_senal.push(ev.ts_senal);
+            full.ts_entrada.push(ev.ts_entrada);
+            full.ts_salida.push(ev.ts_salida);
+            full.direccion.push(ev.direccion.as_i8());
+            full.precio_entrada.push(ev.precio_entrada);
+            full.precio_salida.push(ev.precio_salida);
+            full.colateral.push(ev.colateral);
+            full.apalancamiento.push(ev.apalancamiento);
+            full.tamano_posicion.push(ev.tamano_posicion);
+            full.risk_vol_ewma.push(ev.risk_vol_ewma);
+            full.risk_sl_dist_pct.push(ev.risk_sl_dist_pct);
+            full.comision_total.push(ev.comision_total);
+            full.pnl.push(ev.pnl);
+            full.roi.push(ev.roi);
+            full.saldo_post.push(ev.saldo_post);
+            full.motivo_salida.push(ev.motivo);
+            full.duracion_velas.push(ev.duracion_velas as u64);
+            full.equity_curve.push(ev.saldo_post);
+        },
+    );
 
     full.metricas = acc.finalizar();
     full
@@ -262,6 +304,7 @@ pub fn simular_full(
 
 fn simular_core<F>(
     velas: VelasSoA,
+    risk_vol_ewma: &[f64],
     senales: &[i8],
     salidas_custom: &[i8],
     config: &SimConfig,
@@ -276,6 +319,10 @@ fn simular_core<F>(
         n,
         salidas_custom.len(),
         "velas y salidas_custom deben coincidir"
+    );
+    debug_assert!(
+        !config.paridad_riesgo || n == risk_vol_ewma.len(),
+        "velas y risk_vol_ewma deben coincidir con paridad activa"
     );
 
     let mut trade_abierto: Option<TradeAbierto> = None;
@@ -309,33 +356,23 @@ fn simular_core<F>(
                 }
                 let precio_entrada = velas.opens[i];
                 let colateral = config.saldo_por_trade;
+                let vol_senal = if config.paridad_riesgo {
+                    risk_vol_ewma.get(idx_senal).copied().unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+                let Some(riesgo) =
+                    resolver_riesgo_entrada(config, direccion, precio_entrada, vol_senal)
+                else {
+                    continue;
+                };
                 let tamano = capital::calcular_tamano_posicion(
                     colateral,
-                    config.apalancamiento,
+                    riesgo.apalancamiento,
                     precio_entrada,
                 );
                 let comision_entrada =
                     capital::comision_lado(tamano, precio_entrada, config.comision_pct);
-                let precio_sl = if config.exit_sl_pct > 0.0 {
-                    capital::calcular_precio_sl(
-                        direccion,
-                        precio_entrada,
-                        config.exit_sl_pct,
-                        config.apalancamiento,
-                    )
-                } else {
-                    0.0
-                };
-                let precio_tp = if config.exit_type == ExitType::Fixed && config.exit_tp_pct > 0.0 {
-                    capital::calcular_precio_tp(
-                        direccion,
-                        precio_entrada,
-                        config.exit_tp_pct,
-                        config.apalancamiento,
-                    )
-                } else {
-                    0.0
-                };
                 let max_velas = if config.exit_type == ExitType::Bars {
                     config.exit_velas
                 } else {
@@ -349,12 +386,20 @@ fn simular_core<F>(
                     direccion,
                     precio_entrada,
                     colateral,
+                    apalancamiento: riesgo.apalancamiento,
                     tamano_posicion: tamano,
+                    risk_vol_ewma: riesgo.risk_vol_ewma,
+                    risk_sl_dist_pct: riesgo.risk_sl_dist_pct,
                     comision_entrada,
                     comision_pct: config.comision_pct,
                     comision_lados: config.comision_lados,
-                    precio_sl,
-                    precio_tp,
+                    precio_sl: riesgo.precio_sl,
+                    precio_tp: riesgo.precio_tp,
+                    trail_act_price: riesgo.trail_act_price,
+                    trail_dist_price: riesgo.trail_dist_price,
+                    trail_stop: 0.0,
+                    trail_best_price: precio_entrada,
+                    trailing_activo: false,
                     max_velas,
                     usar_custom,
                 });
@@ -362,7 +407,7 @@ fn simular_core<F>(
         }
 
         // 3. CERRAR por reglas intrabar o de tiempo (si aplica)
-        if let Some(ref trade) = trade_abierto {
+        if let Some(ref mut trade) = trade_abierto {
             let velas_transcurridas = i - trade.idx_entrada + 1;
             if let Some((precio_salida, motivo)) = evaluar_salida(
                 trade,
@@ -461,7 +506,10 @@ fn construir_evento(
         precio_entrada: trade.precio_entrada,
         precio_salida,
         colateral: trade.colateral,
+        apalancamiento: trade.apalancamiento,
         tamano_posicion: trade.tamano_posicion,
+        risk_vol_ewma: trade.risk_vol_ewma,
+        risk_sl_dist_pct: trade.risk_sl_dist_pct,
         comision_total,
         pnl: pnl_neto,
         roi,
@@ -472,8 +520,167 @@ fn construir_evento(
 }
 
 #[inline]
+fn resolver_riesgo_entrada(
+    config: &SimConfig,
+    direccion: Direccion,
+    precio_entrada: f64,
+    vol_senal: f64,
+) -> Option<RiesgoEntrada> {
+    if !precio_entrada.is_finite() || precio_entrada <= 0.0 {
+        return None;
+    }
+
+    if !config.paridad_riesgo {
+        let apalancamiento = config.apalancamiento;
+        let precio_sl = if config.exit_sl_pct > 0.0 {
+            capital::calcular_precio_sl(
+                direccion,
+                precio_entrada,
+                config.exit_sl_pct,
+                apalancamiento,
+            )
+        } else {
+            0.0
+        };
+        let precio_tp = if config.exit_type == ExitType::Fixed && config.exit_tp_pct > 0.0 {
+            capital::calcular_precio_tp(
+                direccion,
+                precio_entrada,
+                config.exit_tp_pct,
+                apalancamiento,
+            )
+        } else {
+            0.0
+        };
+        let (trail_act_price, trail_dist_price) = if config.exit_type == ExitType::Trailing {
+            (
+                capital::calcular_precio_tp(
+                    direccion,
+                    precio_entrada,
+                    config.exit_trail_act_pct,
+                    apalancamiento,
+                ),
+                capital::calcular_distancia_por_pct_colateral(
+                    precio_entrada,
+                    config.exit_trail_dist_pct,
+                    apalancamiento,
+                ),
+            )
+        } else {
+            (0.0, 0.0)
+        };
+        let risk_sl_dist_pct = if config.exit_sl_pct > 0.0 {
+            config.exit_sl_pct / 100.0 / apalancamiento
+        } else {
+            0.0
+        };
+        return Some(RiesgoEntrada {
+            apalancamiento,
+            precio_sl,
+            precio_tp,
+            trail_act_price,
+            trail_dist_price,
+            risk_vol_ewma: 0.0,
+            risk_sl_dist_pct,
+        });
+    }
+
+    if !vol_senal.is_finite() || vol_senal <= 0.0 {
+        return None;
+    }
+    let sl_dist = vol_senal * config.exit_sl_ewma_mult;
+    if !distancia_valida(sl_dist) {
+        return None;
+    }
+    let riesgo_max = config.paridad_riesgo_max_pct / 100.0;
+    if !riesgo_max.is_finite() || riesgo_max <= 0.0 {
+        return None;
+    }
+    let bruto = riesgo_max / sl_dist;
+    if !bruto.is_finite() || bruto <= 0.0 {
+        return None;
+    }
+    if config.paridad_skip_bajo_min && bruto < config.paridad_apalancamiento_min {
+        return None;
+    }
+    let apalancamiento = bruto
+        .max(config.paridad_apalancamiento_min)
+        .min(config.paridad_apalancamiento_max);
+
+    let precio_sl = precio_en_contra(direccion, precio_entrada, sl_dist);
+    if precio_sl <= 0.0 || !precio_sl.is_finite() {
+        return None;
+    }
+
+    let precio_tp = if config.exit_type == ExitType::Fixed {
+        let tp_dist = vol_senal * config.exit_tp_ewma_mult;
+        if !distancia_valida(tp_dist) {
+            return None;
+        }
+        let precio = precio_a_favor(direccion, precio_entrada, tp_dist);
+        if precio <= 0.0 || !precio.is_finite() {
+            return None;
+        }
+        precio
+    } else {
+        0.0
+    };
+
+    let (trail_act_price, trail_dist_price) = if config.exit_type == ExitType::Trailing {
+        let act_dist = vol_senal * config.exit_trail_act_ewma_mult;
+        let trail_dist = vol_senal * config.exit_trail_dist_ewma_mult;
+        if !distancia_valida(act_dist) || !distancia_valida(trail_dist) || trail_dist >= act_dist {
+            return None;
+        }
+        let act_price = precio_a_favor(direccion, precio_entrada, act_dist);
+        let dist_price = precio_entrada * trail_dist;
+        if act_price <= 0.0
+            || dist_price <= 0.0
+            || !act_price.is_finite()
+            || !dist_price.is_finite()
+        {
+            return None;
+        }
+        (act_price, dist_price)
+    } else {
+        (0.0, 0.0)
+    };
+
+    Some(RiesgoEntrada {
+        apalancamiento,
+        precio_sl,
+        precio_tp,
+        trail_act_price,
+        trail_dist_price,
+        risk_vol_ewma: vol_senal,
+        risk_sl_dist_pct: sl_dist,
+    })
+}
+
+#[inline]
+fn distancia_valida(distancia_pct: f64) -> bool {
+    distancia_pct.is_finite() && distancia_pct > 0.0 && distancia_pct < 1.0
+}
+
+#[inline]
+fn precio_en_contra(direccion: Direccion, precio_entrada: f64, distancia_pct: f64) -> f64 {
+    match direccion {
+        Direccion::Long => precio_entrada * (1.0 - distancia_pct),
+        Direccion::Short => precio_entrada * (1.0 + distancia_pct),
+    }
+}
+
+#[inline]
+fn precio_a_favor(direccion: Direccion, precio_entrada: f64, distancia_pct: f64) -> f64 {
+    match direccion {
+        Direccion::Long => precio_entrada * (1.0 + distancia_pct),
+        Direccion::Short => precio_entrada * (1.0 - distancia_pct),
+    }
+}
+
+#[inline]
 fn evaluar_salida(
-    trade: &TradeAbierto,
+    trade: &mut TradeAbierto,
     open: f64,
     high: f64,
     low: f64,
@@ -485,7 +692,18 @@ fn evaluar_salida(
         return Some((precio, motivo::SL));
     }
 
-    // 2. Take Profit (mejor caso dentro de la vela)
+    // 2. Trailing stop. Si ya venía activo desde una vela anterior, puede
+    // ejecutar intrabar. Si se activa dentro de esta vela, el nuevo stop queda
+    // disponible desde la siguiente vela para evitar asumir el orden high/low.
+    if trade.trail_act_price > 0.0 && trade.trail_dist_price > 0.0 {
+        activar_trailing_en_open(trade, open);
+        if let Some(precio) = evaluar_trailing_stop(trade, open, high, low) {
+            return Some((precio, motivo::TRAILING));
+        }
+        actualizar_trailing(trade, high, low);
+    }
+
+    // 3. Take Profit (mejor caso dentro de la vela)
     if trade.precio_tp > 0.0 {
         match trade.direccion {
             Direccion::Long if high >= trade.precio_tp => {
@@ -508,12 +726,94 @@ fn evaluar_salida(
         }
     }
 
-    // 3. Máximo de velas (BARS)
+    // 4. Máximo de velas (BARS)
     if trade.max_velas > 0 && velas_transcurridas >= trade.max_velas {
         return Some((close, motivo::BARS));
     }
 
     None
+}
+
+#[inline]
+fn activar_trailing_en_open(trade: &mut TradeAbierto, open: f64) {
+    if trade.trailing_activo {
+        return;
+    }
+    match trade.direccion {
+        Direccion::Long if open >= trade.trail_act_price => {
+            trade.trailing_activo = true;
+            trade.trail_best_price = open;
+            trade.trail_stop = open - trade.trail_dist_price;
+        }
+        Direccion::Short if open <= trade.trail_act_price => {
+            trade.trailing_activo = true;
+            trade.trail_best_price = open;
+            trade.trail_stop = open + trade.trail_dist_price;
+        }
+        _ => {}
+    }
+}
+
+#[inline]
+fn evaluar_trailing_stop(trade: &TradeAbierto, open: f64, high: f64, low: f64) -> Option<f64> {
+    if !trade.trailing_activo || trade.trail_stop <= 0.0 {
+        return None;
+    }
+    match trade.direccion {
+        Direccion::Long if low <= trade.trail_stop => Some(if open < trade.trail_stop {
+            open
+        } else {
+            trade.trail_stop
+        }),
+        Direccion::Short if high >= trade.trail_stop => Some(if open > trade.trail_stop {
+            open
+        } else {
+            trade.trail_stop
+        }),
+        _ => None,
+    }
+}
+
+#[inline]
+fn actualizar_trailing(trade: &mut TradeAbierto, high: f64, low: f64) {
+    match trade.direccion {
+        Direccion::Long => {
+            if !trade.trailing_activo {
+                if high < trade.trail_act_price {
+                    return;
+                }
+                trade.trailing_activo = true;
+                trade.trail_best_price = high;
+                trade.trail_stop = high - trade.trail_dist_price;
+                return;
+            }
+            if high > trade.trail_best_price {
+                trade.trail_best_price = high;
+                let nuevo_stop = high - trade.trail_dist_price;
+                if nuevo_stop > trade.trail_stop {
+                    trade.trail_stop = nuevo_stop;
+                }
+            }
+        }
+        Direccion::Short => {
+            if !trade.trailing_activo {
+                if low > trade.trail_act_price {
+                    return;
+                }
+                trade.trailing_activo = true;
+                trade.trail_best_price = low;
+                trade.trail_stop = low + trade.trail_dist_price;
+                return;
+            }
+            if low < trade.trail_best_price {
+                trade.trail_best_price = low;
+                let nuevo_stop = low + trade.trail_dist_price;
+                if trade.trail_stop <= 0.0 || nuevo_stop < trade.trail_stop {
+                    trade.trail_stop = nuevo_stop;
+                }
+            }
+        }
+    }
 }
 
 #[inline]
@@ -568,6 +868,17 @@ mod tests {
             exit_sl_pct: 20.0,
             exit_tp_pct: 40.0,
             exit_velas: 0,
+            exit_trail_act_pct: 0.0,
+            exit_trail_dist_pct: 0.0,
+            paridad_riesgo: false,
+            paridad_riesgo_max_pct: 0.0,
+            paridad_apalancamiento_min: 1.0,
+            paridad_apalancamiento_max: 1.0,
+            exit_sl_ewma_mult: 0.0,
+            exit_tp_ewma_mult: 0.0,
+            exit_trail_act_ewma_mult: 0.0,
+            exit_trail_dist_ewma_mult: 0.0,
+            paridad_skip_bajo_min: true,
         }
     }
 
@@ -576,6 +887,16 @@ mod tests {
         c.exit_type = ExitType::Custom;
         c.exit_tp_pct = 0.0;
         c.exit_velas = 0;
+        c
+    }
+
+    fn cfg_trailing() -> SimConfig {
+        let mut c = cfg_fixed();
+        c.exit_type = ExitType::Trailing;
+        c.exit_tp_pct = 0.0;
+        c.exit_velas = 0;
+        c.exit_trail_act_pct = 20.0;
+        c.exit_trail_dist_pct = 10.0;
         c
     }
 
@@ -605,7 +926,7 @@ mod tests {
         let velas = build_soa(&ts, &o, &h, &l, &c);
         let senales = [1i8, 0, 0];
         let salidas = [0i8, 0, 0];
-        let r = simular_full(velas, &senales, &salidas, &cfg_fixed());
+        let r = simular_full(velas, &[], &senales, &salidas, &cfg_fixed());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.idx_senal[0], 0);
         assert_eq!(r.idx_entrada[0], 1);
@@ -622,7 +943,7 @@ mod tests {
         let velas = build_soa(&ts, &o, &h, &l, &c);
         let senales = [1i8, 0, -1, 0];
         let salidas = [0i8, 0, 0, 0];
-        let r = simular_full(velas, &senales, &salidas, &cfg_fixed());
+        let r = simular_full(velas, &[], &senales, &salidas, &cfg_fixed());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.direccion[0], 1);
     }
@@ -635,7 +956,7 @@ mod tests {
         let l = [99.0, 99.0, 100.0];
         let c = [100.0, 100.5, 101.5];
         let velas = build_soa(&ts, &o, &h, &l, &c);
-        let r = simular_full(velas, &[1i8, 0, 0], &[0i8, 0, 0], &cfg_fixed());
+        let r = simular_full(velas, &[], &[1i8, 0, 0], &[0i8, 0, 0], &cfg_fixed());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.motivo_salida[0], motivo::END);
         assert!((r.precio_salida[0] - 101.5).abs() < 1e-10);
@@ -649,7 +970,7 @@ mod tests {
         let l = [99.0, 99.0, 94.0];
         let c = [100.0, 100.5, 96.0];
         let velas = build_soa(&ts, &o, &h, &l, &c);
-        let r = simular_full(velas, &[1i8, 0, 0], &[0i8, 0, 0], &cfg_fixed());
+        let r = simular_full(velas, &[], &[1i8, 0, 0], &[0i8, 0, 0], &cfg_fixed());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.motivo_salida[0], motivo::SL);
         assert!((r.precio_salida[0] - 95.0).abs() < 1e-10);
@@ -667,7 +988,7 @@ mod tests {
         cfg.exit_type = ExitType::Bars;
         cfg.exit_tp_pct = 0.0;
         cfg.exit_velas = 2;
-        let r = simular_full(velas, &[1i8, 0, 0, 0], &[0i8, 0, 0, 0], &cfg);
+        let r = simular_full(velas, &[], &[1i8, 0, 0, 0], &[0i8, 0, 0, 0], &cfg);
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.motivo_salida[0], motivo::BARS);
     }
@@ -680,7 +1001,7 @@ mod tests {
         let l = [99.0, 99.0, 100.0, 101.0];
         let c = [100.0, 100.5, 101.5, 102.5];
         let velas = build_soa(&ts, &o, &h, &l, &c);
-        let r = simular_full(velas, &[1i8, 0, 0, 0], &[0i8, 0, 1, 0], &cfg_custom());
+        let r = simular_full(velas, &[], &[1i8, 0, 0, 0], &[0i8, 0, 1, 0], &cfg_custom());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.motivo_salida[0], motivo::CUSTOM);
         assert_eq!(r.idx_salida[0], 3);
@@ -695,7 +1016,7 @@ mod tests {
         let l = [99.0, 99.0, 100.0, 94.0];
         let c = [100.0, 100.5, 101.5, 96.0];
         let velas = build_soa(&ts, &o, &h, &l, &c);
-        let r = simular_full(velas, &[1i8, 0, 0, 0], &[0i8, 0, 1, 0], &cfg_custom());
+        let r = simular_full(velas, &[], &[1i8, 0, 0, 0], &[0i8, 0, 1, 0], &cfg_custom());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.motivo_salida[0], motivo::SL);
         assert_eq!(r.idx_salida[0], 3);
@@ -729,8 +1050,19 @@ mod tests {
             exit_sl_pct: 50.0,
             exit_tp_pct: 50.0,
             exit_velas: 0,
+            exit_trail_act_pct: 0.0,
+            exit_trail_dist_pct: 0.0,
+            paridad_riesgo: false,
+            paridad_riesgo_max_pct: 0.0,
+            paridad_apalancamiento_min: 1.0,
+            paridad_apalancamiento_max: 1.0,
+            exit_sl_ewma_mult: 0.0,
+            exit_tp_ewma_mult: 0.0,
+            exit_trail_act_ewma_mult: 0.0,
+            exit_trail_dist_ewma_mult: 0.0,
+            paridad_skip_bajo_min: true,
         };
-        let r = simular_full(velas, &[1i8, 0, 0], &[0i8, 0, 0], &cfg);
+        let r = simular_full(velas, &[], &[1i8, 0, 0], &[0i8, 0, 0], &cfg);
         assert_eq!(r.metricas.total_trades, 1);
         assert!((r.comision_total[0] - 2.1).abs() < 1e-10);
         assert!((r.pnl[0] - 7.9).abs() < 1e-10);
@@ -755,10 +1087,81 @@ mod tests {
             exit_sl_pct: 50.0,
             exit_tp_pct: 50.0,
             exit_velas: 0,
+            exit_trail_act_pct: 0.0,
+            exit_trail_dist_pct: 0.0,
+            paridad_riesgo: false,
+            paridad_riesgo_max_pct: 0.0,
+            paridad_apalancamiento_min: 1.0,
+            paridad_apalancamiento_max: 1.0,
+            exit_sl_ewma_mult: 0.0,
+            exit_tp_ewma_mult: 0.0,
+            exit_trail_act_ewma_mult: 0.0,
+            exit_trail_dist_ewma_mult: 0.0,
+            paridad_skip_bajo_min: true,
         };
-        let r = simular_full(velas, &[1i8, 0, 0], &[0i8, 0, 0], &cfg);
+        let r = simular_full(velas, &[], &[1i8, 0, 0], &[0i8, 0, 0], &cfg);
         assert!((r.comision_total[0] - 1.0).abs() < 1e-10);
         assert!((r.pnl[0] - 9.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_trailing_long_activa_y_cierra_en_siguiente_vela() {
+        let ts = [1, 2, 3, 4];
+        let o = [100.0, 100.0, 102.5, 102.5];
+        let h = [100.0, 103.0, 102.8, 103.0];
+        let l = [100.0, 101.5, 101.8, 102.0];
+        let c = [100.0, 102.5, 102.0, 102.8];
+        let velas = build_soa(&ts, &o, &h, &l, &c);
+        let r = simular_full(velas, &[], &[1i8, 0, 0, 0], &[0i8; 4], &cfg_trailing());
+        assert_eq!(r.metricas.total_trades, 1);
+        assert_eq!(r.motivo_salida[0], motivo::TRAILING);
+        assert_eq!(r.idx_salida[0], 2);
+        assert!((r.precio_salida[0] - 102.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_trailing_short_activa_y_cierra_en_siguiente_vela() {
+        let ts = [1, 2, 3, 4];
+        let o = [100.0, 100.0, 97.5, 97.5];
+        let h = [100.0, 100.0, 98.2, 98.0];
+        let l = [100.0, 97.0, 97.2, 97.0];
+        let c = [100.0, 97.5, 98.0, 97.2];
+        let velas = build_soa(&ts, &o, &h, &l, &c);
+        let r = simular_full(velas, &[], &[-1i8, 0, 0, 0], &[0i8; 4], &cfg_trailing());
+        assert_eq!(r.metricas.total_trades, 1);
+        assert_eq!(r.motivo_salida[0], motivo::TRAILING);
+        assert_eq!(r.idx_salida[0], 2);
+        assert!((r.precio_salida[0] - 98.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_paridad_riesgo_calcula_apalancamiento_y_sl_desde_vol_ewma() {
+        let ts = [1, 2, 3];
+        let o = [100.0, 100.0, 100.0];
+        let h = [100.0, 100.1, 100.2];
+        let l = [100.0, 99.79, 99.5];
+        let c = [100.0, 100.0, 99.6];
+        let velas = build_soa(&ts, &o, &h, &l, &c);
+        let risk_vol = [0.001, 0.0, 0.0];
+        let mut cfg = cfg_fixed();
+        cfg.comision_pct = 0.0;
+        cfg.apalancamiento = 35.0;
+        cfg.paridad_riesgo = true;
+        cfg.paridad_riesgo_max_pct = 5.0;
+        cfg.paridad_apalancamiento_min = 1.0;
+        cfg.paridad_apalancamiento_max = 50.0;
+        cfg.exit_sl_ewma_mult = 2.0;
+        cfg.exit_tp_ewma_mult = 4.0;
+
+        let r = simular_full(velas, &risk_vol, &[1i8, 0, 0], &[0i8, 0, 0], &cfg);
+
+        assert_eq!(r.metricas.total_trades, 1);
+        assert_eq!(r.motivo_salida[0], motivo::SL);
+        assert!((r.apalancamiento[0] - 25.0).abs() < 1e-10);
+        assert!((r.risk_vol_ewma[0] - 0.001).abs() < 1e-12);
+        assert!((r.risk_sl_dist_pct[0] - 0.002).abs() < 1e-12);
+        assert!((r.precio_salida[0] - 99.8).abs() < 1e-10);
+        assert!((r.roi[0] + 0.05).abs() < 1e-10);
     }
 
     #[test]
@@ -771,8 +1174,8 @@ mod tests {
         let velas = build_soa(&ts, &o, &h, &l, &c);
         let s = [1i8, 0, 0, 0, 0];
         let x = [0i8; 5];
-        let m_slim = simular_metricas(velas, &s, &x, &cfg_fixed());
-        let m_full = simular_full(velas, &s, &x, &cfg_fixed()).metricas;
+        let m_slim = simular_metricas(velas, &[], &s, &x, &cfg_fixed());
+        let m_full = simular_full(velas, &[], &s, &x, &cfg_fixed()).metricas;
         assert_eq!(m_slim.total_trades, m_full.total_trades);
         assert!((m_slim.saldo_final - m_full.saldo_final).abs() < 1e-10);
         assert!((m_slim.pnl_total - m_full.pnl_total).abs() < 1e-10);

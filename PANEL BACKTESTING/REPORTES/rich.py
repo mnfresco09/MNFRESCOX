@@ -557,6 +557,10 @@ def _panel_parametros(params: dict[str, Any], salida_base: str) -> Panel:
     elif exit_type == "CUSTOM":
         grid.add_row("SL", f"{_float_param(params, '__exit_sl_pct'):.1f}%")
         grid.add_row("CIERRE", "ESTRATEGIA")
+    elif exit_type == "TRAILING":
+        grid.add_row("SL", f"{_float_param(params, '__exit_sl_pct'):.1f}%")
+        grid.add_row("ACTIVA", f"{_float_param(params, '__exit_trail_act_pct'):.1f}%")
+        grid.add_row("DIST", f"{_float_param(params, '__exit_trail_dist_pct'):.1f}%")
     else:
         grid.add_row("SL", f"{_float_param(params, '__exit_sl_pct'):.1f}%")
         grid.add_row("TP", f"{_float_param(params, '__exit_tp_pct'):.1f}%")
@@ -570,6 +574,8 @@ def _panel_parametros(params: dict[str, Any], salida_base: str) -> Panel:
             "exit_sl_pct",
             "exit_tp_pct",
             "exit_velas",
+            "exit_trail_act_pct",
+            "exit_trail_dist_pct",
         }
     }
     if strategy_params:

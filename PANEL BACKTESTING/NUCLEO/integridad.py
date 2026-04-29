@@ -193,7 +193,7 @@ def verificar_resultado(arrays, senales, trades: dict, equity_curve: np.ndarray,
         raise ValueError("[INTEGRIDAD] Trade con precio_entrada que no es el open de N+1.")
 
     precio_salida = trades["precio_salida"]
-    cod_sl, cod_tp, cod_bars, cod_custom, cod_end = 0, 1, 2, 3, 4
+    cod_sl, cod_tp, cod_bars, cod_custom, cod_trailing, cod_end = 0, 1, 2, 3, 4, 5
 
     # Salidas END/BARS -> close de la vela. CUSTOM se confirma en N y ejecuta
     # en el open de N+1 para evitar cierre en el mismo close usado por la señal.
@@ -207,8 +207,8 @@ def verificar_resultado(arrays, senales, trades: dict, equity_curve: np.ndarray,
         if not np.allclose(precio_salida[mask_custom], opens[idx_salida[mask_custom]], rtol=TOL, atol=TOL):
             raise ValueError("[INTEGRIDAD] Salida CUSTOM no usa open de ejecucion.")
 
-    # Salidas SL/TP → dentro del rango low..high
-    mask_intra = (motivos == cod_sl) | (motivos == cod_tp)
+    # Salidas SL/TP/TRAILING → dentro del rango low..high
+    mask_intra = (motivos == cod_sl) | (motivos == cod_tp) | (motivos == cod_trailing)
     if mask_intra.any():
         ps = precio_salida[mask_intra]
         lo = lows[idx_salida[mask_intra]]
@@ -221,6 +221,7 @@ def verificar_resultado(arrays, senales, trades: dict, equity_curve: np.ndarray,
         | (motivos == cod_tp)
         | (motivos == cod_bars)
         | (motivos == cod_custom)
+        | (motivos == cod_trailing)
         | (motivos == cod_end)
     )
     if not motivos_validos.all():

@@ -74,6 +74,14 @@ SUMMARY_NAMES = {
     "duracion_media_seg": "DUR MEDIA",
     "param_exit_sl_pct": "SL %",
     "param_exit_tp_pct": "TP %",
+    "param_exit_trail_act_pct": "TRAIL ACT %",
+    "param_exit_trail_dist_pct": "TRAIL DIST %",
+    "param_risk_max_pct": "RIESGO %",
+    "param_risk_vol_halflife": "VOL HL",
+    "param_risk_sl_ewma_mult": "SL VOL x",
+    "param_risk_tp_ewma_mult": "TP VOL x",
+    "param_risk_trail_act_ewma_mult": "TRAIL ACT x",
+    "param_risk_trail_dist_ewma_mult": "TRAIL DIST x",
 }
 
 _TRADE_COLS_OCULTAS  = {"idx_senal", "idx_entrada", "idx_salida", "direccion", "duracion_velas"}
@@ -89,7 +97,10 @@ TRADE_NAMES = {
     "precio_entrada":  "P. ENTRADA",
     "precio_salida":   "P. SALIDA",
     "saldo_apertura":  "SALDO APERT.",
+    "apalancamiento":  "LEV",
     "tamano_posicion": "TAMAÑO POS.",
+    "risk_vol_ewma":   "VOL EWMA",
+    "risk_sl_dist_pct": "SL DIST",
     "comision_total":  "COMISIÓN",
     "pnl_bruto":       "PNL BRUTO",
     "pnl":             "PNL NETO",
@@ -115,12 +126,18 @@ MONEY_COLS = {
     "pnl_bruto", "pnl", "saldo_post", "saldo",
 }
 QUANTITY_COLS = {"tamano_posicion"}
-PCT_COLS      = {"win_rate", "roi_total", "expectancy", "max_drawdown", "roi"}
-PCT_POINT_COLS = {"param_exit_sl_pct", "param_exit_tp_pct"}
+PCT_COLS      = {"win_rate", "roi_total", "expectancy", "max_drawdown", "roi", "risk_vol_ewma", "risk_sl_dist_pct"}
+PCT_POINT_COLS = {
+    "param_exit_sl_pct",
+    "param_exit_tp_pct",
+    "param_exit_trail_act_pct",
+    "param_exit_trail_dist_pct",
+    "param_risk_max_pct",
+}
 INT_COLS      = {
     "trial", "total_trades", "trades_long", "trades_short",
     "trades_ganadores", "trades_perdedores", "trades_neutros",
-    "punto", "trade_num", "param_exit_velas",
+    "punto", "trade_num", "param_exit_velas", "param_risk_vol_halflife",
 }
 PRICE_COLS    = {"precio_entrada", "precio_salida"}
 DATE_COLS     = {"ts_senal", "ts_entrada", "ts_salida"}
@@ -506,7 +523,11 @@ def _format_for(name: str, formatos: dict, alt: bool):
         return formatos["pct_point"][idx]
     if name in INT_COLS:
         return formatos["int"][idx]
-    if name in {"profit_factor", "sharpe_ratio", "trades_por_dia", "duracion_media_velas"}:
+    if name in {
+        "profit_factor", "sharpe_ratio", "trades_por_dia", "duracion_media_velas",
+        "apalancamiento", "param_risk_sl_ewma_mult", "param_risk_tp_ewma_mult",
+        "param_risk_trail_act_ewma_mult", "param_risk_trail_dist_ewma_mult",
+    }:
         return formatos["ratio"][idx]
     if name == "score":
         return formatos["num"][idx]

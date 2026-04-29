@@ -1,9 +1,10 @@
 import importlib
+import math
 import sys
 
 TIMEFRAMES_VALIDOS = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
 FORMATOS_VALIDOS   = {"feather", "parquet", "csv"}
-EXIT_TYPES_VALIDOS = {"FIXED", "BARS", "CUSTOM", "ALL"}
+EXIT_TYPES_VALIDOS = {"FIXED", "BARS", "TRAILING", "CUSTOM", "ALL"}
 SAMPLERS_VALIDOS   = {"QMC", "TPE", "HYBRID"}
 EXTENSIONES        = {"feather": ".feather", "parquet": ".parquet", "csv": ".csv"}
 
@@ -68,10 +69,11 @@ def validar(cfg) -> None:
         errores.append("APALANCAMIENTO debe ser >= 1.")
     if cfg.SALDO_MINIMO_OPERATIVO < 0:
         errores.append("SALDO_MINIMO_OPERATIVO debe ser >= 0.")
-    if not (0 < cfg.COMISION_PCT < 1):
+    if not (0 <= cfg.COMISION_PCT < 1):
         errores.append("COMISION_PCT debe estar entre 0 y 1 (ej: 0.0005 para 0.05%).")
     if cfg.COMISION_LADOS not in (1, 2):
         errores.append("COMISION_LADOS debe ser 1 (apertura) o 2 (apertura y cierre).")
+    _validar_paridad_riesgo(cfg, errores)
 
     # --- Salidas ---
     if cfg.EXIT_TYPE not in EXIT_TYPES_VALIDOS:
@@ -129,6 +131,17 @@ def _validar_modulos_salida(exit_type: str, errores: list[str]) -> None:
                 _validar_rango(velas, "EXIT_SL_MIN", "EXIT_SL_MAX", errores)
                 _validar_rango(velas, "EXIT_VELAS_MIN", "EXIT_VELAS_MAX", errores)
 
+    if exit_type in {"TRAILING", "ALL"}:
+        trailing = _importar_salida("trailing", errores)
+        if trailing is not None:
+            _validar_mayor_cero(trailing, "EXIT_SL_PCT", errores)
+            _validar_mayor_cero(trailing, "EXIT_TRAIL_ACT_PCT", errores)
+            _validar_mayor_cero(trailing, "EXIT_TRAIL_DIST_PCT", errores)
+            if bool(getattr(trailing, "OPTIMIZAR_SALIDAS", False)):
+                _validar_rango(trailing, "EXIT_SL_MIN", "EXIT_SL_MAX", errores)
+                _validar_rango(trailing, "EXIT_TRAIL_ACT_MIN", "EXIT_TRAIL_ACT_MAX", errores)
+                _validar_rango(trailing, "EXIT_TRAIL_DIST_MIN", "EXIT_TRAIL_DIST_MAX", errores)
+
     if exit_type in {"CUSTOM", "ALL"}:
         personalizada = _importar_salida("personalizada", errores)
         if personalizada is not None:
@@ -164,6 +177,31 @@ def _validar_semillas(cfg, errores: list[str]) -> None:
         errores.append("OPTUNA_SEED debe ser int o None.")
     if usar_seed and optuna_seed is None:
         errores.append("OPTUNA_SEED debe ser int cuando USAR_SEED=True.")
+
+
+def _validar_paridad_riesgo(cfg, errores: list[str]) -> None:
+    usar = getattr(cfg, "USAR_PARIDAD_RIESGO", False)
+    optimizar = getattr(cfg, "OPTIMIZAR_PARIDAD_RIESGO", True)
+    if not isinstance(usar, bool):
+        errores.append("USAR_PARIDAD_RIESGO debe ser True o False.")
+    if not isinstance(optimizar, bool):
+        errores.append("OPTIMIZAR_PARIDAD_RIESGO debe ser True o False.")
+
+    try:
+        lev_min = float(getattr(cfg, "PARIDAD_APALANCAMIENTO_MIN"))
+        lev_max = float(getattr(cfg, "PARIDAD_APALANCAMIENTO_MAX"))
+    except Exception:
+        errores.append(
+            "PARIDAD_APALANCAMIENTO_MIN/MAX deben existir y ser numericos."
+        )
+        return
+
+    if not math.isfinite(lev_min) or lev_min <= 0.0:
+        errores.append("PARIDAD_APALANCAMIENTO_MIN debe ser finito y > 0.")
+    if not math.isfinite(lev_max) or lev_max <= 0.0:
+        errores.append("PARIDAD_APALANCAMIENTO_MAX debe ser finito y > 0.")
+    if lev_min > lev_max:
+        errores.append("PARIDAD_APALANCAMIENTO_MIN no puede ser mayor que PARIDAD_APALANCAMIENTO_MAX.")
 
 
 def _validar_kernel_perturbaciones(errores: list[str]) -> None:

@@ -167,7 +167,10 @@ def _crear_payload(
         precio_e = float(cols["precio_entrada"][i])
         precio_s = float(cols["precio_salida"][i])
         colateral = float(cols["colateral"][i])
+        apalancamiento = float(cols["apalancamiento"][i])
         tamano_posicion = float(cols["tamano_posicion"][i])
+        risk_vol_ewma = float(cols["risk_vol_ewma"][i])
+        risk_sl_dist_pct = float(cols["risk_sl_dist_pct"][i])
         saldo_post = float(cols["saldo_post"][i])
         duracion_velas = int(cols["duracion_velas"][i])
         duracion_seg = _segundos_entre_us(
@@ -191,7 +194,10 @@ def _crear_payload(
             "precio_entrada": precio_e,
             "precio_salida":  precio_s,
             "colateral":      colateral,
+            "apalancamiento":  apalancamiento,
             "tamano_posicion": tamano_posicion,
+            "risk_vol_ewma":   risk_vol_ewma,
+            "risk_sl_dist_pct": risk_sl_dist_pct,
             "comision_total": comision,
             "pnl_bruto":      pnl_bruto,
             "pnl":            pnl,
@@ -215,7 +221,10 @@ def _crear_payload(
                 "precio_entrada": precio_e,
                 "precio_salida": precio_s,
                 "colateral":    colateral,
+                "apalancamiento": apalancamiento,
                 "tamano_posicion": tamano_posicion,
+                "risk_vol_ewma": risk_vol_ewma,
+                "risk_sl_dist_pct": risk_sl_dist_pct,
                 "comision_total": comision,
                 "pnl_bruto":    pnl_bruto,
                 "pnl":          pnl,
@@ -236,7 +245,10 @@ def _crear_payload(
                 "precio_entrada": precio_e,
                 "precio_salida": precio_s,
                 "colateral":    colateral,
+                "apalancamiento": apalancamiento,
                 "tamano_posicion": tamano_posicion,
+                "risk_vol_ewma": risk_vol_ewma,
+                "risk_sl_dist_pct": risk_sl_dist_pct,
                 "comision_total": comision,
                 "pnl_bruto":    pnl_bruto,
                 "pnl":          pnl,
@@ -333,6 +345,8 @@ def _salida_payload(salida) -> dict:
         "sl_pct": _json_safe(getattr(salida, "sl_pct", None)),
         "tp_pct": _json_safe(getattr(salida, "tp_pct", None)),
         "velas": _json_safe(getattr(salida, "velas", None)),
+        "trail_act_pct": _json_safe(getattr(salida, "trail_act_pct", None)),
+        "trail_dist_pct": _json_safe(getattr(salida, "trail_dist_pct", None)),
         "optimizar": bool(getattr(salida, "optimizar", False)),
         "sl_min": _json_safe(getattr(salida, "sl_min", None)),
         "sl_max": _json_safe(getattr(salida, "sl_max", None)),
@@ -549,7 +563,7 @@ body{font-family:var(--font-body);background:var(--bg);color:var(--text);font-si
   <div class="legend-inline"><div class="li"><span class="ltri up"></span>LONG</div><div class="li"><span class="ltri down"></span>SHORT</div><div class="li"><span class="ldot" style="background:var(--pos)"></span>WIN</div><div class="li"><span class="ldot" style="background:var(--neg)"></span>LOSS</div><div class="li"><span class="ldot" style="background:var(--trailing)"></span>TRAIL</div></div>
 </div>
 <div id="charts"><div id="chart-price"></div></div>
-<div class="table-section"><div class="table-header"><h3>TRADES</h3><span class="count" id="trade-count">-</span><div class="table-filters" id="table-filters"></div></div><div class="table-wrap"><table id="trade-table"><thead><tr><th class="num">#</th><th>DIR</th><th>SEÑAL</th><th>ENTRADA</th><th class="num">P.E</th><th>SALIDA</th><th class="num">P.S</th><th class="num">COLLAT</th><th class="num">SIZE</th><th class="num">COM</th><th class="num">PNL BR</th><th class="num">PNL NET</th><th class="num">ROI</th><th class="num">BALANCE</th><th>DUR</th><th>MOTIVO</th></tr></thead><tbody id="trade-tbody"></tbody></table></div></div>
+<div class="table-section"><div class="table-header"><h3>TRADES</h3><span class="count" id="trade-count">-</span><div class="table-filters" id="table-filters"></div></div><div class="table-wrap"><table id="trade-table"><thead><tr><th class="num">#</th><th>DIR</th><th>SEÑAL</th><th>ENTRADA</th><th class="num">P.E</th><th>SALIDA</th><th class="num">P.S</th><th class="num">COLLAT</th><th class="num">LEV</th><th class="num">SIZE</th><th class="num">COM</th><th class="num">PNL BR</th><th class="num">PNL NET</th><th class="num">ROI</th><th class="num">BALANCE</th><th>DUR</th><th>MOTIVO</th></tr></thead><tbody id="trade-tbody"></tbody></table></div></div>
 <div id="tooltip"></div>
 __TV_SCRIPT__
 <script>
@@ -579,7 +593,7 @@ function renderHeader(){
   const sig=D.conteo_senales||{};
   const secDefs=[['TRADES',num(m.total_trades).toLocaleString()],['LONG',num(m.trades_long).toLocaleString()],['SHORT',num(m.trades_short).toLocaleString()],['WIN',num(m.trades_ganadores).toLocaleString()],['LOSS',num(m.trades_perdedores).toLocaleString()],['T/DAY',num(m.trades_por_dia).toFixed(3)],['AVG DUR',fmtDuration(m.duracion_media_seg,m.duracion_media_velas)],['PNL NET',fmtMoney(m.pnl_total)],['PNL GROSS',fmtMoney(m.pnl_bruto_total)],['BAL FINAL',fmtMoney0(m.saldo_final)],['TF EXEC',D.timeframe_ejecucion],['VELAS',num(D.rango?.velas).toLocaleString()],['SIG L/S',`${num(sig.long).toLocaleString()}/${num(sig.short).toLocaleString()}`]];
   document.getElementById('var-secondary').innerHTML=secDefs.map(([k,v])=>`<div class="s-cell"><span class="s-k">${esc(k)}</span><span class="s-v">${esc(v)}</span></div>`).join('');
-  const params={...(D.parametros||{}),exit_type:D.salida?.tipo,sl_pct:D.salida?.sl_pct,tp_pct:D.salida?.tp_pct,exit_velas:D.salida?.velas};
+  const params={...(D.parametros||{}),exit_type:D.salida?.tipo,sl_pct:D.salida?.sl_pct,tp_pct:D.salida?.tp_pct,exit_velas:D.salida?.velas,trail_act_pct:D.salida?.trail_act_pct,trail_dist_pct:D.salida?.trail_dist_pct};
   document.getElementById('var-params').innerHTML=Object.entries(params).filter(([,v])=>v!==null&&v!==undefined).map(([k,v])=>`<div class="param"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
 }
 const chartsEl=document.getElementById('charts');
@@ -640,10 +654,10 @@ function addEquityDrawdownPane(){
 }
 addEquityDrawdownPane();
 const tooltipEl=document.getElementById('tooltip');const byTime={};(D.markers||[]).forEach(m=>{if(!byTime[m.time])byTime[m.time]=[];byTime[m.time].push(m);});const tradeByN={};(D.trades||[]).forEach(t=>{tradeByN[t.n]=t;});
-mainChart.subscribeCrosshairMove(param=>{moveGlobalCrosshair(param);if(!param.time||!param.point){tooltipEl.style.display='none';return;}const ms=byTime[param.time];if(!ms||!ms.length){tooltipEl.style.display='none';return;}tooltipEl.innerHTML=ms.map(m=>{const t=tradeByN[m.trade]||m;const pnl=num(t.pnl),roi=num(t.roi),pnlCls=pnl>=0?'pos':'neg';const isEntry=m.tipo==='entrada';const headColor=isEntry?(m.direccion==='LONG'?T.entryLong:T.entryShort):(isTrailing(m)?T.exitTrailing:(pnl>=0?T.exitWin:T.exitLoss));const headLabel=isEntry?`${m.direccion} ENTRADA #${m.trade}`:`SALIDA ${t.motivo||m.motivo} #${m.trade}`;return `<div class="tt-head" style="color:${headColor}">${esc(headLabel)}</div><div class="tt-grid"><div class="tt-row"><span>P. ENTRADA</span><b>${fmtMoney(t.precio_entrada,2)}</b></div><div class="tt-row"><span>P. SALIDA</span><b>${fmtMoney(t.precio_salida,2)}</b></div><div class="tt-row"><span>COLLATERAL</span><b>${fmtMoney(t.colateral,2)}</b></div><div class="tt-row"><span>SIZE</span><b>${num(t.tamano_posicion).toFixed(6)}</b></div><div class="tt-row"><span>COMISION</span><b>${fmtMoney(t.comision_total,2)}</b></div><div class="tt-row"><span>PNL BRUTO</span><b>${fmtNum(t.pnl_bruto,2)}</b></div><div class="tt-row"><span>PNL NETO</span><b class="${pnlCls}">${fmtNum(pnl,2)}</b></div><div class="tt-row"><span>ROI</span><b class="${pnlCls}">${fmtPct(roi)}</b></div><div class="tt-row"><span>BALANCE</span><b>${fmtMoney(t.saldo_post,2)}</b></div><div class="tt-row"><span>DURACION</span><b>${esc(t.duracion_txt||fmtDuration(t.duracion_seg,t.duracion))}</b></div></div>`;}).join('');tooltipEl.style.display='block';let lx=param.point.x+16,ly=param.point.y+8;const tw=tooltipEl.offsetWidth||300;if(lx+tw>priceEl.clientWidth-10)lx=param.point.x-tw-8;tooltipEl.style.left=lx+'px';tooltipEl.style.top=ly+'px';});
+mainChart.subscribeCrosshairMove(param=>{moveGlobalCrosshair(param);if(!param.time||!param.point){tooltipEl.style.display='none';return;}const ms=byTime[param.time];if(!ms||!ms.length){tooltipEl.style.display='none';return;}tooltipEl.innerHTML=ms.map(m=>{const t=tradeByN[m.trade]||m;const pnl=num(t.pnl),roi=num(t.roi),pnlCls=pnl>=0?'pos':'neg';const isEntry=m.tipo==='entrada';const headColor=isEntry?(m.direccion==='LONG'?T.entryLong:T.entryShort):(isTrailing(m)?T.exitTrailing:(pnl>=0?T.exitWin:T.exitLoss));const headLabel=isEntry?`${m.direccion} ENTRADA #${m.trade}`:`SALIDA ${t.motivo||m.motivo} #${m.trade}`;return `<div class="tt-head" style="color:${headColor}">${esc(headLabel)}</div><div class="tt-grid"><div class="tt-row"><span>P. ENTRADA</span><b>${fmtMoney(t.precio_entrada,2)}</b></div><div class="tt-row"><span>P. SALIDA</span><b>${fmtMoney(t.precio_salida,2)}</b></div><div class="tt-row"><span>COLLATERAL</span><b>${fmtMoney(t.colateral,2)}</b></div><div class="tt-row"><span>LEV</span><b>${num(t.apalancamiento).toFixed(2)}x</b></div><div class="tt-row"><span>SIZE</span><b>${num(t.tamano_posicion).toFixed(6)}</b></div><div class="tt-row"><span>VOL EWMA</span><b>${fmtPct(t.risk_vol_ewma)}</b></div><div class="tt-row"><span>COMISION</span><b>${fmtMoney(t.comision_total,2)}</b></div><div class="tt-row"><span>SL DIST</span><b>${fmtPct(t.risk_sl_dist_pct)}</b></div><div class="tt-row"><span>PNL BRUTO</span><b>${fmtNum(t.pnl_bruto,2)}</b></div><div class="tt-row"><span>PNL NETO</span><b class="${pnlCls}">${fmtNum(pnl,2)}</b></div><div class="tt-row"><span>ROI</span><b class="${pnlCls}">${fmtPct(roi)}</b></div><div class="tt-row"><span>BALANCE</span><b>${fmtMoney(t.saldo_post,2)}</b></div><div class="tt-row"><span>DURACION</span><b>${esc(t.duracion_txt||fmtDuration(t.duracion_seg,t.duracion))}</b></div></div>`;}).join('');tooltipEl.style.display='block';let lx=param.point.x+16,ly=param.point.y+8;const tw=tooltipEl.offsetWidth||300;if(lx+tw>priceEl.clientWidth-10)lx=param.point.x-tw-8;tooltipEl.style.left=lx+'px';tooltipEl.style.top=ly+'px';});
 let tableFilter='ALL';
 function renderFilterButtons(){const host=document.getElementById('table-filters');const motivos=[...new Set((D.trades||[]).map(t=>t.motivo).filter(Boolean))];const defs=['ALL','LONG','SHORT','WIN','LOSS',...motivos];host.innerHTML=defs.map((f,i)=>`<button class="tbtn ${i===0?'active':''}" data-filter="${esc(f)}">${esc(f)}</button>`).join('');}
-function renderTable(){let trades=D.trades||[];if(tableFilter==='LONG')trades=trades.filter(t=>t.direccion==='LONG');else if(tableFilter==='SHORT')trades=trades.filter(t=>t.direccion==='SHORT');else if(tableFilter==='WIN')trades=trades.filter(t=>num(t.pnl)>=0);else if(tableFilter==='LOSS')trades=trades.filter(t=>num(t.pnl)<0);else if(tableFilter!=='ALL')trades=trades.filter(t=>t.motivo===tableFilter);document.getElementById('trade-tbody').innerHTML=trades.map(t=>{const pnlCls=num(t.pnl)>=0?'pos':'neg';const dirCls=t.direccion==='LONG'?'long':'short';return `<tr class="${num(t.pnl)>=0?'win':'loss'}"><td class="num">${esc(t.n)}</td><td class="${dirCls}">${esc(t.direccion)}</td><td class="mono">${esc(fmtTs(t.time_senal))}</td><td class="mono">${esc(fmtTs(t.time_entrada))}</td><td class="mono num">${num(t.precio_entrada).toFixed(2)}</td><td class="mono">${esc(fmtTs(t.time_salida))}</td><td class="mono num">${num(t.precio_salida).toFixed(2)}</td><td class="mono num">${fmtMoney(t.colateral,2)}</td><td class="mono num">${num(t.tamano_posicion).toFixed(6)}</td><td class="mono num">${fmtMoney(t.comision_total,2)}</td><td class="mono num ${num(t.pnl_bruto)>=0?'pos':'neg'}">${fmtNum(t.pnl_bruto,2)}</td><td class="mono num ${pnlCls}">${fmtNum(t.pnl,2)}</td><td class="mono num ${pnlCls}">${fmtPct(t.roi)}</td><td class="mono num">${fmtMoney(t.saldo_post,2)}</td><td class="mono">${esc(t.duracion_txt||fmtDuration(t.duracion_seg,t.duracion))}</td><td>${esc(t.motivo)}</td></tr>`;}).join('');document.getElementById('trade-count').textContent=`${trades.length} / ${(D.trades||[]).length}`;}
+function renderTable(){let trades=D.trades||[];if(tableFilter==='LONG')trades=trades.filter(t=>t.direccion==='LONG');else if(tableFilter==='SHORT')trades=trades.filter(t=>t.direccion==='SHORT');else if(tableFilter==='WIN')trades=trades.filter(t=>num(t.pnl)>=0);else if(tableFilter==='LOSS')trades=trades.filter(t=>num(t.pnl)<0);else if(tableFilter!=='ALL')trades=trades.filter(t=>t.motivo===tableFilter);document.getElementById('trade-tbody').innerHTML=trades.map(t=>{const pnlCls=num(t.pnl)>=0?'pos':'neg';const dirCls=t.direccion==='LONG'?'long':'short';return `<tr class="${num(t.pnl)>=0?'win':'loss'}"><td class="num">${esc(t.n)}</td><td class="${dirCls}">${esc(t.direccion)}</td><td class="mono">${esc(fmtTs(t.time_senal))}</td><td class="mono">${esc(fmtTs(t.time_entrada))}</td><td class="mono num">${num(t.precio_entrada).toFixed(2)}</td><td class="mono">${esc(fmtTs(t.time_salida))}</td><td class="mono num">${num(t.precio_salida).toFixed(2)}</td><td class="mono num">${fmtMoney(t.colateral,2)}</td><td class="mono num">${num(t.apalancamiento).toFixed(2)}x</td><td class="mono num">${num(t.tamano_posicion).toFixed(6)}</td><td class="mono num">${fmtMoney(t.comision_total,2)}</td><td class="mono num ${num(t.pnl_bruto)>=0?'pos':'neg'}">${fmtNum(t.pnl_bruto,2)}</td><td class="mono num ${pnlCls}">${fmtNum(t.pnl,2)}</td><td class="mono num ${pnlCls}">${fmtPct(t.roi)}</td><td class="mono num">${fmtMoney(t.saldo_post,2)}</td><td class="mono">${esc(t.duracion_txt||fmtDuration(t.duracion_seg,t.duracion))}</td><td>${esc(t.motivo)}</td></tr>`;}).join('');document.getElementById('trade-count').textContent=`${trades.length} / ${(D.trades||[]).length}`;}
 function wireFilters(){document.querySelectorAll('[data-filter]').forEach(btn=>btn.addEventListener('click',()=>{tableFilter=btn.dataset.filter;document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b===btn));renderTable();}));}
 function applyMarkerVisibility(){candleSeries.setMarkers(buildMarkers(1));paneMarkerSeries.forEach(s=>s.setMarkers(buildMarkers(PANE_MARKER_SCALE)));}
 function applyPaneVisibility(key){const entry=paneSeriesMap[key];if(!entry)return;entry.wrapper.style.display=visState[key]?'':'none';setTimeout(()=>{fitAll();const r=mainVisibleRange();if(r)applyTimeRange(r,mainChart);},30);}

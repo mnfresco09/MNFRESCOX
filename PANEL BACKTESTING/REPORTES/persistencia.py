@@ -154,7 +154,14 @@ def _base_combinacion(
 def resumen_trials_dataframe(trials: list) -> pl.DataFrame:
     param_keys = sorted(
         {k for trial in trials for k in trial.parametros.keys()}
-        | {"exit_type", "exit_sl_pct", "exit_tp_pct", "exit_velas"}
+        | {
+            "exit_type",
+            "exit_sl_pct",
+            "exit_tp_pct",
+            "exit_velas",
+            "exit_trail_act_pct",
+            "exit_trail_dist_pct",
+        }
     )
     filas = []
     for trial in sorted(trials, key=lambda t: t.score, reverse=True):
@@ -176,6 +183,8 @@ def resumen_trials_dataframe(trials: list) -> pl.DataFrame:
                 "exit_sl_pct": trial.salida.sl_pct,
                 "exit_tp_pct": trial.salida.tp_pct,
                 "exit_velas": trial.salida.velas,
+                "exit_trail_act_pct": getattr(trial.salida, "trail_act_pct", 0.0),
+                "exit_trail_dist_pct": getattr(trial.salida, "trail_dist_pct", 0.0),
             }
         )
         for key in param_keys:
@@ -211,7 +220,10 @@ def trades_dataframe(replay) -> pl.DataFrame:
             "precio_entrada": t["precio_entrada"].astype(np.float64),
             "precio_salida":  t["precio_salida"].astype(np.float64),
             "saldo_apertura": t["colateral"].astype(np.float64),
+            "apalancamiento": t["apalancamiento"].astype(np.float64),
             "tamano_posicion": t["tamano_posicion"].astype(np.float64),
+            "risk_vol_ewma":  t["risk_vol_ewma"].astype(np.float64),
+            "risk_sl_dist_pct": t["risk_sl_dist_pct"].astype(np.float64),
             "comision_total": comision,
             "pnl_bruto":      pnl_neto + comision,
             "pnl":            pnl_neto,
@@ -233,7 +245,10 @@ def trades_dataframe(replay) -> pl.DataFrame:
             "precio_entrada": pl.Float64,
             "precio_salida": pl.Float64,
             "saldo_apertura": pl.Float64,
+            "apalancamiento": pl.Float64,
             "tamano_posicion": pl.Float64,
+            "risk_vol_ewma": pl.Float64,
+            "risk_sl_dist_pct": pl.Float64,
             "comision_total": pl.Float64,
             "pnl_bruto": pl.Float64,
             "pnl": pl.Float64,
