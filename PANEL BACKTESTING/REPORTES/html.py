@@ -83,8 +83,8 @@ def verificar_htmls(paths: list[Path]) -> None:
             "markers",
             "createChart",
             "addCandlestickSeries",
-            "chart-equity-dd",
-            "addEquityDrawdownPane",
+            "chart-equity",
+            "addEquityPane",
             "btn-reset-view",
             "resetToDefaultView",
             "paneMarkerSeries",
@@ -260,7 +260,7 @@ def _crear_payload(
                 "motivo":       motivo,
             })
 
-    equity_drawdown = _crear_equity_drawdown(
+    equity_curve = _crear_equity_curve(
         trial=trial,
         tiempos_candles=candle_times,
         ts_inicio_total=int(df_idx["timestamp"][0].timestamp()),
@@ -292,7 +292,7 @@ def _crear_payload(
         "candles":      candles,
         "markers":      markers,
         "trades":       trades,
-        "equity_drawdown": equity_drawdown,
+        "equity_curve": equity_curve,
         "indicadores":  indicadores,
     }
 
@@ -406,7 +406,7 @@ def _resumen_trades(trades: list[dict]) -> dict:
     }
 
 
-def _crear_equity_drawdown(
+def _crear_equity_curve(
     *,
     trial,
     tiempos_candles: list[int],
@@ -418,13 +418,11 @@ def _crear_equity_drawdown(
 
     cols = trial.replay.trades
     inicial = float(equity_curve[0])
-    peak = inicial
-    eventos = [{"time": int(ts_inicio_total), "saldo": inicial, "peak": peak}]
+    eventos = [{"time": int(ts_inicio_total), "saldo": inicial}]
     for i in range(int(cols["idx_salida"].shape[0])):
         saldo = float(equity_curve[i + 1])
-        peak = max(peak, saldo)
         ts = _segundos_desde_us(cols["ts_salida"][i])
-        eventos.append({"time": int(ts), "saldo": saldo, "peak": peak})
+        eventos.append({"time": int(ts), "saldo": saldo})
 
     eventos = _deduplicar_por_tiempo(sorted(eventos, key=lambda p: p["time"]))
     salida: list[dict] = []
@@ -435,17 +433,14 @@ def _crear_equity_drawdown(
             evento_idx += 1
             estado = eventos[evento_idx]
 
-        punto = {"time": ts, "saldo": estado["saldo"], "peak": estado["peak"]}
+        punto = {"time": ts, "saldo": estado["saldo"]}
         saldo = float(punto["saldo"])
-        peak = max(float(punto["peak"]), inicial)
         equity_pct = ((saldo / inicial) - 1.0) * 100.0 if inicial else 0.0
-        drawdown_pct = ((saldo - peak) / peak) * 100.0 if peak else 0.0
         salida.append(
             {
                 "time": int(punto["time"]),
                 "saldo": saldo,
                 "equity_pct": equity_pct,
-                "drawdown_pct": min(0.0, drawdown_pct),
             }
         )
     return salida
@@ -542,7 +537,7 @@ body{font-family:var(--font-body);background:var(--bg);color:var(--text);font-si
 .tbtn{font-family:var(--font-mono);background:transparent;color:var(--text-mute);border:none;border-left:1px solid var(--border);padding:7px 11px;font-size:10px;letter-spacing:.08em;cursor:pointer;text-transform:uppercase;font-weight:600;white-space:nowrap}.tbtn:hover{background:var(--panel-2);color:var(--text)}.tbtn.active{color:var(--accent);background:#1a1100}.tbtn[data-toggle]:not(.active){color:var(--text-dim);text-decoration:line-through}
 .legend-inline{display:flex;align-items:center;gap:14px;padding:0 14px;margin-left:auto;font-family:var(--font-mono);font-size:10px;color:var(--text-mute);letter-spacing:.06em;text-transform:uppercase;min-height:31px}.legend-inline .li{display:flex;align-items:center;gap:6px;white-space:nowrap}.legend-inline .ldot{width:8px;height:8px;border-radius:50%;flex:none}.legend-inline .ltri{width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;flex:none}.legend-inline .ltri.up{border-bottom:7px solid var(--long)}.legend-inline .ltri.down{border-top:7px solid var(--short)}
 #charts{background:var(--bg);position:relative;min-height:0;overflow:hidden;display:flex;flex-direction:column}#chart-price{position:relative;overflow:hidden;border-bottom:1px solid var(--border);height:clamp(500px,calc(100vh - 390px),740px)}
-.pane-wrapper{position:relative;border-top:1px solid var(--border);overflow:hidden;background:var(--bg)}.pane-chart{position:relative;height:132px;overflow:hidden}.equity-dd-wrapper .pane-chart{height:230px}.pane-label{position:absolute;top:6px;left:10px;z-index:5;font-family:var(--font-mono);font-size:9.5px;color:var(--accent);background:transparent;padding:0;letter-spacing:.16em;font-weight:700;pointer-events:none;text-transform:uppercase}.pane-label .meta{color:var(--text-mute);margin-left:8px;font-weight:400;letter-spacing:.1em}.global-crosshair{position:absolute;top:0;bottom:0;width:0;border-left:1px dotted var(--accent);z-index:30;pointer-events:none;display:none;opacity:.95}
+.pane-wrapper{position:relative;border-top:1px solid var(--border);overflow:hidden;background:var(--bg)}.pane-chart{position:relative;height:132px;overflow:hidden}.equity-wrapper .pane-chart{height:230px}.pane-label{position:absolute;top:6px;left:10px;z-index:5;font-family:var(--font-mono);font-size:9.5px;color:var(--accent);background:transparent;padding:0;letter-spacing:.16em;font-weight:700;pointer-events:none;text-transform:uppercase}.pane-label .meta{color:var(--text-mute);margin-left:8px;font-weight:400;letter-spacing:.1em}.global-crosshair{position:absolute;top:0;bottom:0;width:0;border-left:1px dotted var(--accent);z-index:30;pointer-events:none;display:none;opacity:.95}
 #tv-attr-logo,[id^="tv-attr-logo"],a[href*="tradingview.com"]{display:none!important}
 #tooltip{position:absolute;display:none;pointer-events:none;background:#000;border:1px solid var(--accent);padding:0;font-family:var(--font-mono);font-size:11px;line-height:1.55;min-width:300px;max-width:360px;z-index:200;box-shadow:0 12px 30px rgba(0,0,0,.9)}.tt-head{font-weight:700;font-size:11px;padding:6px 10px;letter-spacing:.1em;border-bottom:1px solid var(--accent);background:#0a0a0a}.tt-grid{padding:8px 10px;display:grid;grid-template-columns:1fr 1fr;gap:4px 14px}.tt-row{display:flex;justify-content:space-between;gap:8px;font-size:10.5px}.tt-row span{color:var(--text-mute);letter-spacing:.05em;font-size:9.5px;text-transform:uppercase}.tt-row b{color:var(--text);font-weight:500;font-feature-settings:"tnum" 1}.tt-sep{display:none}
 .table-section{background:var(--panel);border-top:1px solid var(--border-strong)}.table-header{display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1px solid var(--border)}.table-header h3{font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;color:var(--accent);font-weight:700}.table-header .count{font-family:var(--font-mono);font-size:10px;color:var(--text-mute);white-space:nowrap}.table-filters{margin-left:auto;display:flex;gap:0;flex-wrap:wrap}.table-filters .tbtn{border-left:1px solid var(--border)}.table-wrap{max-height:340px;overflow:auto}.table-wrap::-webkit-scrollbar{width:8px;height:8px}.table-wrap::-webkit-scrollbar-thumb{background:var(--border-strong)}.table-wrap::-webkit-scrollbar-track{background:var(--bg)}
@@ -571,7 +566,7 @@ __TV_SCRIPT__
 'use strict';
 window.TRIAL_DATA=__DATA_JSON__;
 const D=window.TRIAL_DATA;
-const T={chartBg:'#000000',border:'#1f1f1f',gridV:'#0d0d0d',gridH:'#0d0d0d',textMuted:'#9a9a9a',monoFont:'JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace',crosshair:'#ffb000',crosshairLabel:'#ffb000',up:'#5cdb5c',down:'#ff4d4d',entryLong:'#3aa3ff',entryShort:'#ff8a00',exitWin:'#5cdb5c',exitLoss:'#ff4d4d',exitTrailing:'#ffd84d',equityLine:'#5cdb5c',equityFillTop:'rgba(92,219,92,.45)',equityFillBottom:'rgba(92,219,92,.05)',ddLine:'#ff4d4d',ddFillBottom:'rgba(255,77,77,.05)'};
+const T={chartBg:'#000000',border:'#1f1f1f',gridV:'#0d0d0d',gridH:'#0d0d0d',textMuted:'#9a9a9a',monoFont:'JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace',crosshair:'#ffb000',crosshairLabel:'#ffb000',up:'#5cdb5c',down:'#ff4d4d',entryLong:'#3aa3ff',entryShort:'#ff8a00',exitWin:'#5cdb5c',exitLoss:'#ff4d4d',exitTrailing:'#ffd84d',equityPositiveLine:'#5cdb5c',equityPositiveFill1:'rgba(92,219,92,.45)',equityPositiveFill2:'rgba(92,219,92,.05)',equityNegativeLine:'#ff4d4d',equityNegativeFill1:'rgba(255,77,77,.05)',equityNegativeFill2:'rgba(255,77,77,.45)'};
 if(!D||!window.LightweightCharts){throw new Error('HTML report missing TRIAL_DATA or LightweightCharts');}
 const num=v=>Number.isFinite(Number(v))?Number(v):0;
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -620,39 +615,31 @@ const PANE_MARKER_SCALE=0.78;
 const paneMarkerSeries=[];
 candleSeries.setMarkers(buildMarkers(1));
 (D.indicadores||[]).filter(i=>i.tipo==='pane').forEach(ind=>{const wrapper=document.createElement('div');wrapper.className='pane-wrapper';wrapper.dataset.indicator=ind.nombre;chartsEl.appendChild(wrapper);const lbl=document.createElement('div');lbl.className='pane-label';lbl.textContent=ind.nombre;wrapper.appendChild(lbl);const paneEl=document.createElement('div');paneEl.className='pane-chart';wrapper.appendChild(paneEl);const paneChart=LightweightCharts.createChart(paneEl,baseOpts(paneEl,132,false));addTimeAnchor(paneChart);const paneSeries=paneChart.addLineSeries({color:ind.color,lineWidth:1.2,lastValueVisible:true,priceLineVisible:false});const paneData=(ind.data||[]).map(d=>({time:d.t,value:d.v}));paneSeries.setData(paneData);if(ind.min!==undefined&&ind.max!==undefined){paneSeries.applyOptions({autoscaleInfoProvider:()=>({priceRange:{minValue:ind.min,maxValue:ind.max},margins:{above:8,below:8}})});} (ind.niveles||[]).forEach(n=>paneSeries.createPriceLine({price:n.valor,color:n.color,lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true}));paneSeries.setMarkers(buildMarkers(PANE_MARKER_SCALE));paneMarkerSeries.push(paneSeries);registerChart(paneChart,false);paneSeriesMap[ind.nombre]={wrapper,chart:paneChart,el:paneEl};addToggleButton(ind.nombre,shortLabel(ind.nombre));});
-function addEquityDrawdownPane(){
-  const eqArr=D.equity_drawdown||[];
-  const wrapper=document.createElement('div');wrapper.className='pane-wrapper equity-dd-wrapper';chartsEl.appendChild(wrapper);
+function addEquityPane(){
+  const eqArr=D.equity_curve||[];
+  const wrapper=document.createElement('div');wrapper.className='pane-wrapper equity-wrapper';chartsEl.appendChild(wrapper);
   const lbl=document.createElement('div');lbl.className='pane-label';
   const last=eqArr.length?eqArr[eqArr.length-1]:{};
-  const eqLast=num(last.equity_pct),ddLast=num(last.drawdown_pct);
-  lbl.innerHTML=`EQUITY / DRAWDOWN <span class="meta">equity <span class="${eqLast>=0?'pos':'neg'}">${fmtPctPoints(eqLast)}</span> · dd <span class="neg">${fmtPctPoints(ddLast)}</span></span>`;
+  const initialEquity=num(eqArr[0]?.saldo),lastEquity=num(last.saldo),eqLast=num(last.equity_pct);
+  lbl.innerHTML=`EQUITY <span class="meta">balance ${fmtMoney(lastEquity,2)} · inicial ${fmtMoney(initialEquity,2)} · <span class="${eqLast>=0?'pos':'neg'}">${fmtPctPoints(eqLast)}</span></span>`;
   wrapper.appendChild(lbl);
-  const paneEl=document.createElement('div');paneEl.id='chart-equity-dd';paneEl.className='pane-chart';wrapper.appendChild(paneEl);
+  const paneEl=document.createElement('div');paneEl.id='chart-equity';paneEl.className='pane-chart';wrapper.appendChild(paneEl);
   const chart=LightweightCharts.createChart(paneEl,baseOpts(paneEl,230,false));
   addTimeAnchor(chart);
-  // Eje Y simétrico alrededor de 0 — equity ocupa la mitad superior, drawdown la inferior.
-  const eqMax=eqArr.reduce((m,p)=>Math.max(m,num(p.equity_pct)),0);
-  const ddMin=eqArr.reduce((m,p)=>Math.min(m,num(p.drawdown_pct)),0);
-  const yLimit=Math.ceil(Math.max(eqMax,Math.abs(ddMin),1)*1.10*100)/100;
-  const sharedScale=()=>({priceRange:{minValue:-yLimit,maxValue:yLimit},margins:{above:0,below:0}});
-  // Equity: BaselineSeries con base 0 — sólo la mitad superior queda rellena (verde),
-  // la inferior se descarta clipeando a 0 los valores negativos.
-  const equitySeries=chart.addBaselineSeries({baseValue:{type:'price',price:0},topLineColor:T.equityLine,topFillColor1:T.equityFillTop,topFillColor2:T.equityFillBottom,bottomLineColor:T.equityLine,bottomFillColor1:'rgba(0,0,0,0)',bottomFillColor2:'rgba(0,0,0,0)',lineWidth:2,lastValueVisible:true,priceLineVisible:false});
-  equitySeries.setData(eqArr.map(p=>({time:p.time,value:Math.max(0,num(p.equity_pct))})));
-  equitySeries.applyOptions({autoscaleInfoProvider:sharedScale});
-  // Drawdown: BaselineSeries con base 0 — sólo la mitad inferior queda rellena (rojo),
-  // estilo "Running Maximum Drawdown" (Fidelity-style).
-  const drawdownSeries=chart.addBaselineSeries({baseValue:{type:'price',price:0},topLineColor:T.ddLine,topFillColor1:'rgba(0,0,0,0)',topFillColor2:'rgba(0,0,0,0)',bottomLineColor:T.ddLine,bottomFillColor1:'rgba(255,77,77,.45)',bottomFillColor2:T.ddFillBottom,lineWidth:2,lastValueVisible:true,priceLineVisible:false});
-  drawdownSeries.setData(eqArr.map(p=>({time:p.time,value:Math.min(0,num(p.drawdown_pct))})));
-  drawdownSeries.applyOptions({autoscaleInfoProvider:sharedScale});
-  // Línea de cero compartida.
-  equitySeries.createPriceLine({price:0,color:'#8a8a8a88',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true});
+  const values=eqArr.map(p=>num(p.saldo));
+  const minEquity=Math.min(initialEquity,...values);
+  const maxEquity=Math.max(initialEquity,...values);
+  const pad=Math.max((maxEquity-minEquity)*0.08,Math.abs(initialEquity)*0.002,1);
+  const equityScale=()=>({priceRange:{minValue:minEquity-pad,maxValue:maxEquity+pad},margins:{above:0,below:0}});
+  const equitySeries=chart.addBaselineSeries({baseValue:{type:'price',price:initialEquity},topLineColor:T.equityPositiveLine,topFillColor1:T.equityPositiveFill1,topFillColor2:T.equityPositiveFill2,bottomLineColor:T.equityNegativeLine,bottomFillColor1:T.equityNegativeFill1,bottomFillColor2:T.equityNegativeFill2,lineWidth:2,lastValueVisible:true,priceLineVisible:false});
+  equitySeries.setData(eqArr.map(p=>({time:p.time,value:num(p.saldo)})));
+  equitySeries.applyOptions({autoscaleInfoProvider:equityScale});
+  equitySeries.createPriceLine({price:initialEquity,color:'#8a8a8a88',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true});
   registerChart(chart,false);
-  paneSeriesMap.EQUITY_DD={wrapper,chart,el:paneEl};
-  addToggleButton('EQUITY_DD','EQUITY/DD');
+  paneSeriesMap.EQUITY={wrapper,chart,el:paneEl};
+  addToggleButton('EQUITY','EQUITY');
 }
-addEquityDrawdownPane();
+addEquityPane();
 const tooltipEl=document.getElementById('tooltip');const byTime={};(D.markers||[]).forEach(m=>{if(!byTime[m.time])byTime[m.time]=[];byTime[m.time].push(m);});const tradeByN={};(D.trades||[]).forEach(t=>{tradeByN[t.n]=t;});
 const riskMode=!!(D.parametros&&D.parametros.risk_sl_ewma_mult!=null);
 const fmtRiskPct=v=>Number.isFinite(Number(v))&&Number(v)>0?fmtPctU(v):'-';

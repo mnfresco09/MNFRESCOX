@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import math
 from threading import Lock
+from typing import ClassVar
 
 import numpy as np
 import polars as pl
-
 from NUCLEO.base_estrategia import BaseEstrategia
 
 try:
@@ -29,6 +29,8 @@ DEFAULT_HALFLIFE_BARS = 15
 DEFAULT_NORMALIZATION_MULTIPLIER = 3.0
 DEFAULT_CLIP_SIGMAS = 2.5
 DEFAULT_UMBRAL_CVD = 1.0
+DEFAULT_MIN_DISTANCE_Z = 0.25
+DEFAULT_MAX_DISTANCE_Z = 2.40
 VOLUME_EPSILON = 1e-7
 
 IDX_VWAP = 0
@@ -53,7 +55,7 @@ _JIT_PRECALENTADO = False
 class VWAPCVD(BaseEstrategia):
     ID = 4
     NOMBRE = "VWAP-CVD"
-    COLUMNAS_REQUERIDAS = {"volume", "taker_buy_volume", "taker_sell_volume"}
+    COLUMNAS_REQUERIDAS: ClassVar[set[str]] = {"volume", "taker_buy_volume", "taker_sell_volume"}
 
     def parametros_por_defecto(self) -> dict:
         return {
@@ -61,14 +63,28 @@ class VWAPCVD(BaseEstrategia):
             "normalization_multiplier": DEFAULT_NORMALIZATION_MULTIPLIER,
             "vwap_clip_sigmas": DEFAULT_CLIP_SIGMAS,
             "umbral_cvd": DEFAULT_UMBRAL_CVD,
+            "min_distance_z": DEFAULT_MIN_DISTANCE_Z,
+            "max_distance_z": DEFAULT_MAX_DISTANCE_Z,
         }
 
     def espacio_busqueda(self, trial) -> dict:
         return {
             "halflife_bars": trial.suggest_int("halflife_bars", 45, 75, step=1),
-            "normalization_multiplier": trial.suggest_float("normalization_multiplier",3.0,5.0,step=0.5,),
+            "normalization_multiplier": trial.suggest_float(
+                "normalization_multiplier",
+                3.0,
+                5.0,
+                step=0.5,
+            ),
             "vwap_clip_sigmas": trial.suggest_float("vwap_clip_sigmas", 2.5, 3.5, step=0.1),
-            "umbral_cvd": trial.suggest_float("umbral_cvd",1.3,2.0,step=0.1,),
+            "umbral_cvd": trial.suggest_float(
+                "umbral_cvd",
+                1.3,
+                2.0,
+                step=0.1,
+            ),
+            "min_distance_z": trial.suggest_float("min_distance_z", 0.10, 0.60, step=0.05),
+            "max_distance_z": trial.suggest_float("max_distance_z", 1.60, 3.20, step=0.10),
         }
 
     def bind(self, arrays, cache=None) -> None:
@@ -76,26 +92,42 @@ class VWAPCVD(BaseEstrategia):
         _precalentar_vwapcvd_jit()
 
     def generar_señales(self, df: pl.DataFrame, params: dict) -> pl.Series:
-        halflife, norm_mult, clip_sigmas, umbral = _normalizar_params(params)
+        halflife, norm_mult, clip_sigmas, umbral, min_distance_z, max_distance_z = _normalizar_params(params)
         valores = self._indicadores(df, halflife, norm_mult, clip_sigmas)
         vwap = valores[IDX_VWAP]
+        distance_z = valores[IDX_DISTANCE_Z]
         cvd_z = valores[IDX_CVD_Z]
         cvd_z_prev = self.shift(cvd_z, 1)
 
         finitos = (
             np.isfinite(self.close)
             & np.isfinite(vwap)
+            & np.isfinite(distance_z)
             & np.isfinite(cvd_z_prev)
             & np.isfinite(cvd_z)
         )
-        long_mask = finitos & (self.close > vwap) & (cvd_z_prev <= umbral) & (cvd_z > umbral)
-        short_mask = finitos & (self.close < vwap) & (cvd_z_prev >= -umbral) & (cvd_z < -umbral)
+        long_mask = (
+            finitos
+            & (self.close > vwap)
+            & (distance_z >= min_distance_z)
+            & (distance_z <= max_distance_z)
+            & (cvd_z_prev <= umbral)
+            & (cvd_z > umbral)
+        )
+        short_mask = (
+            finitos
+            & (self.close < vwap)
+            & (distance_z <= -min_distance_z)
+            & (distance_z >= -max_distance_z)
+            & (cvd_z_prev >= -umbral)
+            & (cvd_z < -umbral)
+        )
         _bloquear_warmup(long_mask, _warmup(halflife, norm_mult))
         _bloquear_warmup(short_mask, _warmup(halflife, norm_mult))
         return self.serie_senales(df.height, long_mask, short_mask)
 
     def indicadores_para_grafica(self, df: pl.DataFrame, params: dict) -> list[dict]:
-        halflife, norm_mult, clip_sigmas, umbral = _normalizar_params(params)
+        halflife, norm_mult, clip_sigmas, umbral, _, _ = _normalizar_params(params)
         valores = self._indicadores(df, halflife, norm_mult, clip_sigmas)
         return [
             _serie_overlay(df, valores[IDX_VWAP], "#00bcd4", f"VWAP-CVD VWAP({halflife})"),
@@ -147,17 +179,20 @@ class VWAPCVD(BaseEstrategia):
         )
 
 
-def _normalizar_params(params: dict) -> tuple[int, float, float, float]:
+def _normalizar_params(params: dict) -> tuple[int, float, float, float, float, float]:
     halflife = max(1, int(params.get("halflife_bars", DEFAULT_HALFLIFE_BARS)))
     norm_mult = max(0.1, float(params.get("normalization_multiplier", DEFAULT_NORMALIZATION_MULTIPLIER)))
     clip_sigmas = max(0.1, float(params.get("vwap_clip_sigmas", DEFAULT_CLIP_SIGMAS)))
     umbral = max(0.0, float(params.get("umbral_cvd", params.get("umbral_inicio_tendencia", DEFAULT_UMBRAL_CVD))))
-    return halflife, norm_mult, clip_sigmas, umbral
+    min_distance_z = max(0.0, float(params.get("min_distance_z", DEFAULT_MIN_DISTANCE_Z)))
+    max_distance_z = max(0.0, float(params.get("max_distance_z", DEFAULT_MAX_DISTANCE_Z)))
+    max_distance_z = max(min_distance_z, max_distance_z)
+    return halflife, norm_mult, clip_sigmas, umbral, min_distance_z, max_distance_z
 
 
 def _warmup(halflife: int, normalization_multiplier: float) -> int:
     normalization_halflife = max(1.0, float(halflife) * float(normalization_multiplier))
-    return max(int(halflife) * 9, int(round(normalization_halflife * 3.0)))
+    return max(int(halflife) * 9, round(normalization_halflife * 3.0))
 
 
 def _bloquear_warmup(mask: np.ndarray, warmup: int) -> None:
@@ -287,10 +322,7 @@ def _calcular_vwap_cvd(
             dist_final_mean_sq = clipped_dist * clipped_dist
         else:
             dist_final_mean = alpha_norm * clipped_dist + (1.0 - alpha_norm) * dist_final_mean
-            dist_final_mean_sq = (
-                alpha_norm * clipped_dist * clipped_dist
-                + (1.0 - alpha_norm) * dist_final_mean_sq
-            )
+            dist_final_mean_sq = alpha_norm * clipped_dist * clipped_dist + (1.0 - alpha_norm) * dist_final_mean_sq
         dist_final_std = math.sqrt(max(0.0, dist_final_mean_sq - dist_final_mean * dist_final_mean))
         dist_z_i = (dist_signal_state - dist_final_mean) / dist_final_std if dist_final_std > 0.0 else 0.0
         distance_z[idx] = dist_z_i
@@ -325,10 +357,7 @@ def _calcular_vwap_cvd(
             cvd_final_mean_sq = clipped_cvd * clipped_cvd
         else:
             cvd_final_mean = alpha_norm * clipped_cvd + (1.0 - alpha_norm) * cvd_final_mean
-            cvd_final_mean_sq = (
-                alpha_norm * clipped_cvd * clipped_cvd
-                + (1.0 - alpha_norm) * cvd_final_mean_sq
-            )
+            cvd_final_mean_sq = alpha_norm * clipped_cvd * clipped_cvd + (1.0 - alpha_norm) * cvd_final_mean_sq
         cvd_final_std = math.sqrt(max(0.0, cvd_final_mean_sq - cvd_final_mean * cvd_final_mean))
         cvd_z_i = (cvd_signal_state - cvd_final_mean) / cvd_final_std if cvd_final_std > 0.0 else 0.0
         cvd_z[idx] = cvd_z_i
@@ -378,7 +407,7 @@ def _serie_overlay(df: pl.DataFrame, valores: np.ndarray, color: str, nombre: st
         "nombre": nombre,
         "tipo": "overlay",
         "color": color,
-        "data": [{"t": int(t), "v": float(v)} for t, v in zip(ts_seg, vals)],
+        "data": [{"t": int(t), "v": float(v)} for t, v in zip(ts_seg, vals, strict=False)],
     }
 
 
@@ -395,7 +424,7 @@ def _serie_pane(
         "nombre": nombre,
         "tipo": "pane",
         "color": color,
-        "data": [{"t": int(t), "v": float(v)} for t, v in zip(ts_seg, vals)],
+        "data": [{"t": int(t), "v": float(v)} for t, v in zip(ts_seg, vals, strict=False)],
     }
     if niveles:
         payload["niveles"] = niveles

@@ -20,6 +20,24 @@ class HtmlTooltipTest(unittest.TestCase):
         self.assertIn("SL %", html)
         self.assertIn("APALANC.", html)
 
+    def test_equity_usa_baseline_unica_sobre_saldo_inicial(self) -> None:
+        payload = _payload_minimo_paridad()
+        payload["equity_curve"] = [
+            {"time": 1, "saldo": 1000.0, "equity_pct": 0.0},
+            {"time": 2, "saldo": 1040.0, "equity_pct": 4.0},
+            {"time": 3, "saldo": 960.0, "equity_pct": -4.0},
+        ]
+
+        html = _render_html(payload, "")
+
+        self.assertIn("function addEquityPane", html)
+        self.assertIn("const initialEquity=num(eqArr[0]?.saldo)", html)
+        self.assertIn("baseValue:{type:'price',price:initialEquity}", html)
+        self.assertIn("bottomLineColor:T.equityNegativeLine", html)
+        self.assertIn("value:num(p.saldo)", html)
+        self.assertNotIn("drawdownSeries", html)
+        self.assertNotIn("EQUITY / DRAWDOWN", html)
+
 
 def _payload_minimo_paridad() -> dict:
     return {
@@ -39,7 +57,7 @@ def _payload_minimo_paridad() -> dict:
         "candles": [],
         "markers": [],
         "trades": [],
-        "equity_drawdown": [],
+        "equity_curve": [],
         "indicadores": [],
     }
 

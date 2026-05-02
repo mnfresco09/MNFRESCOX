@@ -31,14 +31,14 @@ TIMEFRAMES = ["1h"]
 # ---------------------------------------------------------------------------
 # FECHAS 2020-01-01 hasta 2025-12-31
 # ---------------------------------------------------------------------------
-FECHA_INICIO = "2025-01-01"
+FECHA_INICIO = "2020-01-01"
 FECHA_FIN    = "2025-12-31"
 
 # ---------------------------------------------------------------------------
 # ESTRATEGIAS
 # ---------------------------------------------------------------------------
 # ID numérico, lista de IDs, o "all" para ejecutar todas.
-ESTRATEGIA_ID = 4
+ESTRATEGIA_ID = 5
 
 # ---------------------------------------------------------------------------
 # CAPITAL Y COMISIONES
@@ -74,12 +74,12 @@ EXIT_TYPE = "TRAILING"
 # OPTIMIZACIÓN (OPTUNA)
 # ---------------------------------------------------------------------------
 # Potencias de 2 recomendadas para QMC: 64, 128, 256, 512
-N_TRIALS = 2000
+N_TRIALS = 100
 
 # "QMC"    → Exploración uniforme (Sobol). Recomendado para campañas grandes.
 # "TPE"    → Guiado por resultados anteriores; su coste crece con el histórico.
 # "HYBRID" → QMC primera mitad + TPE segunda mitad; útil sólo en campañas moderadas.
-OPTUNA_SAMPLER = "TPE"
+OPTUNA_SAMPLER = "QMC"
 
 # True  = usa las semillas configuradas y permite reproducibilidad.
 # False = ignora las semillas y cada ejecución explora caminos aleatorios.
@@ -93,7 +93,7 @@ OPTUNA_SEED = 42
 # ---------------------------------------------------------------------------
 # False = todos los trials ven el Parquet original.
 # True  = cada trial ve un camino alternativo plausible, generado en memoria.
-PERTURBACIONES_ACTIVAS = False
+PERTURBACIONES_ACTIVAS = True
 # Entero obligatorio cuando USAR_SEED = True y PERTURBACIONES_ACTIVAS = True.
 PERTURBACIONES_SEED = 42
 
@@ -120,6 +120,6 @@ MAX_ARCHIVOS = 20       # Máximo de archivos por carpeta antes de rotar los má
 # "all"    → muestra todo el período del trial en el gráfico HTML
 # "3m"     → muestra los últimos 3 meses
 # "custom" → usa GRAFICA_DESDE y GRAFICA_HASTA
-GRAFICA_RANGO = "3m"
+GRAFICA_RANGO = "12m"
 GRAFICA_DESDE = "2024-01-01"    # Solo si GRAFICA_RANGO = "custom"
 GRAFICA_HASTA = "2024-12-31"    # Solo si GRAFICA_RANGO = "custom"

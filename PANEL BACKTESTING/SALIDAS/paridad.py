@@ -28,16 +28,16 @@ RIESGO_MAXIMO_MAX = 35.0
 VOL_HALFLIFE = 50
 
 # Rango que Optuna puede explorar para VOL_HALFLIFE.
-VOL_HALFLIFE_MIN = 60
-VOL_HALFLIFE_MAX = 100
+VOL_HALFLIFE_MIN = 30
+VOL_HALFLIFE_MAX = 75
 
 # Multiplo de volatilidad EWMA usado para colocar el Stop Loss.
 # Distancia SL real = volatilidad_ewma * SL_EWMA_MULT.
 SL_EWMA_MULT = 2.0
 
 # Rango que Optuna puede explorar para SL_EWMA_MULT.
-SL_EWMA_MULT_MIN = 3.5
-SL_EWMA_MULT_MAX = 7.0
+SL_EWMA_MULT_MIN = 2.0
+SL_EWMA_MULT_MAX = 6.0
 
 # Multiplo de volatilidad EWMA usado como Take Profit en salida FIXED.
 # Solo se usa cuando EXIT_TYPE="FIXED" y USAR_PARIDAD_RIESGO=True.
@@ -53,14 +53,14 @@ TRAIL_ACT_EWMA_MULT = 3.0
 
 # Rango que Optuna puede explorar para TRAIL_ACT_EWMA_MULT.
 TRAIL_ACT_EWMA_MULT_MIN = 6.0
-TRAIL_ACT_EWMA_MULT_MAX = 11.0
+TRAIL_ACT_EWMA_MULT_MAX = 18.0
 
 # Distancia del trailing respecto al mejor precio alcanzado, expresada como
 # multiplo de volatilidad EWMA. Debe quedar por debajo de TRAIL_ACT_EWMA_MULT.
 TRAIL_DIST_EWMA_MULT = 1.0
 
 # Rango que Optuna puede explorar para TRAIL_DIST_EWMA_MULT.
-TRAIL_DIST_EWMA_MULT_MIN = 2.50
+TRAIL_DIST_EWMA_MULT_MIN = 0.50
 TRAIL_DIST_EWMA_MULT_MAX = 6.0
 
 # Apalancamiento minimo permitido cuando la paridad calcula el tamano del

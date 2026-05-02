@@ -58,10 +58,10 @@ class VWAPDistanceReversion(BaseEstrategia):
 
     def espacio_busqueda(self, trial) -> dict:
         return {
-            "halflife_bars": trial.suggest_int("halflife_bars", 8, 80, step=1),
-            "normalization_multiplier": trial.suggest_float("normalization_multiplier", 1.5, 5.0, step=0.5),
+            "halflife_bars": trial.suggest_int("halflife_bars", 35, 65, step=1),
+            "normalization_multiplier": trial.suggest_float("normalization_multiplier", 1.1, 2.5, step=0.1),
             "vwap_clip_sigmas": trial.suggest_float("vwap_clip_sigmas", 2.0, 3.5, step=0.1),
-            "umbral_distance_z": trial.suggest_float("umbral_distance_z", 0.30, 1.50, step=0.05),
+            "umbral_distance_z": trial.suggest_float("umbral_distance_z", 0.30, 1.00, step=0.1),
         }
 
     def bind(self, arrays, cache=None) -> None:
