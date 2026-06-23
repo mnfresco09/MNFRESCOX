@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from CONFIGURACION import config
+from CONFIGURACION import _tecnico, config
 from CONTRATOS.errores import ErrorConfiguracion
 from CONTRATOS.modelos import (
     Configuracion,
@@ -20,6 +20,52 @@ from CONTRATOS.modelos import (
 
 RAIZ_PANEL = Path(__file__).resolve().parents[1]
 FRECUENCIAS_VALIDAS = frozenset({"M", "W", "Q"})
+PERFILES_REGIMEN_VALIDOS = frozenset(_tecnico.PRESETS_REGIMEN)
+PERFILES_RIESGO_VALIDOS = frozenset((*_tecnico.FRACCION_VOL_NIVEL, "personalizado"))
+IDIOMAS_REPORTE_VALIDOS = frozenset({"es", "it"})
+
+
+def _validar_perfil_riesgo(perfil: str, volatilidad_objetivo: float | None) -> str:
+    if perfil not in PERFILES_RIESGO_VALIDOS:
+        raise ErrorConfiguracion(
+            f"PERFIL_RIESGO debe ser uno de {sorted(PERFILES_RIESGO_VALIDOS)}."
+        )
+    if perfil == "personalizado" and volatilidad_objetivo is None:
+        raise ErrorConfiguracion(
+            "PERFIL_RIESGO='personalizado' requiere VOLATILIDAD_OBJETIVO_ANUAL."
+        )
+    return perfil
+
+
+def _validar_idioma_reporte(idioma: str) -> str:
+    if idioma not in IDIOMAS_REPORTE_VALIDOS:
+        raise ErrorConfiguracion(
+            f"IDIOMA_REPORTE debe ser uno de {sorted(IDIOMAS_REPORTE_VALIDOS)}."
+        )
+    return idioma
+
+
+def _validar_volatilidad_objetivo(volatilidad_objetivo: float | None) -> float | None:
+    if volatilidad_objetivo is None:
+        return None
+    if not math.isfinite(volatilidad_objetivo) or volatilidad_objetivo <= 0:
+        raise ErrorConfiguracion(
+            "VOLATILIDAD_OBJETIVO_ANUAL debe ser un número positivo o None."
+        )
+    return float(volatilidad_objetivo)
+
+
+def _regimen_desde_preset(nombre: str) -> ParametrosRegimen:
+    if nombre not in PERFILES_REGIMEN_VALIDOS:
+        raise ErrorConfiguracion(
+            f"PERFIL_REGIMEN debe ser uno de {sorted(PERFILES_REGIMEN_VALIDOS)}."
+        )
+    p = _tecnico.PRESETS_REGIMEN[nombre]
+    return _validar_regimen(
+        p["umbral_drawdown_crisis"], p["umbral_drawdown_bajista"],
+        p["ventana_volatilidad"], p["ventana_media_larga"], p["ventana_pendiente"],
+        p["percentil_volatilidad_crisis"],
+    )
 
 
 def _validar_tickers(
@@ -203,7 +249,9 @@ def construir_configuracion(
     frecuencia_rebalanceo: str = "M",
     ventana_estimacion: int = 504,
     solo_largos: bool = True,
-    retorno_objetivo_anual: float = 0.15,
+    perfil_riesgo: str = "moderado",
+    volatilidad_objetivo: float | None = None,
+    idioma_reporte: str = "es",
     tasa_libre_riesgo_anual: float = 0.0,
     dias_anio: int = 252,
     coste_transaccion_pb: float = 10.0,
@@ -211,12 +259,7 @@ def construir_configuracion(
     min_retornos_analisis: int = 252,
     views_black_litterman: Sequence[Mapping[str, object]] = (),
     ventanas_stress: Mapping[str, tuple[str, str]] | None = None,
-    umbral_drawdown_crisis: float = -0.20,
-    umbral_drawdown_bajista: float = -0.10,
-    ventana_volatilidad: int = 20,
-    ventana_media_larga: int = 200,
-    ventana_pendiente: int = 20,
-    percentil_volatilidad_crisis: float = 0.90,
+    perfil_regimen: str = "estandar",
     n_carteras_montecarlo: int = 20_000,
     semilla: int = 42,
     carpeta_historico: Path | None = None,
@@ -244,7 +287,6 @@ def construir_configuracion(
             "VENTANA_ESTIMACION_DIAS no puede ser menor que MIN_RETORNOS_ANALISIS."
         )
     for nombre, valor in (
-        ("RETORNO_OBJETIVO_ANUAL", retorno_objetivo_anual),
         ("TASA_LIBRE_RIESGO_ANUAL", tasa_libre_riesgo_anual),
         ("COSTE_TRANSACCION_PB", coste_transaccion_pb),
     ):
@@ -262,20 +304,16 @@ def construir_configuracion(
         solo_largos,
         peso_maximo,
     )
+    vol_objetivo_validada = _validar_volatilidad_objetivo(volatilidad_objetivo)
+    perfil_riesgo_validado = _validar_perfil_riesgo(perfil_riesgo, vol_objetivo_validada)
+    idioma_reporte_validado = _validar_idioma_reporte(idioma_reporte)
     views = _validar_views(views_black_litterman, tickers_validados)
     stress = _validar_stress(
         ventanas_stress
         if ventanas_stress is not None
         else {"crisis_2022": ("2022-01-03", "2022-10-12")}
     )
-    parametros_regimen = _validar_regimen(
-        umbral_drawdown_crisis,
-        umbral_drawdown_bajista,
-        ventana_volatilidad,
-        ventana_media_larga,
-        ventana_pendiente,
-        percentil_volatilidad_crisis,
-    )
+    parametros_regimen = _regimen_desde_preset(perfil_regimen)
     return Configuracion(
         tickers=tickers_validados,
         fecha_inicio=fecha_inicio_validada,
@@ -284,7 +322,9 @@ def construir_configuracion(
         frecuencia_rebalanceo=frecuencia_rebalanceo,
         ventana_estimacion=int(ventana_estimacion),
         restricciones=restricciones,
-        retorno_objetivo_anual=float(retorno_objetivo_anual),
+        perfil_riesgo=perfil_riesgo_validado,
+        volatilidad_objetivo=vol_objetivo_validada,
+        idioma_reporte=idioma_reporte_validado,
         tasa_libre_riesgo_anual=float(tasa_libre_riesgo_anual),
         dias_anio=int(dias_anio),
         coste_transaccion_pb=float(coste_transaccion_pb),
@@ -320,20 +360,17 @@ def cargar_configuracion() -> Configuracion:
         frecuencia_rebalanceo=config.FRECUENCIA_REBALANCEO,
         ventana_estimacion=config.VENTANA_ESTIMACION_DIAS,
         solo_largos=config.SOLO_LARGOS,
-        retorno_objetivo_anual=config.RETORNO_OBJETIVO_ANUAL,
+        perfil_riesgo=config.PERFIL_RIESGO,
+        volatilidad_objetivo=config.VOLATILIDAD_OBJETIVO_ANUAL,
+        idioma_reporte=config.IDIOMA_REPORTE,
         tasa_libre_riesgo_anual=config.TASA_LIBRE_RIESGO_ANUAL,
-        dias_anio=config.DIAS_ANIO,
+        dias_anio=_tecnico.DIAS_ANIO,
         coste_transaccion_pb=config.COSTE_TRANSACCION_PB,
         nivel_confianza=config.NIVEL_CONFIANZA,
-        min_retornos_analisis=config.MIN_RETORNOS_ANALISIS,
+        min_retornos_analisis=_tecnico.MIN_RETORNOS_ANALISIS,
         views_black_litterman=config.VIEWS_BLACK_LITTERMAN,
         ventanas_stress=config.VENTANAS_STRESS,
-        umbral_drawdown_crisis=config.UMBRAL_DRAWDOWN_CRISIS,
-        umbral_drawdown_bajista=config.UMBRAL_DRAWDOWN_BAJISTA,
-        ventana_volatilidad=config.VENTANA_VOLATILIDAD,
-        ventana_media_larga=config.VENTANA_MEDIA_LARGA,
-        ventana_pendiente=config.VENTANA_PENDIENTE,
-        percentil_volatilidad_crisis=config.PERCENTIL_VOLATILIDAD_CRISIS,
-        n_carteras_montecarlo=config.N_CARTERAS_MONTECARLO,
-        semilla=config.SEMILLA,
+        perfil_regimen=config.PERFIL_REGIMEN,
+        n_carteras_montecarlo=_tecnico.N_CARTERAS_MONTECARLO,
+        semilla=_tecnico.SEMILLA,
     )

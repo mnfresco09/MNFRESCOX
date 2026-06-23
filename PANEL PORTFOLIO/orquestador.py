@@ -27,6 +27,7 @@ from OPTIMIZACION.montecarlo import nube_montecarlo
 from REPORTES.excel import generar_excel
 from REPORTES.html import generar_html
 from REPORTES.pdf import generar_pdf
+from RIESGO.perfil import evaluar_perfil
 from RIESGO.riesgo import evaluar_riesgo
 
 
@@ -72,12 +73,20 @@ def _paso_montecarlo(ctx: dict, log) -> None:
     )
 
 
+def _paso_perfil(ctx: dict, log) -> None:
+    ctx["perfil_riesgo"] = evaluar_perfil(ctx["datos"], ctx["frontera"], ctx["cfg"])
+    carteras = ctx["perfil_riesgo"].carteras
+    log("Pesos por nivel de riesgo: " + ", ".join(
+        f"{c.nivel} (vol {c.volatilidad_esperada:.1%})" for c in carteras))
+
+
 def _paso_riesgo(ctx: dict, log) -> None:
     ctx["riesgo"] = evaluar_riesgo(ctx["datos"], ctx["analisis"], ctx["cfg"])
     ctx["paquete"] = PaqueteReporte(
         configuracion=ctx["cfg"], datos=ctx["datos"], analisis=ctx["analisis"],
         analisis_actual=ctx["analisis_actual"], asignaciones=ctx["asignaciones"],
         frontera=ctx["frontera"], monte_carlo=ctx["monte_carlo"], riesgo=ctx["riesgo"],
+        perfil_riesgo=ctx["perfil_riesgo"],
         objetivo=ctx.get("objetivo", "comparar"),
     )
 
@@ -104,6 +113,7 @@ def _paso_excel(ctx: dict, log) -> None:
     manifiesto.write_text(json.dumps({
         "generado_en": datetime.now().isoformat(timespec="seconds"),
         "tickers": list(cfg.tickers), "fecha_inicio": cfg.fecha_inicio, "fecha_fin": cfg.fecha_fin,
+        "idioma_reporte": cfg.idioma_reporte,
         "retornos_comunes": int(len(ctx["datos"].log_retornos)),
         "archivos": {"html": "informe.html", "pdf": "informe.pdf", "excel": "informe.xlsx"},
     }, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -118,6 +128,7 @@ PASOS = (
     ("Asignando las 6 carteras", _paso_asignar, 1.0),
     ("Construyendo la frontera eficiente", _paso_frontera, 2.0),
     ("Simulación Monte Carlo", _paso_montecarlo, 1.0),
+    ("Pesos por nivel de riesgo", _paso_perfil, 1.0),
     ("Backtest walk-forward y métricas de riesgo", _paso_riesgo, 22.0),
     ("Informe HTML interactivo", _paso_html, 30.0),
     ("Informe PDF", _paso_pdf, 9.0),

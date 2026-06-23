@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 
 
 def _crear_parser() -> argparse.ArgumentParser:
@@ -39,6 +40,7 @@ def _ejecutar_descarga(configuracion) -> int:
 
 
 _OBJETIVOS_ORDEN = ("sharpe", "riesgo", "objetivo", "convexidad", "comparar")
+_IDIOMAS_REPORTE = ("es", "it")
 
 
 def _elegir_objetivo(console, configuracion) -> str:
@@ -48,6 +50,8 @@ def _elegir_objetivo(console, configuracion) -> str:
     from REPORTES.formato import OBJETIVOS
 
     por_defecto = getattr(configuracion, "objetivo", None) or "comparar"
+    if not sys.stdin.isatty():
+        return por_defecto
     console.print("[bold]¿En qué quieres centrar el análisis?[/]")
     for i, clave in enumerate(_OBJETIVOS_ORDEN, start=1):
         marca = "  [dim](por defecto)[/]" if clave == por_defecto else ""
@@ -55,6 +59,40 @@ def _elegir_objetivo(console, configuracion) -> str:
     idx_def = str(_OBJETIVOS_ORDEN.index(por_defecto) + 1)
     eleccion = Prompt.ask("Elige una opción", choices=[str(i) for i in range(1, 6)], default=idx_def)
     return _OBJETIVOS_ORDEN[int(eleccion) - 1]
+
+
+def _configuracion_con_idioma(configuracion, idioma: str):
+    """Devuelve una copia tipada con el idioma elegido para los reportes."""
+    if idioma not in _IDIOMAS_REPORTE:
+        raise ValueError(f"Idioma de reporte no soportado: {idioma}")
+    return replace(configuracion, idioma_reporte=idioma)
+
+
+def _elegir_idioma(console, configuracion) -> str:
+    """Pregunta el idioma del reporte con el idioma configurado como defecto."""
+    from rich.prompt import Prompt
+
+    if not sys.stdin.isatty():
+        return configuracion.idioma_reporte
+    por_defecto = configuracion.idioma_reporte
+    console.print("[bold]¿Qué idioma quieres para el reporte?[/]")
+    console.print("  [cyan]1[/]) Español" + ("  [dim](por defecto)[/]" if por_defecto == "es" else ""))
+    console.print("  [cyan]2[/]) Italiano" + ("  [dim](por defecto)[/]" if por_defecto == "it" else ""))
+    idx_def = "1" if por_defecto == "es" else "2"
+    eleccion = Prompt.ask("Elige una opción", choices=["1", "2"], default=idx_def)
+    return _IDIOMAS_REPORTE[int(eleccion) - 1]
+
+
+def _elegir_idioma_plano(configuracion) -> str:
+    if not sys.stdin.isatty():
+        return configuracion.idioma_reporte
+    print("¿Qué idioma quieres para el reporte?")
+    print("  1) Español")
+    print("  2) Italiano")
+    eleccion = input(f"Elige una opción [{1 if configuracion.idioma_reporte == 'es' else 2}]: ").strip()
+    if not eleccion:
+        return configuracion.idioma_reporte
+    return _IDIOMAS_REPORTE[int(eleccion) - 1]
 
 
 def _ejecutar_analisis_con_progreso(configuracion) -> int:
@@ -84,7 +122,10 @@ def _ejecutar_analisis_con_progreso(configuracion) -> int:
     )
 
     objetivo = _elegir_objetivo(console, configuracion)
+    idioma = _elegir_idioma(console, configuracion)
+    configuracion = _configuracion_con_idioma(configuracion, idioma)
     console.print(f"\n[green]Objetivo:[/] {OBJETIVOS[objetivo]}\n")
+    console.print(f"[green]Idioma reporte:[/] {'Italiano' if idioma == 'it' else 'Español'}\n")
 
     pasos = orquestador.PASOS
     total = sum(peso for _, _, peso in pasos)
@@ -120,6 +161,7 @@ def _ejecutar_analisis_con_progreso(configuracion) -> int:
 
 def _ejecutar_analisis_plano(configuracion, orquestador) -> int:
     """Reserva sin rich: mismo pipeline, mensajes simples."""
+    configuracion = _configuracion_con_idioma(configuracion, _elegir_idioma_plano(configuracion))
     ctx: dict = {"cfg": configuracion, "rutas": {}}
     n = len(orquestador.PASOS)
     for i, (etiqueta, funcion, _) in enumerate(orquestador.PASOS, start=1):

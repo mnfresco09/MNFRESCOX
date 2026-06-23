@@ -58,7 +58,9 @@ class Configuracion:
     frecuencia_rebalanceo: str
     ventana_estimacion: int
     restricciones: Restricciones
-    retorno_objetivo_anual: float
+    perfil_riesgo: str
+    volatilidad_objetivo: float | None
+    idioma_reporte: str
     tasa_libre_riesgo_anual: float
     dias_anio: int
     coste_transaccion_pb: float
@@ -144,7 +146,7 @@ class ResultadoFrontera:
     puntos: pd.DataFrame
     minima_varianza: ResultadoAsignacion
     maximo_sharpe: ResultadoAsignacion
-    retorno_objetivo: ResultadoAsignacion
+    maximo_retorno_factible: ResultadoAsignacion
 
 
 @dataclass(frozen=True)
@@ -196,6 +198,36 @@ class ResultadoRiesgo:
 
 
 @dataclass(frozen=True)
+class CarteraNivel:
+    """Cartera eficiente en un nivel de riesgo concreto (bajo/moderado/alto)."""
+
+    nivel: str                        # "bajo" / "moderado" / "alto" / "personalizado"
+    volatilidad_objetivo: float       # volatilidad anual buscada
+    pesos: pd.Series                  # pesos de la cartera eficiente en ese punto
+    retorno_esperado: float           # anual, in-sample (frontera)
+    volatilidad_esperada: float       # anual, in-sample (frontera)
+    metricas_historicas: MetricasCartera  # de esos pesos fijos sobre toda la muestra
+
+
+@dataclass(frozen=True)
+class ResultadoPerfilRiesgo:
+    """RESULTADO PRINCIPAL: los pesos óptimos para cada nivel de riesgo.
+
+    Se entregan los pesos de la cartera eficiente recomendada para el perfil
+    elegido y, además, TODOS los niveles (conservador, moderado, agresivo y
+    opcionalmente personalizado), recorriendo la frontera. Para cada nivel:
+    pesos, retorno y volatilidad esperados (in-sample) y el comportamiento
+    histórico de esos pesos fijos (VaR/CVaR/drawdown sobre toda la muestra).
+    `niveles_frontera` es la tabla escalonada (min-var -> máx retorno) para ver
+    cómo cambia la composición al subir el riesgo.
+    """
+
+    carteras: tuple[CarteraNivel, ...]
+    recomendada: CarteraNivel
+    niveles_frontera: pd.DataFrame
+
+
+@dataclass(frozen=True)
 class PaqueteReporte:
     configuracion: Configuracion
     datos: DatosAlineados
@@ -205,6 +237,7 @@ class PaqueteReporte:
     frontera: ResultadoFrontera
     monte_carlo: ResultadoMonteCarlo
     riesgo: ResultadoRiesgo
+    perfil_riesgo: ResultadoPerfilRiesgo
     objetivo: str = "comparar"
 
 

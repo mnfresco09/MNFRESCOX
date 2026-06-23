@@ -28,7 +28,7 @@ from CONTRATOS.modelos import (
     Rebalanceo,
     ResultadoWalkForward,
 )
-from OPTIMIZACION.asignadores import METODOS, calcular_pesos
+from OPTIMIZACION.asignadores import calcular_pesos, metodos
 
 _FREQ_PERIODO = {"M": "M", "W": "W", "Q": "Q"}
 
@@ -45,18 +45,19 @@ def ejecutar_walk_forward(datos: DatosAlineados, configuracion: Configuracion) -
             f"Histórico insuficiente para walk-forward: {len(fechas)} ≤ ventana {ventana} + 1 mes."
         )
 
+    metodos_activos = metodos(configuracion)
     fechas_oos = fechas[ventana:]                       # cada una tiene ≥ ventana de pasado
     periodo = fechas_oos.to_period(_FREQ_PERIODO[configuracion.frecuencia_rebalanceo])
     es_rebalanceo = ~pd.Series(periodo, index=fechas_oos).duplicated().to_numpy()
 
     pesos_actuales: dict[str, pd.Series] = {}
-    retornos: dict[str, list[float]] = {m: [] for m in METODOS}
-    pesos_diarios: dict[str, list[pd.Series]] = {m: [] for m in METODOS}
+    retornos: dict[str, list[float]] = {m: [] for m in metodos_activos}
+    pesos_diarios: dict[str, list[pd.Series]] = {m: [] for m in metodos_activos}
     rebalanceos: list[Rebalanceo] = []
     coste_unitario = configuracion.coste_transaccion_pb / 10_000.0
 
     for posicion, fecha in enumerate(fechas_oos):
-        coste_hoy = {m: 0.0 for m in METODOS}
+        coste_hoy = {m: 0.0 for m in metodos_activos}
 
         if es_rebalanceo[posicion] or not pesos_actuales:
             ventana_ret = log_retornos.loc[log_retornos.index < fecha].iloc[-ventana:]
@@ -65,7 +66,7 @@ def ejecutar_walk_forward(datos: DatosAlineados, configuracion: Configuracion) -
             objetivos = calcular_pesos(ventana_ret, configuracion)
             pesos_reb: dict[str, pd.Series] = {}
             rotacion_reb: dict[str, float] = {}
-            for metodo in METODOS:
+            for metodo in metodos_activos:
                 objetivo = objetivos[metodo].reindex(activos)
                 previo = pesos_actuales.get(metodo, pd.Series(0.0, index=activos))
                 rotacion = 0.5 * float((objetivo - previo).abs().sum())
@@ -78,12 +79,12 @@ def ejecutar_walk_forward(datos: DatosAlineados, configuracion: Configuracion) -
                     fecha=fecha,
                     pesos=pesos_reb,
                     rotacion=rotacion_reb,
-                    coste={m: rotacion_reb[m] * coste_unitario for m in METODOS},
+                    coste={m: rotacion_reb[m] * coste_unitario for m in metodos_activos},
                 )
             )
 
         r_activos = retornos_simples.loc[fecha]
-        for metodo in METODOS:
+        for metodo in metodos_activos:
             w = pesos_actuales[metodo]
             bruto = float((w * r_activos).sum())
             retornos[metodo].append(bruto - coste_hoy[metodo])
@@ -91,11 +92,11 @@ def ejecutar_walk_forward(datos: DatosAlineados, configuracion: Configuracion) -
             # Deriva de pesos hasta el día siguiente (buy & hold dentro del mes).
             pesos_actuales[metodo] = (w * (1.0 + r_activos)) / (1.0 + bruto)
 
-    indice = fechas_oos[: len(retornos[METODOS[0]])]
-    retornos_df = pd.DataFrame({m: retornos[m] for m in METODOS}, index=indice)
+    indice = fechas_oos[: len(retornos[metodos_activos[0]])]
+    retornos_df = pd.DataFrame({m: retornos[m] for m in metodos_activos}, index=indice)
     equity_df = (1.0 + retornos_df).cumprod()
     pesos_diarios_df = {
-        m: pd.DataFrame(pesos_diarios[m], index=indice) for m in METODOS
+        m: pd.DataFrame(pesos_diarios[m], index=indice) for m in metodos_activos
     }
     if retornos_df.empty:
         raise ErrorRiesgo("El walk-forward no produjo retornos out-of-sample.")

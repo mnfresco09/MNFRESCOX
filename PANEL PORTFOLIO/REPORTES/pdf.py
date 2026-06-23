@@ -27,10 +27,11 @@ from reportlab.platypus import (
 
 from CONTRATOS.modelos import PaqueteReporte
 
-from .formato import AVISO_HONESTIDAD, GLOSARIO, num, pct
+from .formato import num, pct
 from .graficos_mpl import generar_pngs
+from .i18n import columna_visible, glosario, metodo_visible, t
 from .narrativa import construir_secciones
-from .tablas import tabla_maestra
+from .tablas import tabla_espejismo, tabla_maestra, tabla_pesos_niveles
 
 _TINTA = colors.HexColor("#0F172A")
 _ACENTO = colors.HexColor("#1D4ED8")
@@ -41,7 +42,9 @@ _PANEL = colors.HexColor("#F6F8FB")
 _PCT_COLS = {
     "Retorno esperado (in-sample)", "Volatilidad esperada (in-sample)",
     "Retorno anual (OOS)", "Volatilidad (OOS)", "Max drawdown (OOS)",
-    "VaR 95% (OOS)", "CVaR 95% (OOS)",
+    "VaR 95% (OOS)", "CVaR 95% (OOS)", "Retorno esperado",
+    "Volatilidad esperada", "VaR histórico", "CVaR histórico",
+    "Max drawdown histórico", "Retorno realizado (OOS)",
 }
 
 
@@ -65,17 +68,20 @@ def _estilos():
 
 
 def _kpi_table(paquete: PaqueteReporte, st) -> Table:
-    metr = paquete.riesgo.metricas
-    mejor = max(metr.items(), key=lambda kv: kv[1].sharpe)
-    menor_dd = max(metr.items(), key=lambda kv: kv[1].max_drawdown)
-    wf = paquete.riesgo.walk_forward
+    cartera = paquete.perfil_riesgo.recomendada
+    mh = cartera.metricas_historicas
     datos = [
-        ["Mejor Sharpe OOS", "Menor caída OOS", "Retornos comunes", "Rebalanceos"],
-        [num(mejor[1].sharpe), pct(menor_dd[1].max_drawdown), f"{len(paquete.datos.log_retornos):,}", str(len(wf.rebalanceos))],
-        [mejor[0], menor_dd[0], "tras alinear", f"{wf.equity.index[0].date()}→{wf.equity.index[-1].date()}"],
+        [t(paquete, "retorno_esperado"), t(paquete, "volatilidad_esperada"), t(paquete, "var_historico"), t(paquete, "maxdd_historico")],
+        [pct(cartera.retorno_esperado), pct(cartera.volatilidad_esperada), pct(mh.var), pct(mh.max_drawdown)],
+        [
+            t(paquete, "frontera_eficiente"),
+            t(paquete, "perfil").format(perfil=cartera.nivel),
+            t(paquete, "cola_diaria"),
+            t(paquete, "pesos_fijos"),
+        ],
     ]
-    t = Table(datos, colWidths=[4.1 * cm] * 4)
-    t.setStyle(TableStyle([
+    tabla = Table(datos, colWidths=[4.1 * cm] * 4)
+    tabla.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), _PANEL),
         ("BOX", (0, 0), (-1, -1), 0.5, _LINEA),
         ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.white),
@@ -91,6 +97,66 @@ def _kpi_table(paquete: PaqueteReporte, st) -> Table:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
         ("LEFTPADDING", (0, 0), (-1, -1), 8),
     ]))
+    return tabla
+
+
+def _perfil_resumen(paquete: PaqueteReporte) -> str:
+    cartera = paquete.perfil_riesgo.recomendada
+    mh = cartera.metricas_historicas
+    pesos = ", ".join(
+        f"{activo} {pct(float(peso), 1)}"
+        for activo, peso in cartera.pesos.sort_values(ascending=False).items()
+    )
+    return t(paquete, "resumen_perfil").format(
+        perfil=cartera.nivel,
+        pesos=pesos,
+        retorno=pct(cartera.retorno_esperado),
+        volatilidad=pct(cartera.volatilidad_esperada),
+        var=pct(mh.var),
+        cvar=pct(mh.cvar),
+        maxdd=pct(mh.max_drawdown),
+    )
+
+
+def _tabla_df_pdf(
+    df,
+    indice: str,
+    *,
+    pct_cols: set[str] | None = None,
+    abrev: dict[str, str] | None = None,
+    fuente: float = 6.6,
+    paquete: PaqueteReporte | None = None,
+) -> Table:
+    pct_cols = pct_cols or set()
+    abrev = abrev or {}
+    cols = list(df.columns)
+    cab = [
+        columna_visible(paquete, indice) if paquete is not None else indice,
+        *[abrev.get(c, columna_visible(paquete, c) if paquete is not None else c.replace("peso · ", "")) for c in cols],
+    ]
+    filas = [cab]
+    for etiqueta, fila in df.iterrows():
+        etiqueta_txt = str(etiqueta)
+        celdas = [metodo_visible(paquete, etiqueta_txt) if paquete is not None and indice == "Método" else etiqueta_txt]
+        for c in cols:
+            v = fila[c]
+            celdas.append(pct(v, 1) if (c.startswith("peso ·") or c in pct_cols) else num(v))
+        filas.append(celdas)
+    n = max(1, len(cols))
+    t = Table(filas, colWidths=[3.0 * cm] + [(14.5 / n) * cm] * n, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), _TINTA),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), fuente),
+        ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ("ALIGN", (0, 0), (0, -1), "LEFT"),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.4, _LINEA),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
     return t
 
 
@@ -98,17 +164,25 @@ def _tabla_maestra_pdf(paquete: PaqueteReporte) -> Table:
     df = tabla_maestra(paquete)
     mejor = max(paquete.riesgo.metricas.items(), key=lambda kv: kv[1].sharpe)[0]
     # Para que quepa, abreviamos cabeceras.
-    abrev = {
-        "Retorno esperado (in-sample)": "Ret esp", "Volatilidad esperada (in-sample)": "Vol esp",
-        "Retorno anual (OOS)": "Ret OOS", "Volatilidad (OOS)": "Vol OOS", "Sharpe (OOS)": "Sharpe",
-        "Sortino (OOS)": "Sortino", "Calmar (OOS)": "Calmar", "Max drawdown (OOS)": "MaxDD",
-        "VaR 95% (OOS)": "VaR", "CVaR 95% (OOS)": "CVaR",
-    }
+    if getattr(paquete.configuracion, "idioma_reporte", "es") == "it":
+        abrev = {
+            "Retorno esperado (in-sample)": "Rend att", "Volatilidad esperada (in-sample)": "Vol att",
+            "Retorno anual (OOS)": "Rend OOS", "Volatilidad (OOS)": "Vol OOS", "Sharpe (OOS)": "Sharpe",
+            "Sortino (OOS)": "Sortino", "Calmar (OOS)": "Calmar", "Max drawdown (OOS)": "MaxDD",
+            "VaR 95% (OOS)": "VaR", "CVaR 95% (OOS)": "CVaR",
+        }
+    else:
+        abrev = {
+            "Retorno esperado (in-sample)": "Ret esp", "Volatilidad esperada (in-sample)": "Vol esp",
+            "Retorno anual (OOS)": "Ret OOS", "Volatilidad (OOS)": "Vol OOS", "Sharpe (OOS)": "Sharpe",
+            "Sortino (OOS)": "Sortino", "Calmar (OOS)": "Calmar", "Max drawdown (OOS)": "MaxDD",
+            "VaR 95% (OOS)": "VaR", "CVaR 95% (OOS)": "CVaR",
+        }
     cols = list(df.columns)
-    cab = ["Método"] + [abrev.get(c, c.replace("peso · ", "")) for c in cols]
+    cab = [columna_visible(paquete, "Método")] + [abrev.get(c, columna_visible(paquete, c).replace("peso · ", "")) for c in cols]
     filas = [cab]
     for metodo, fila in df.iterrows():
-        celdas = [metodo]
+        celdas = [metodo_visible(paquete, metodo)]
         for c in cols:
             v = fila[c]
             celdas.append(pct(v, 1) if (c.startswith("peso ·") or c in _PCT_COLS) else num(v))
@@ -134,6 +208,48 @@ def _tabla_maestra_pdf(paquete: PaqueteReporte) -> Table:
     return t
 
 
+def _tabla_niveles_pdf(paquete: PaqueteReporte) -> Table:
+    if getattr(paquete.configuracion, "idioma_reporte", "es") == "it":
+        abrev = {
+            "Retorno esperado": "Rend att",
+            "Volatilidad esperada": "Vol att",
+            "VaR histórico": "VaR hist",
+            "CVaR histórico": "CVaR hist",
+            "Max drawdown histórico": "MaxDD stor",
+        }
+    else:
+        abrev = {
+            "Retorno esperado": "Ret esp",
+            "Volatilidad esperada": "Vol esp",
+            "VaR histórico": "VaR hist",
+            "CVaR histórico": "CVaR hist",
+            "Max drawdown histórico": "MaxDD hist",
+        }
+    df = tabla_pesos_niveles(paquete)
+    return _tabla_df_pdf(df, "Nivel", pct_cols=_PCT_COLS, abrev=abrev, fuente=6.4, paquete=paquete)
+
+
+def _tabla_espejismo_pdf(paquete: PaqueteReporte) -> Table:
+    if getattr(paquete.configuracion, "idioma_reporte", "es") == "it":
+        abrev = {
+            "Sharpe esperado (in-sample)": "Sharpe att",
+            "Sharpe realizado (OOS)": "Sharpe OOS",
+            "Degradación de Sharpe": "Degrado",
+            "Retorno esperado (in-sample)": "Rend att",
+            "Retorno realizado (OOS)": "Rend OOS",
+        }
+    else:
+        abrev = {
+            "Sharpe esperado (in-sample)": "Sharpe esp",
+            "Sharpe realizado (OOS)": "Sharpe OOS",
+            "Degradación de Sharpe": "Degrad.",
+            "Retorno esperado (in-sample)": "Ret esp",
+            "Retorno realizado (OOS)": "Ret OOS",
+        }
+    df = tabla_espejismo(paquete)
+    return _tabla_df_pdf(df, "Método", pct_cols=_PCT_COLS, abrev=abrev, fuente=6.8, paquete=paquete)
+
+
 def generar_pdf(paquete: PaqueteReporte, ruta: Path) -> Path:
     st = _estilos()
     cfg = paquete.configuracion
@@ -144,7 +260,7 @@ def generar_pdf(paquete: PaqueteReporte, ruta: Path) -> Path:
     doc = SimpleDocTemplate(str(ruta), pagesize=A4,
                             leftMargin=2 * cm, rightMargin=2 * cm,
                             topMargin=2 * cm, bottomMargin=2 * cm,
-                            title="PANEL PORTFOLIO — Informe de optimización")
+                            title=f"PANEL PORTFOLIO — {t(paquete, 'titulo')}")
     story = []
     P = lambda txt, estilo="Cuerpo": Paragraph(txt, st[estilo])
 
@@ -157,56 +273,63 @@ def generar_pdf(paquete: PaqueteReporte, ruta: Path) -> Path:
         if pie:
             story.append(P(pie, "Pie"))
 
-    # Portada / resumen
-    story.append(P("ANÁLISIS CUANTITATIVO · DESCRIPTIVO · OUT-OF-SAMPLE", "Eyebrow"))
-    story.append(P("Optimización y riesgo de una cartera multiactivo", "Titulo"))
-    story.append(P(f"Cesta de {len(cfg.tickers)} activos: {', '.join(cfg.tickers)}", "Meta"))
-    story.append(P(f"Periodo {cfg.fecha_inicio} a {cfg.fecha_fin} · rebalanceo {cfg.frecuencia_rebalanceo} · ventana {cfg.ventana_estimacion} días", "Meta"))
+    # Portada / recomendación
+    story.append(P(t(paquete, "eyebrow").upper(), "Eyebrow"))
+    story.append(P(t(paquete, "titulo"), "Titulo"))
+    story.append(P(t(paquete, "meta_analisis").format(
+        n=len(cfg.tickers), inicio=cfg.fecha_inicio, fin=cfg.fecha_fin,
+        rebalanceo=cfg.frecuencia_rebalanceo, ventana=cfg.ventana_estimacion,
+    ), "Meta"))
     story.append(Spacer(1, 10))
-    story.append(P("Resumen ejecutivo", "H2"))
-    for p in secciones["Resumen ejecutivo"][:-1]:
-        story.append(P(p))
+    story.append(P(t(paquete, "recomendacion"), "H2"))
+    story.append(P(_perfil_resumen(paquete)))
     story.append(Spacer(1, 6))
     story.append(_kpi_table(paquete, st))
     story.append(Spacer(1, 10))
-    story.append(P(AVISO_HONESTIDAD, "Aviso"))
+    img("pesos_recomendados", pie=t(paquete, "pdf_pesos_pie"))
+    story.append(P(t(paquete, "honestidad"), "Aviso"))
 
     story.append(PageBreak())
-    story.append(P("Tabla maestra: 6 métodos comparados", "H2"))
-    story.append(P("La fila resaltada es el método con mejor Sharpe out-of-sample. Las columnas "
-                   "in-sample son lo esperado; las OOS, lo realmente realizado en el walk-forward."))
+    story.append(P(t(paquete, "niveles"), "H2"))
+    story.append(P(t(paquete, "niveles_intro")))
+    story.append(_tabla_niveles_pdf(paquete))
+    story.append(Spacer(1, 8))
+    img("pesos_niveles", pie=t(paquete, "pdf_niveles_pie"))
+    img("composicion_frontera", pie=t(paquete, "pdf_area_pie"))
+
+    story.append(PageBreak())
+    story.append(P(t(paquete, "nav_niveles"), "H2"))
+    img("frontera", pie=t(paquete, "pdf_frontera_pie"))
+
+    story.append(PageBreak())
+    story.append(P(t(paquete, "covarianza"), "H2"))
+    parrafos("Análisis y diversificación")
+    img("correlacion_media", ancho=11, pie=t(paquete, "corr_media_titulo"))
+    img("correlacion_cola", ancho=11, pie=t(paquete, "corr_cola_titulo"))
+    img("pca", pie=t(paquete, "pca_titulo"))
+
+    story.append(PageBreak())
+    story.append(P(t(paquete, "validacion"), "H2"))
+    parrafos("Backtest walk-forward (out-of-sample)")
+    story.append(P(t(paquete, "tabla_oos"), "H2"))
     story.append(_tabla_maestra_pdf(paquete))
     story.append(Spacer(1, 8))
-    story.append(P("Composición de cada cartera", "H2"))
-    img("pesos", pie="Reparto de cada método entre los activos de la cesta.")
+    story.append(P(t(paquete, "promesa_realidad"), "H2"))
+    story.append(_tabla_espejismo_pdf(paquete))
+    img("equity", pie=t(paquete, "equity_titulo"))
+    img("drawdown", pie=t(paquete, "drawdown_titulo"))
+    img("convexidad", pie=t(paquete, "pdf_convexidad_pie"))
 
     story.append(PageBreak())
-    story.append(P("Plano riesgo-retorno", "H2"))
-    parrafos("Los 6 métodos de asignación")
-    img("frontera", pie="Frontera eficiente, nube de carteras aleatorias y posición in-sample de cada método.")
-
-    story.append(PageBreak())
-    story.append(P("Backtest walk-forward (out-of-sample)", "H2"))
-    parrafos("Backtest walk-forward (out-of-sample)")
-    img("equity", pie="Capital acumulado fuera de muestra; todas las curvas parten de 1.0.")
-    img("drawdown", pie="Caída desde máximos: cuánto y cuánto tiempo estuvo cada método bajo el agua.")
-
-    story.append(PageBreak())
-    story.append(P("Análisis, correlación de cola y PCA", "H2"))
-    parrafos("Análisis y diversificación")
-    img("correlacion_media", ancho=11, pie="Correlación media en todo el periodo.")
-    img("correlacion_cola", ancho=11, pie="Exceso de correlación en las colas: dónde se evapora la diversificación.")
-    img("pca", pie="Número de factores independientes que mueven la cesta.")
-
-    story.append(PageBreak())
-    story.append(P("Regímenes, stress y diversificación en crisis", "H2"))
+    story.append(P(t(paquete, "regimenes"), "H2"))
     parrafos("Regímenes y stress testing")
     parrafos("Diversificación en crisis")
-    img("diversificacion", pie="Apuestas independientes en calma frente a crisis.")
+    img("diversificacion", pie=t(paquete, "diversificacion_titulo"))
+    img("pesos", pie=t(paquete, "pdf_metodos_pie"))
 
     story.append(PageBreak())
-    story.append(P("Glosario", "H2"))
-    glos = [[Paragraph(k, st["GlosarioT"]), Paragraph(v, st["GlosarioD"])] for k, v in GLOSARIO.items()]
+    story.append(P(t(paquete, "nav_glosario"), "H2"))
+    glos = [[Paragraph(k, st["GlosarioT"]), Paragraph(v, st["GlosarioD"])] for k, v in glosario(paquete).items()]
     tg = Table(glos, colWidths=[4.5 * cm, 12 * cm])
     tg.setStyle(TableStyle([
         ("LINEBELOW", (0, 0), (-1, -1), 0.4, _LINEA),
@@ -215,7 +338,7 @@ def generar_pdf(paquete: PaqueteReporte, ruta: Path) -> Path:
     ]))
     story.append(tg)
     story.append(Spacer(1, 14))
-    story.append(P(AVISO_HONESTIDAD, "Aviso"))
+    story.append(P(t(paquete, "honestidad"), "Aviso"))
 
     doc.build(story)
     return ruta

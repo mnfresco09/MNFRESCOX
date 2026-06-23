@@ -35,14 +35,14 @@ def recomendar(paquete: PaqueteReporte) -> Recomendacion:
         detalle = (f"«{nombre_visible(metodo, paquete)}» fue la más tranquila: volatilidad "
                    f"{pct(v.volatilidad_anual)} y caída máxima {pct(v.max_drawdown)} fuera de muestra.")
     elif objetivo == "objetivo":
-        objetivo_ret = paquete.configuracion.retorno_objetivo_anual
+        objetivo_ret = paquete.frontera.maximo_retorno_factible.metricas.retorno_anual
         cumplen = {m: v for m, v in metricas.items() if v.retorno_anual >= objetivo_ret}
         if cumplen:
             metodo = max(cumplen, key=lambda m: cumplen[m].sharpe)
-            criterio = f"alcanzó el retorno objetivo ({pct(objetivo_ret)}) con mejor Sharpe OOS"
+            criterio = f"alcanzó el máximo retorno factible automático ({pct(objetivo_ret)}) con mejor Sharpe OOS"
         else:
             metodo = min(metricas, key=lambda m: abs(metricas[m].retorno_anual - objetivo_ret))
-            criterio = f"el más cercano al retorno objetivo ({pct(objetivo_ret)}); ninguno lo alcanzó OOS"
+            criterio = f"el más cercano al máximo retorno factible automático ({pct(objetivo_ret)}); ninguno lo alcanzó OOS"
         v = metricas[metodo]
         detalle = (f"«{nombre_visible(metodo, paquete)}»: retorno OOS {pct(v.retorno_anual)}, "
                    f"Sharpe {num(v.sharpe)}, caída máxima {pct(v.max_drawdown)}.")

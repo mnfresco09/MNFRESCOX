@@ -8,7 +8,7 @@ from CONTRATOS.modelos import (
     ResultadoAnalisis,
     ResultadoRiesgo,
 )
-from OPTIMIZACION.asignadores import METODOS
+from OPTIMIZACION.asignadores import metodos
 
 from .convexidad import analizar_convexidad
 from .metricas import metricas_cartera
@@ -23,6 +23,7 @@ def evaluar_riesgo(
     configuracion: Configuracion,
 ) -> ResultadoRiesgo:
     walk_forward = ejecutar_walk_forward(datos, configuracion)
+    metodos_activos = metodos(configuracion)
 
     metricas = {
         metodo: metricas_cartera(
@@ -31,7 +32,7 @@ def evaluar_riesgo(
             configuracion.tasa_libre_riesgo_anual,
             configuracion.dias_anio,
         )
-        for metodo in METODOS
+        for metodo in metodos_activos
     }
 
     por_regimen = metricas_por_regimen(
@@ -41,7 +42,7 @@ def evaluar_riesgo(
 
     # Pesos representativos = últimos pesos derivados de cada método.
     pesos_finales = {
-        metodo: walk_forward.pesos_diarios[metodo].iloc[-1] for metodo in METODOS
+        metodo: walk_forward.pesos_diarios[metodo].iloc[-1] for metodo in metodos_activos
     }
     diversificacion_crisis = diversificacion_en_crisis(
         datos, analisis.regimenes, pesos_finales, configuracion

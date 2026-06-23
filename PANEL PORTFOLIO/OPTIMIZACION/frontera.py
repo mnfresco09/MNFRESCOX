@@ -1,4 +1,4 @@
-"""Frontera eficiente de Markowitz y sus 3 carteras objetivo."""
+"""Frontera eficiente de Markowitz y carteras diagnósticas."""
 
 from __future__ import annotations
 
@@ -30,11 +30,16 @@ def construir_frontera(
         retornos_esperados, covarianza, rf, restr,
         "SLSQP", "Cartera tangente de máximo Sharpe sobre Ledoit-Wolf.",
     )
-    ro = asignacion(
-        "Markowitz (retorno objetivo)",
-        markowitz.retorno_objetivo(retornos_esperados, covarianza, configuracion.retorno_objetivo_anual, restr),
-        retornos_esperados, covarianza, rf, restr,
-        "SLSQP", f"Mínima varianza para un retorno objetivo de {configuracion.retorno_objetivo_anual:.1%}.",
-    )
     puntos = markowitz.puntos_frontera(retornos_esperados, covarianza, restr)
-    return ResultadoFrontera(puntos=puntos, minima_varianza=mv, maximo_sharpe=ms, retorno_objetivo=ro)
+    fila_max = puntos.loc[puntos["retorno"].idxmax()]
+    pesos_max = pd.Series(
+        {activo: float(fila_max[f"peso·{activo}"]) for activo in covarianza.index}
+    )
+    mr = asignacion(
+        "Markowitz (máx retorno factible)",
+        pesos_max,
+        retornos_esperados, covarianza, rf, restr,
+        "frontera",
+        "Cartera diagnóstica de máximo retorno factible dentro de las restricciones actuales.",
+    )
+    return ResultadoFrontera(puntos=puntos, minima_varianza=mv, maximo_sharpe=ms, maximo_retorno_factible=mr)

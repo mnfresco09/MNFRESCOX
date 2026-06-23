@@ -31,6 +31,7 @@ def generar_reportes(paquete: PaqueteReporte) -> RutasReporte:
         "tickers": list(cfg.tickers),
         "fecha_inicio": cfg.fecha_inicio,
         "fecha_fin": cfg.fecha_fin,
+        "idioma_reporte": cfg.idioma_reporte,
         "retornos_comunes": int(len(paquete.datos.log_retornos)),
         "archivos": {"html": ruta_html.name, "pdf": ruta_pdf.name, "excel": ruta_excel.name},
     }, ensure_ascii=False, indent=2), encoding="utf-8")

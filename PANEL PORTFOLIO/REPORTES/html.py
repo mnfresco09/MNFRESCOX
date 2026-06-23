@@ -15,24 +15,24 @@ import plotly.graph_objects as go
 import plotly.offline as pyo
 
 from CONTRATOS.modelos import PaqueteReporte
-from OPTIMIZACION.asignadores import METODOS
 
 from .formato import (
-    AVISO_HONESTIDAD,
     COLOR_METODO,
-    GLOSARIO,
     fecha,
     num,
     pct,
 )
 from .graficos_plotly import todas_las_figuras
+from .i18n import columna_visible, glosario, metodo_visible, perfil_visible, t
 from .narrativa import construir_secciones
-from .tablas import tabla_maestra
+from .tablas import tabla_espejismo, tabla_maestra, tabla_pesos_niveles
 
 _COLS_PCT = {
     "Retorno esperado (in-sample)", "Volatilidad esperada (in-sample)",
     "Retorno anual (OOS)", "Volatilidad (OOS)", "Max drawdown (OOS)",
-    "VaR 95% (OOS)", "CVaR 95% (OOS)",
+    "VaR 95% (OOS)", "CVaR 95% (OOS)", "Retorno esperado",
+    "Volatilidad esperada", "VaR histórico", "CVaR histórico",
+    "Max drawdown histórico", "Retorno realizado (OOS)",
 }
 
 
@@ -44,12 +44,24 @@ def _div(fig: go.Figure, div_id: str) -> str:
 def _tabla_maestra_html(paquete: PaqueteReporte) -> str:
     df = tabla_maestra(paquete)
     mejor = max(paquete.riesgo.metricas.items(), key=lambda kv: kv[1].sharpe)[0]
-    cabecera = "".join(f"<th>{_html.escape(c)}</th>" for c in df.columns)
+    return _tabla_df_html(df, indice="Método", fila_resaltada=mejor, paquete=paquete)
+
+
+def _tabla_df_html(
+    df: pd.DataFrame,
+    indice: str,
+    fila_resaltada: str | None = None,
+    paquete: PaqueteReporte | None = None,
+) -> str:
+    cabecera = "".join(f"<th>{_html.escape(columna_visible(paquete, c) if paquete is not None else c)}</th>" for c in df.columns)
     filas = []
-    for metodo, fila in df.iterrows():
-        clase = ' class="mejor"' if metodo == mejor else ""
-        color = COLOR_METODO.get(metodo, "#475569")
-        celdas = [f'<th class="metodo"><span class="punto" style="background:{color}"></span>{_html.escape(metodo)}</th>']
+    for etiqueta, fila in df.iterrows():
+        etiqueta_txt = str(etiqueta)
+        clase = ' class="mejor"' if etiqueta_txt == fila_resaltada else ""
+        color = COLOR_METODO.get(etiqueta_txt, "#475569")
+        punto = f'<span class="punto" style="background:{color}"></span>' if indice == "Método" else ""
+        etiqueta_visible = metodo_visible(paquete, etiqueta_txt) if paquete is not None and indice == "Método" else etiqueta_txt
+        celdas = [f'<th class="metodo">{punto}{_html.escape(etiqueta_visible)}</th>']
         for col in df.columns:
             valor = fila[col]
             if col.startswith("peso ·") or col in _COLS_PCT:
@@ -59,21 +71,29 @@ def _tabla_maestra_html(paquete: PaqueteReporte) -> str:
         filas.append(f"<tr{clase}>" + "".join(celdas) + "</tr>")
     return (
         '<div class="tabla-scroll"><table class="maestra">'
-        f"<thead><tr><th>Método</th>{cabecera}</tr></thead>"
+        f"<thead><tr><th>{_html.escape(columna_visible(paquete, indice) if paquete is not None else indice)}</th>{cabecera}</tr></thead>"
         f"<tbody>{''.join(filas)}</tbody></table></div>"
     )
 
 
+def _tabla_niveles_html(paquete: PaqueteReporte) -> str:
+    df = tabla_pesos_niveles(paquete)
+    return _tabla_df_html(df, indice="Nivel", paquete=paquete)
+
+
+def _tabla_espejismo_html(paquete: PaqueteReporte) -> str:
+    df = tabla_espejismo(paquete)
+    return _tabla_df_html(df, indice="Método", paquete=paquete)
+
+
 def _kpis(paquete: PaqueteReporte) -> str:
-    metr = paquete.riesgo.metricas
-    mejor = max(metr.items(), key=lambda kv: kv[1].sharpe)
-    menor_dd = max(metr.items(), key=lambda kv: kv[1].max_drawdown)  # menos negativo
-    wf = paquete.riesgo.walk_forward
+    cartera = paquete.perfil_riesgo.recomendada
+    mh = cartera.metricas_historicas
     tarjetas = [
-        ("Mejor Sharpe OOS", f"{num(mejor[1].sharpe)}", mejor[0]),
-        ("Menor caída OOS", pct(menor_dd[1].max_drawdown), menor_dd[0]),
-        ("Retornos comunes", f"{len(paquete.datos.log_retornos):,}", "tras alinear calendarios"),
-        ("Rebalanceos", f"{len(wf.rebalanceos)}", f"{fecha(wf.equity.index[0])} → {fecha(wf.equity.index[-1])}"),
+        (t(paquete, "retorno_esperado"), pct(cartera.retorno_esperado), t(paquete, "frontera_eficiente")),
+        (t(paquete, "volatilidad_esperada"), pct(cartera.volatilidad_esperada), t(paquete, "perfil").format(perfil=cartera.nivel)),
+        (t(paquete, "var_historico"), pct(mh.var), t(paquete, "cola_diaria")),
+        (t(paquete, "maxdd_historico"), pct(mh.max_drawdown), t(paquete, "pesos_fijos")),
     ]
     return '<div class="kpis">' + "".join(
         f'<div class="kpi"><div class="kpi-v">{v}</div><div class="kpi-t">{_html.escape(t)}</div>'
@@ -82,15 +102,33 @@ def _kpis(paquete: PaqueteReporte) -> str:
     ) + "</div>"
 
 
+def _perfil_resumen(paquete: PaqueteReporte) -> str:
+    cartera = paquete.perfil_riesgo.recomendada
+    mh = cartera.metricas_historicas
+    pesos = ", ".join(
+        f"{activo} {pct(float(peso), 1)}"
+        for activo, peso in cartera.pesos.sort_values(ascending=False).items()
+    )
+    return t(paquete, "resumen_perfil").format(
+        perfil=cartera.nivel,
+        pesos=pesos,
+        retorno=pct(cartera.retorno_esperado),
+        volatilidad=pct(cartera.volatilidad_esperada),
+        var=pct(mh.var),
+        cvar=pct(mh.cvar),
+        maxdd=pct(mh.max_drawdown),
+    )
+
+
 def _seccion(idx: str, titulo: str, parrafos, extra: str = "") -> str:
     cuerpo = "".join(f"<p>{_html.escape(p)}</p>" for p in parrafos)
     return f'<section id="{idx}"><h2>{_html.escape(titulo)}</h2>{cuerpo}{extra}</section>'
 
 
-def _glosario_html() -> str:
+def _glosario_html(paquete: PaqueteReporte) -> str:
     filas = "".join(
         f"<tr><th>{_html.escape(k)}</th><td>{_html.escape(v)}</td></tr>"
-        for k, v in GLOSARIO.items()
+        for k, v in glosario(paquete).items()
     )
     return f'<table class="glosario"><tbody>{filas}</tbody></table>'
 
@@ -101,14 +139,13 @@ def generar_html(paquete: PaqueteReporte, ruta: Path) -> Path:
     cfg = paquete.configuracion
 
     nav_items = [
-        ("resumen", "Resumen ejecutivo"),
-        ("tabla", "Tabla maestra"),
-        ("frontera", "Riesgo-retorno"),
-        ("backtest", "Backtest OOS"),
-        ("analisis", "Análisis y correlación"),
-        ("regimenes", "Regímenes y stress"),
-        ("diversificacion", "Diversificación en crisis"),
-        ("glosario", "Glosario"),
+        ("recomendacion", t(paquete, "nav_recomendacion")),
+        ("niveles", t(paquete, "nav_niveles")),
+        ("covarianza", t(paquete, "nav_covarianza")),
+        ("validacion", t(paquete, "nav_validacion")),
+        ("regimenes", t(paquete, "nav_regimenes")),
+        ("diversificacion", t(paquete, "nav_diversificacion")),
+        ("glosario", t(paquete, "nav_glosario")),
     ]
     nav = "".join(f'<a href="#{i}">{_html.escape(t)}</a>' for i, t in nav_items)
 
@@ -117,57 +154,62 @@ def generar_html(paquete: PaqueteReporte, ruta: Path) -> Path:
 
     bloques = []
     bloques.append(
-        f'<section id="resumen"><h2>Resumen ejecutivo</h2>'
-        + "".join(f"<p>{_html.escape(p)}</p>" for p in por_titulo["Resumen ejecutivo"][:-1])
+        f'<section id="recomendacion" class="hero-pesos"><h2>{_html.escape(t(paquete, "recomendacion"))}</h2>'
+        + f"<p>{_html.escape(_perfil_resumen(paquete))}</p>"
         + _kpis(paquete)
-        + f'<div class="aviso">{_html.escape(AVISO_HONESTIDAD)}</div></section>'
+        + _div(figs["pesos_recomendados"], "g_pesos_recomendados")
+        + f'<div class="aviso">{_html.escape(t(paquete, "honestidad"))}</div></section>'
     )
-    bloques.append(_seccion("tabla", "Tabla maestra: 6 métodos comparados",
-                            ("La fila resaltada es el método con mejor Sharpe out-of-sample. "
-                             "Las columnas in-sample son lo que cada método ESPERABA; las OOS son lo "
-                             "que realmente ocurrió al aplicarlo al futuro no visto.",),
-                            _tabla_maestra_html(paquete)))
-    bloques.append(_seccion("frontera", "Plano riesgo-retorno",
-                            por_titulo["Los 6 métodos de asignación"],
-                            _div(figs["frontera"], "g_frontera") + _div(figs["pesos"], "g_pesos")))
-    bloques.append(_seccion("backtest", "Backtest walk-forward (out-of-sample)",
-                            por_titulo["Backtest walk-forward (out-of-sample)"],
-                            _div(figs["equity"], "g_equity") + _div(figs["drawdown"], "g_drawdown")))
-    bloques.append(_seccion("analisis", "Análisis, correlación de cola y PCA",
+    bloques.append(_seccion("niveles", t(paquete, "niveles"),
+                            (t(paquete, "niveles_intro"),),
+                            _tabla_niveles_html(paquete)
+                            + _div(figs["pesos_niveles"], "g_pesos_niveles")
+                            + _div(figs["composicion_frontera"], "g_composicion_frontera")
+                            + _div(figs["frontera"], "g_frontera")))
+    bloques.append(_seccion("covarianza", t(paquete, "covarianza"),
                             por_titulo["Análisis y diversificación"],
                             _div(figs["correlacion_media"], "g_corr") + _div(figs["correlacion_cola"], "g_corr_cola")
                             + _div(figs["pca"], "g_pca")))
-    bloques.append(_seccion("regimenes", "Regímenes y stress testing",
+    bloques.append(_seccion("validacion", t(paquete, "validacion"),
+                            por_titulo["Backtest walk-forward (out-of-sample)"],
+                            f"<h3>{_html.escape(t(paquete, 'tabla_oos'))}</h3>"
+                            + _tabla_maestra_html(paquete)
+                            + f"<h3>{_html.escape(t(paquete, 'promesa_realidad'))}</h3>"
+                            + _tabla_espejismo_html(paquete)
+                            + _div(figs["equity"], "g_equity")
+                            + _div(figs["drawdown"], "g_drawdown")
+                            + _div(figs["convexidad"], "g_convexidad")))
+    bloques.append(_seccion("regimenes", t(paquete, "regimenes"),
                             por_titulo["Regímenes y stress testing"],
                             _div(figs["regimen"], "g_regimen")))
-    bloques.append(_seccion("diversificacion", "Diversificación en crisis",
+    bloques.append(_seccion("diversificacion", t(paquete, "diversificacion"),
                             por_titulo["Diversificación en crisis"],
-                            _div(figs["diversificacion"], "g_div")))
-    bloques.append(f'<section id="glosario"><h2>Glosario</h2>{_glosario_html()}'
-                   f'<div class="aviso">{_html.escape(AVISO_HONESTIDAD)}</div></section>')
+                            _div(figs["diversificacion"], "g_div") + _div(figs["pesos"], "g_pesos_metodos")))
+    bloques.append(f'<section id="glosario"><h2>{_html.escape(t(paquete, "nav_glosario"))}</h2>{_glosario_html(paquete)}'
+                   f'<div class="aviso">{_html.escape(t(paquete, "honestidad"))}</div></section>')
 
     plotly_js = pyo.get_plotlyjs()
     doc = f"""<!DOCTYPE html>
-<html lang="es"><head><meta charset="utf-8">
+<html lang="{_html.escape(t(paquete, "lang"))}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PANEL PORTFOLIO — Informe de optimización</title>
+<title>PANEL PORTFOLIO — {_html.escape(t(paquete, "titulo"))}</title>
 <script>{plotly_js}</script>
 <style>{_CSS}</style>
 </head><body>
 <nav class="lateral">
   <div class="marca">PANEL<br>PORTFOLIO</div>
-  <div class="sub">Informe de optimización de cartera</div>
+  <div class="sub">{_html.escape(t(paquete, "subtitulo_nav"))}</div>
   {nav}
   <div class="pie">{_html.escape(', '.join(cfg.tickers))}<br>{cfg.fecha_inicio} → {cfg.fecha_fin}</div>
 </nav>
 <main>
   <header>
-    <div class="eyebrow">Análisis cuantitativo · descriptivo · out-of-sample</div>
-    <h1>Optimización y riesgo de una cartera multiactivo</h1>
-    <div class="meta">Cesta de {len(cfg.tickers)} activos · {cfg.fecha_inicio} a {cfg.fecha_fin} · rebalanceo {cfg.frecuencia_rebalanceo} · ventana {cfg.ventana_estimacion} días</div>
+    <div class="eyebrow">{_html.escape(t(paquete, "eyebrow"))}</div>
+    <h1>{_html.escape(t(paquete, "titulo"))}</h1>
+    <div class="meta">{_html.escape(t(paquete, "meta_analisis").format(n=len(cfg.tickers), inicio=cfg.fecha_inicio, fin=cfg.fecha_fin, rebalanceo=cfg.frecuencia_rebalanceo, ventana=cfg.ventana_estimacion))}</div>
   </header>
   {''.join(bloques)}
-  <footer>Generado por PANEL PORTFOLIO · Informe descriptivo, no constituye asesoramiento de inversión.</footer>
+  <footer>{_html.escape(t(paquete, "footer"))}</footer>
 </main>
 </body></html>"""
     ruta.write_text(doc, encoding="utf-8")

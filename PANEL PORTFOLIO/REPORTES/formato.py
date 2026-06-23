@@ -20,31 +20,42 @@ PANEL = "#F6F8FB"
 
 # Color estable por método (mismo en HTML, PDF y Excel).
 COLOR_METODO = {
-    "Markowitz (máx Sharpe)": "#1D4ED8",
+    "Equiponderada (1/N)": "#64748B",
     "Mínima varianza": "#0E7490",
     "Risk parity": "#15803D",
     "HRP": "#7C3AED",
-    "Min-CVaR": "#B45309",
-    "Black-Litterman": "#BE123C",
     "Máxima diversificación": "#0F766E",
+    "Min-CVaR": "#B45309",
+    "Markowitz (máx Sharpe)": "#1D4ED8",
+    "Black-Litterman": "#BE123C",
 }
 
 # Objetivos que el usuario elige al arrancar; el informe se centra en el elegido.
 OBJETIVOS = {
     "sharpe": "Máximo ratio de Sharpe",
     "riesgo": "Mínimo riesgo",
-    "objetivo": "Retorno objetivo",
+    "objetivo": "Máximo retorno factible",
     "convexidad": "Convexidad / anti-caída",
     "comparar": "Comparar los métodos",
 }
 
 
 def nombre_visible(metodo: str, paquete=None) -> str:
-    """Nombre para mostrar. Aclara que Black-Litterman sin views es, de hecho, 1/N."""
-    if metodo == "Black-Litterman" and paquete is not None:
-        bl = paquete.asignaciones.get("Black-Litterman")
-        if bl is not None and "sin views" in (bl.diagnostico or "").lower():
-            return "Black-Litterman (sin views ⇒ 1/N)"
+    """Nombre para mostrar. (Black-Litterman ya solo aparece si hay views, así que
+    no necesita aclaración; se mantiene la función por compatibilidad.)"""
+    idioma = getattr(getattr(paquete, "configuracion", None), "idioma_reporte", "es") if paquete is not None else "es"
+    if idioma == "it":
+        return {
+            "Equiponderada (1/N)": "Equipesata (1/N)",
+            "Mínima varianza": "Minima varianza",
+            "Risk parity": "Risk parity",
+            "HRP": "HRP",
+            "Máxima diversificación": "Massima diversificazione",
+            "Min-CVaR": "Min-CVaR",
+            "Markowitz (máx Sharpe)": "Markowitz (max Sharpe)",
+            "Markowitz (máx retorno factible)": "Markowitz (max rendimento fattibile)",
+            "Black-Litterman": "Black-Litterman",
+        }.get(metodo, metodo)
     return metodo
 
 

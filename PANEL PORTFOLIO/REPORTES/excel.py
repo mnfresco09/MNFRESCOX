@@ -11,7 +11,6 @@ from pathlib import Path
 import pandas as pd
 
 from CONTRATOS.modelos import PaqueteReporte
-from OPTIMIZACION.asignadores import METODOS
 
 from .formato import AVISO_HONESTIDAD
 from .tablas import tabla_maestra

@@ -1,5 +1,5 @@
 """Markowitz sobre covarianza Ledoit-Wolf: mínima varianza, máximo Sharpe y
-retorno-objetivo, más los puntos de la frontera eficiente.
+puntos de la frontera eficiente.
 
 Se usa la covarianza encogida (Ledoit-Wolf), nunca la muestral cruda. La
 optimización es por SLSQP (scipy) con restricción de suma 1 y cotas por activo,
@@ -61,30 +61,6 @@ def maximo_sharpe(
         return -((w @ mu - tasa_libre_riesgo) / vol)
 
     w = _resolver(negativo_sharpe, n, limites(restricciones, n), [])
-    return pd.Series(w, index=covarianza.index)
-
-
-def retorno_objetivo(
-    retornos_esperados: pd.Series,
-    covarianza: pd.DataFrame,
-    objetivo_anual: float,
-    restricciones: Restricciones,
-) -> pd.Series:
-    cov = covarianza.to_numpy(dtype=float)
-    mu = retornos_esperados.reindex(covarianza.index).to_numpy(dtype=float)
-    n = cov.shape[0]
-    cotas = limites(restricciones, n)
-
-    # Comprueba que el objetivo es alcanzable con estas cotas antes de optimizar.
-    ret_min, ret_max = _rango_retorno_alcanzable(mu, cotas)
-    if not ret_min - 1e-9 <= objetivo_anual <= ret_max + 1e-9:
-        raise ErrorOptimizacion(
-            "OPTIMIZACION",
-            f"El retorno objetivo {objetivo_anual:.3f} es inalcanzable con las "
-            f"restricciones (rango factible [{ret_min:.3f}, {ret_max:.3f}]).",
-        )
-    restr = [{"type": "eq", "fun": lambda w: w @ mu - objetivo_anual}]
-    w = _resolver(lambda w: w @ cov @ w, n, cotas, restr)
     return pd.Series(w, index=covarianza.index)
 
 

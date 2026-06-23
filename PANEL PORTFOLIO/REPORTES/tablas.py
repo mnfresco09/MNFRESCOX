@@ -1,8 +1,8 @@
-"""Tabla maestra: 6 métodos × (pesos por activo + métricas).
+"""Tablas del informe.
 
-Distingue claramente las métricas IN-SAMPLE (esperadas, estimadas con la ventana
-actual) de las OUT-OF-SAMPLE (realizadas en el walk-forward), porque solo las
-segundas son un juicio honesto.
+La tabla MAESTRA muestra SOLO pesos + métricas OUT-OF-SAMPLE (lo realizado), que
+es el único juicio honesto. La promesa in-sample se separa en `tabla_espejismo`
+("promesa vs realidad"), para no mezclar lo esperado con lo cumplido.
 """
 
 from __future__ import annotations
@@ -10,20 +10,19 @@ from __future__ import annotations
 import pandas as pd
 
 from CONTRATOS.modelos import PaqueteReporte
-from OPTIMIZACION.asignadores import METODOS
+from OPTIMIZACION.asignadores import metodos
+from REPORTES.i18n import perfil_visible
 
 
 def tabla_maestra(paquete: PaqueteReporte) -> pd.DataFrame:
+    """Pesos por activo + métricas OUT-OF-SAMPLE (sin columnas in-sample)."""
     activos = list(paquete.datos.activos)
     filas: dict[str, dict] = {}
-    for metodo in METODOS:
+    for metodo in metodos(paquete.configuracion):
         asignacion = paquete.asignaciones[metodo]
         oos = paquete.riesgo.metricas[metodo]
         fila: dict[str, float] = {f"peso · {a}": float(asignacion.pesos[a]) for a in activos}
         fila.update({
-            "Retorno esperado (in-sample)": asignacion.metricas.retorno_anual,
-            "Volatilidad esperada (in-sample)": asignacion.metricas.volatilidad_anual,
-            "Sharpe esperado (in-sample)": asignacion.metricas.sharpe,
             "Retorno anual (OOS)": oos.retorno_anual,
             "Volatilidad (OOS)": oos.volatilidad_anual,
             "Sharpe (OOS)": oos.sharpe,
@@ -38,13 +37,13 @@ def tabla_maestra(paquete: PaqueteReporte) -> pd.DataFrame:
 
 
 def tabla_espejismo(paquete: PaqueteReporte) -> pd.DataFrame:
-    """Lo que cada método ESPERABA (in-sample) frente a lo que fue REAL (OOS).
+    """Promesa (in-sample) frente a realidad (OOS).
 
     La columna 'degradación' es el desplome del Sharpe al pasar al futuro no visto:
-    es la medida directa del espejismo. Ordenada por la promesa in-sample.
+    la medida directa del espejismo. Ordenada por la promesa in-sample.
     """
     filas: dict[str, dict] = {}
-    for metodo in METODOS:
+    for metodo in metodos(paquete.configuracion):
         ins = paquete.asignaciones[metodo].metricas
         oos = paquete.riesgo.metricas[metodo]
         filas[metodo] = {
@@ -56,6 +55,27 @@ def tabla_espejismo(paquete: PaqueteReporte) -> pd.DataFrame:
         }
     df = pd.DataFrame.from_dict(filas, orient="index")
     return df.sort_values("Sharpe esperado (in-sample)", ascending=False)
+
+
+def tabla_pesos_niveles(paquete: PaqueteReporte) -> pd.DataFrame:
+    """Pesos eficientes por nivel de riesgo, de conservador a agresivo.
+
+    Es la tabla que acompaña al resultado principal: muestra cómo cambian los
+    pesos al desplazarse por la frontera eficiente.
+    """
+    activos = list(paquete.datos.activos)
+    filas: dict[str, dict[str, float]] = {}
+    for cartera in paquete.perfil_riesgo.carteras:
+        etiqueta = perfil_visible(paquete, cartera.nivel)
+        filas[etiqueta] = {
+            "Retorno esperado": cartera.retorno_esperado,
+            "Volatilidad esperada": cartera.volatilidad_esperada,
+            "VaR histórico": cartera.metricas_historicas.var,
+            "CVaR histórico": cartera.metricas_historicas.cvar,
+            "Max drawdown histórico": cartera.metricas_historicas.max_drawdown,
+            **{f"peso · {activo}": float(cartera.pesos[activo]) for activo in activos},
+        }
+    return pd.DataFrame.from_dict(filas, orient="index")
 
 
 def tabla_convexidad(paquete: PaqueteReporte) -> pd.DataFrame:
@@ -70,5 +90,5 @@ def tabla_convexidad(paquete: PaqueteReporte) -> pd.DataFrame:
         "asimetria": "Asimetría",
     }
     presentes = [c for c in columnas if c in conv.columns]
-    tabla = conv[presentes].rename(columns=columnas)
-    return tabla.reindex(METODOS)
+    orden = [m for m in metodos(paquete.configuracion) if m in conv.index]
+    return conv[presentes].rename(columns=columnas).reindex(orden)
