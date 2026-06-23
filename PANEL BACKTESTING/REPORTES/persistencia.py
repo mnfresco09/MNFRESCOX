@@ -114,6 +114,30 @@ def crear_run_dir(
     return run_dir
 
 
+def ruta_base_combinacion(
+    *,
+    carpeta_resultados: Path,
+    activo: str,
+    timeframe: str,
+    estrategia_nombre: str,
+    exit_type: str,
+) -> Path:
+    """Devuelve la carpeta de la combinacion SIN borrar nada (solo lectura).
+
+    Util para mostrar la ruta en el monitor antes de optimizar. El borrado de
+    resultados previos se hace aparte con `preparar_resultados_combinacion`, y
+    solo despues de que la optimizacion termine con exito, para no perder los
+    resultados anteriores si un run falla a medias.
+    """
+    return _base_combinacion(
+        carpeta_resultados=carpeta_resultados,
+        activo=activo,
+        timeframe=timeframe,
+        estrategia_nombre=estrategia_nombre,
+        exit_type=exit_type,
+    )
+
+
 def preparar_resultados_combinacion(
     *,
     carpeta_resultados: Path,
@@ -159,6 +183,7 @@ def resumen_trials_dataframe(trials: list) -> pl.DataFrame:
             "exit_sl_pct",
             "exit_tp_pct",
             "exit_velas",
+            "exit_sl_emergencia",
             "exit_trail_act_pct",
             "exit_trail_dist_pct",
         }
@@ -183,6 +208,7 @@ def resumen_trials_dataframe(trials: list) -> pl.DataFrame:
                 "exit_sl_pct": trial.salida.sl_pct,
                 "exit_tp_pct": trial.salida.tp_pct,
                 "exit_velas": trial.salida.velas,
+                "exit_sl_emergencia": getattr(trial.salida, "sl_emergencia", True),
                 "exit_trail_act_pct": getattr(trial.salida, "trail_act_pct", 0.0),
                 "exit_trail_dist_pct": getattr(trial.salida, "trail_dist_pct", 0.0),
             }

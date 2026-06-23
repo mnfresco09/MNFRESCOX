@@ -40,12 +40,14 @@ Si una vela toca el SL y tambien aparece una salida custom, el trade cierra por
 `SL`. Si la salida custom queda pendiente y el siguiente `open` ya cruza el SL,
 el trade tambien cierra por `SL`.
 
-Las salidas `FIXED` y `BARS` se ejecutan en el timeframe mas bajo disponible en
-`HISTORICO`, aunque la estrategia opere en un timeframe superior. La señal sigue
-naciendo en la vela de estrategia y la entrada se mantiene en el `open` de la
-siguiente vela de estrategia. `CUSTOM` calcula la condicion en el timeframe de
-la estrategia, proyecta esa condicion al timeframe de ejecucion y cierra en el
-`open` siguiente para evitar look-ahead.
+La salida `FIXED` se ejecuta en el timeframe mas bajo disponible en
+`HISTORICO`, aunque la estrategia opere en un timeframe superior. En `BARS`,
+`EXIT_VELAS` se interpreta en el timeframe de estrategia: si la estrategia corre
+en `1h` y `EXIT_VELAS = 20`, el cierre temporal ocurre tras 20 velas de `1h`.
+La señal sigue naciendo en la vela de estrategia y la entrada se mantiene en el
+`open` de la siguiente vela de estrategia. `CUSTOM` calcula la condicion en el
+timeframe de la estrategia, proyecta esa condicion al timeframe de ejecucion y
+cierra en el `open` siguiente para evitar look-ahead.
 
 ## Regla anti-lookahead
 

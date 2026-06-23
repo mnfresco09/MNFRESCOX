@@ -1,7 +1,7 @@
 """Base de toda estrategia.
 
 Cada estrategia define **sus propios indicadores** dentro de su script
-(`generar_señales`, `generar_salidas`, `indicadores_para_grafica`). El
+(`generar_senales`, `generar_salidas`, `indicadores_para_grafica`). El
 motor Rust sólo se ocupa de la simulación y de la gestión de capital;
 los indicadores son territorio exclusivo de la estrategia.
 
@@ -116,7 +116,7 @@ class BaseEstrategia(ABC):
 
       - `ID` (int único) y `NOMBRE` (str).
       - `espacio_busqueda(trial)` define el espacio Optuna.
-      - `generar_señales(df, params) → pl.Series` (Int8: 1, -1, 0).
+      - `generar_senales(df, params) → pl.Series` (Int8: 1, -1, 0).
       - `generar_salidas(df, params) → pl.Series` (sólo si EXIT_TYPE='CUSTOM').
       - `indicadores_para_grafica(df, params) → list[dict]` (opcional).
 
@@ -243,7 +243,7 @@ class BaseEstrategia(ABC):
         return {}
 
     @abstractmethod
-    def generar_señales(self, df: pl.DataFrame, params: dict) -> pl.Series:
+    def generar_senales(self, df: pl.DataFrame, params: dict) -> pl.Series:
         """Devuelve `pl.Series` Int8 con valores en {-1, 0, 1}."""
 
     def generar_salidas(self, df: pl.DataFrame, params: dict) -> pl.Series:

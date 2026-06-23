@@ -1,32 +1,26 @@
 import polars as pl
 
-# Jerarquía de menor a mayor para validar la dirección del resampleo
-_JERARQUIA = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
-TIMEFRAMES_ORDENADOS = tuple(_JERARQUIA)
+from DATOS.tiempo import (
+    DURACION_POLARS,
+    SEGUNDOS_POR_TIMEFRAME,
+    TIMEFRAMES_ORDENADOS,
+    inferir_timeframe,
+    segundos_timeframe,
+)
 
-# Mapeo a la cadena de duración que entiende Polars group_by_dynamic
-_DURACION = {
-    "1m":  "1m",
-    "5m":  "5m",
-    "15m": "15m",
-    "30m": "30m",
-    "1h":  "1h",
-    "4h":  "4h",
-    "1d":  "1d",
-}
-_SEGUNDOS_A_TF = {
-    60: "1m",
-    300: "5m",
-    900: "15m",
-    1800: "30m",
-    3600: "1h",
-    14400: "4h",
-    86400: "1d",
-}
-_TF_A_SEGUNDOS = {tf: segundos for segundos, tf in _SEGUNDOS_A_TF.items()}
+# Reexportados para compatibilidad: parte del codigo importa historicamente
+# estos nombres desde `DATOS.resampleo`. La fuente de verdad ahora es
+# `DATOS.tiempo`.
+__all__ = [
+    "TIMEFRAMES_ORDENADOS",
+    "segundos_timeframe",
+    "inferir_timeframe",
+    "regla_agregacion",
+    "resamplear",
+]
 
-# Regla de agregación por columna. Si se añade una columna nueva al histórico,
-# debe declararse aquí para evitar resampleos con semántica incorrecta.
+# Regla de agregacion por columna. Si se anade una columna nueva al historico,
+# debe declararse aqui para evitar resampleos con semantica incorrecta.
 _REGLAS_AGREGACION = {
     "open": "first",
     "high": "max",
@@ -46,15 +40,26 @@ _REGLAS_AGREGACION = {
 }
 
 
+def regla_agregacion(columna: str) -> str:
+    """Devuelve la regla declarada para una columna resampleable."""
+    try:
+        return _REGLAS_AGREGACION[columna]
+    except KeyError as exc:
+        raise ValueError(
+            "Columnas sin regla de resampleo declarada: "
+            f"['{columna}']. Anade su semantica a _REGLAS_AGREGACION."
+        ) from exc
+
+
 def resamplear(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
     """
     Construye velas del timeframe pedido a partir del timeframe mas bajo disponible.
-    Solo permite ir hacia timeframes más grandes, nunca más pequeños.
-    Cada columna se agrega con una regla explícita según lo que mide.
+    Solo permite ir hacia timeframes mas grandes, nunca mas pequenos.
+    Cada columna se agrega con una regla explicita segun lo que mide.
     """
-    if timeframe not in _JERARQUIA:
+    if timeframe not in TIMEFRAMES_ORDENADOS:
         raise ValueError(
-            f"Timeframe '{timeframe}' no reconocido. Opciones: {_JERARQUIA}"
+            f"Timeframe '{timeframe}' no reconocido. Opciones: {list(TIMEFRAMES_ORDENADOS)}"
         )
 
     df_ordenado = _asegurar_orden_timestamp(df)
@@ -63,20 +68,20 @@ def resamplear(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
     if timeframe == timeframe_base:
         return df
 
-    idx_base   = _JERARQUIA.index(timeframe_base)
-    idx_pedido = _JERARQUIA.index(timeframe)
+    idx_base = TIMEFRAMES_ORDENADOS.index(timeframe_base)
+    idx_pedido = TIMEFRAMES_ORDENADOS.index(timeframe)
     if idx_pedido < idx_base:
         raise ValueError(
             f"No se puede resamplear de '{timeframe_base}' a '{timeframe}': "
-            f"solo se puede ir hacia timeframes más grandes."
+            f"solo se puede ir hacia timeframes mas grandes."
         )
 
-    duracion = _DURACION[timeframe]
+    duracion = DURACION_POLARS[timeframe]
     filas_esperadas = _filas_esperadas_por_ventana(timeframe_base, timeframe)
     aggs = _construir_agregaciones(df.columns)
 
     # Ventanas [inicio, fin) sin lookahead. El timestamp visible es la apertura
-    # natural de la vela: 00:00..00:14 -> 00:00. La proyección al timeframe base
+    # natural de la vela: 00:00..00:14 -> 00:00. La proyeccion al timeframe base
     # calcula aparte el cierre operativo para que el motor siga entrando despues
     # de que la vela resampleada este confirmada.
     df_resampled = (
@@ -99,21 +104,13 @@ def resamplear(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
     return df_resampled
 
 
-def segundos_timeframe(timeframe: str) -> int:
-    if timeframe not in _TF_A_SEGUNDOS:
-        raise ValueError(
-            f"Timeframe '{timeframe}' no reconocido. Opciones: {_JERARQUIA}"
-        )
-    return int(_TF_A_SEGUNDOS[timeframe])
-
-
 def _filas_esperadas_por_ventana(timeframe_base: str, timeframe: str) -> int:
-    segundos_base = _TF_A_SEGUNDOS[timeframe_base]
-    segundos_destino = _TF_A_SEGUNDOS[timeframe]
+    segundos_base = SEGUNDOS_POR_TIMEFRAME[timeframe_base]
+    segundos_destino = SEGUNDOS_POR_TIMEFRAME[timeframe]
     if segundos_destino % segundos_base != 0:
         raise ValueError(
             f"No se puede resamplear de '{timeframe_base}' a '{timeframe}': "
-            "la duración destino no es múltiplo exacto de la base."
+            "la duracion destino no es multiplo exacto de la base."
         )
     return segundos_destino // segundos_base
 
@@ -124,7 +121,7 @@ def _construir_agregaciones(columnas: list[str]) -> list[pl.Expr]:
     if desconocidas:
         raise ValueError(
             "Columnas sin regla de resampleo declarada: "
-            f"{desconocidas}. Añade su semántica a _REGLAS_AGREGACION."
+            f"{desconocidas}. Anade su semantica a _REGLAS_AGREGACION."
         )
 
     return [_expresion_agregacion(col, _REGLAS_AGREGACION[col]) for col in columnas_datos]
@@ -149,32 +146,3 @@ def _asegurar_orden_timestamp(df: pl.DataFrame) -> pl.DataFrame:
     if df["timestamp"].is_sorted():
         return df.set_sorted("timestamp")
     return df.sort("timestamp").set_sorted("timestamp")
-
-
-def inferir_timeframe(df: pl.DataFrame) -> str:
-    if df.height < 2:
-        raise ValueError("No se puede inferir timeframe con menos de 2 filas.")
-
-    timestamps = (
-        df.select("timestamp")
-        .head(min(df.height, 1_000))
-        .to_series()
-        .to_list()
-    )
-    diffs = []
-    for previo, actual in zip(timestamps, timestamps[1:]):
-        delta = actual - previo
-        segundos = int(delta.total_seconds())
-        if segundos > 0:
-            diffs.append(segundos)
-
-    if not diffs:
-        raise ValueError("No se pudo inferir timeframe: timestamps sin avance temporal.")
-
-    segundos_base = min(diffs)
-    if segundos_base not in _SEGUNDOS_A_TF:
-        raise ValueError(
-            "Timeframe base no soportado por el sistema: "
-            f"delta_minimo={segundos_base} segundos."
-        )
-    return _SEGUNDOS_A_TF[segundos_base]

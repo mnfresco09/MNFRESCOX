@@ -4,19 +4,20 @@
 # ---------------------------------------------------------------------------
 
 # Número máximo de velas que puede durar un trade.
-# Se mide en el timeframe de ejecucion mas bajo disponible en HISTORICO,
-# no necesariamente en el timeframe de la estrategia.
+# Se mide en el timeframe de entrada/estrategia configurado en TIMEFRAMES.
+# Ejemplo: TIMEFRAMES = "1h" y EXIT_VELAS = 20 equivale a 20 horas.
 # Cuando se alcanza, se cierra al precio de cierre de esa vela.
-EXIT_VELAS = 20
+EXIT_VELAS = 22
 
-# Stop Loss de seguridad activo en paralelo.
+# Stop Loss de emergencia activo en paralelo.
 # Si el precio lo toca antes de llegar a EXIT_VELAS, cierra el trade.
 # El primero en cumplirse tiene preferencia.
 # Ejemplo: 20 → cierra si la pérdida llega al 20% del colateral.
-EXIT_SL_PCT = 25
+USAR_SL_EMERGENCIA = False
+EXIT_SL_PCT = 30
 
-# Si True, Optuna también buscará el número óptimo de velas y el SL
-# en lugar de usar los valores fijos definidos arriba.
+# Si True, Optuna también buscará el número óptimo de velas y el SL de
+# emergencia si USAR_SL_EMERGENCIA=True.
 OPTIMIZAR_SALIDAS = False
 
 # Rangos usados solo cuando OPTIMIZAR_SALIDAS = True.

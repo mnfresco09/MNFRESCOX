@@ -9,15 +9,10 @@ from pathlib import Path
 PLOTLY_CDN = "https://cdn.plot.ly/plotly-2.35.2.min.js"
 
 PARAM_LABELS = {
-    "risk_max_pct": "RIESGO %",
-    "risk_vol_halflife": "VOL HL",
-    "risk_sl_ewma_mult": "SL xVOL",
-    "risk_tp_ewma_mult": "TP xVOL",
-    "risk_trail_act_ewma_mult": "TRAIL ACT xVOL",
-    "risk_trail_dist_ewma_mult": "TRAIL DIST xVOL",
     "exit_sl_pct": "SL %",
     "exit_tp_pct": "TP %",
     "exit_velas": "VELAS",
+    "exit_sl_emergencia": "SL EMERG",
     "exit_trail_act_pct": "TRAIL ACT %",
     "exit_trail_dist_pct": "TRAIL DIST %",
     "halflife_bars": "HALFLIFE BARS",
@@ -54,9 +49,6 @@ DERIVED_LABELS = {
     "return_dd_ratio": "ROI / DD",
     "pnl_por_trade": "PNL / TRADE",
     "score_dd_ratio": "SCORE / DD",
-    "xvol_rr": "TP/SL xVOL",
-    "trail_act_sl_ratio": "TRAIL ACT/SL",
-    "trail_dist_sl_ratio": "TRAIL DIST/SL",
 }
 
 DERIVED_KEYS = tuple(DERIVED_LABELS.keys())
@@ -159,24 +151,16 @@ def _crear_payload(
 
 def _crear_derivados(trial) -> dict[str, float | None]:
     metricas = trial.metricas or {}
-    parametros = trial.parametros or {}
     roi = _num_or_none(metricas.get("roi_total"))
     dd = _num_or_none(metricas.get("max_drawdown"))
     pnl = _num_or_none(metricas.get("pnl_total"))
     trades = _num_or_none(metricas.get("total_trades"))
     score = _num_or_none(trial.score)
-    sl_mult = _num_or_none(parametros.get("risk_sl_ewma_mult"))
-    tp_mult = _num_or_none(parametros.get("risk_tp_ewma_mult"))
-    trail_act = _num_or_none(parametros.get("risk_trail_act_ewma_mult"))
-    trail_dist = _num_or_none(parametros.get("risk_trail_dist_ewma_mult"))
 
     return {
         "return_dd_ratio": _safe_div(roi, dd),
         "pnl_por_trade": _safe_div(pnl, trades),
         "score_dd_ratio": _safe_div(score, dd),
-        "xvol_rr": _safe_div(tp_mult, sl_mult),
-        "trail_act_sl_ratio": _safe_div(trail_act, sl_mult),
-        "trail_dist_sl_ratio": _safe_div(trail_dist, sl_mult),
     }
 
 
@@ -312,6 +296,23 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:12
 'use strict';
 const D=__DATA_JSON__;
 const T={bg:'#000000',panel:'#0a0a0a',panel2:'#101010',grid:'#101010',border:'#1f1f1f',text:'#e8e8e8',mute:'#b8b8b8',dim:'#7d7d7d',accent:'#ffb000',accent2:'#ff8a00',pos:'#5cdb5c',neg:'#ff4d4d',blue:'#3aa3ff',mono:'JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace'};
+const PERF_SCALE_HIGH_GOOD=[
+  [0.00,'#ff3b3b'],
+  [0.18,'#ff6a32'],
+  [0.36,'#ffb000'],
+  [0.52,'#d6d94a'],
+  [0.68,'#5cdb5c'],
+  [0.84,'#32c7a6'],
+  [1.00,'#3aa3ff'],
+];
+const PERF_SCALE_LOW_GOOD=PERF_SCALE_HIGH_GOOD.map(([p,c])=>[1-p,c]).sort((a,b)=>a[0]-b[0]);
+const CORRELATION_SCALE=[
+  [0.00,'#ff3b3b'],
+  [0.25,'#ffb000'],
+  [0.50,'#151515'],
+  [0.75,'#5cdb5c'],
+  [1.00,'#3aa3ff'],
+];
 const PARAM_KEYS=D.params_keys||[],METRIC_KEYS=D.metric_keys||[],DERIVED_KEYS=D.derived_keys||[];
 const FIELD_LABELS=D.field_labels||{};
 const PCT_FIELDS=new Set(['roi_total','expectancy','win_rate','max_drawdown']);
@@ -336,7 +337,7 @@ function sortedTrials(k='score',desc=true){return [...D.trials].sort((a,b)=>{con
 function cleanValues(k){return D.trials.map(t=>num(value(t,k))).filter(v=>v!==null)}
 function aggregate(arr,mode){const vs=arr.map(num).filter(v=>v!==null);if(!vs.length)return null;if(mode==='count')return vs.length;if(mode==='mean')return vs.reduce((a,b)=>a+b,0)/vs.length;if(mode==='median'){const s=[...vs].sort((a,b)=>a-b),m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2}if(mode==='min')return Math.min(...vs);if(mode==='max')return Math.max(...vs);if(mode==='std'){const mean=aggregate(vs,'mean');return Math.sqrt(vs.reduce((a,b)=>a+(b-mean)**2,0)/vs.length)}return null}
 function pearson(xs,ys){const p=xs.map((x,i)=>[num(x),num(ys[i])]).filter(([x,y])=>x!==null&&y!==null);if(p.length<2)return null;const mx=p.reduce((a,[x])=>a+x,0)/p.length,my=p.reduce((a,[,y])=>a+y,0)/p.length;let n=0,dx=0,dy=0;for(const [x,y]of p){const a=x-mx,b=y-my;n+=a*b;dx+=a*a;dy+=b*b}return dx&&dy?n/Math.sqrt(dx*dy):0}
-function colorscale(k){return dir(k)==='min'?[[0,T.pos],[.5,T.panel2],[1,T.neg]]:[[0,T.neg],[.5,T.panel2],[1,T.pos]]}
+function colorscale(k){return dir(k)==='min'?PERF_SCALE_LOW_GOOD:PERF_SCALE_HIGH_GOOD}
 function plot(data,layout){if(typeof Plotly==='undefined'){document.getElementById('offline').style.display='block';return}const el=document.getElementById('chart');el.innerHTML='';Plotly.newPlot(el,data,Object.assign({paper_bgcolor:T.bg,plot_bgcolor:T.bg,font:{family:T.mono,color:T.text,size:11},margin:{l:72,r:28,t:42,b:64},hoverlabel:{bgcolor:'#000',bordercolor:T.accent,font:{color:T.text}},xaxis:axis(),yaxis:axis()},layout||{}),{responsive:true,displaylogo:false,modeBarButtonsToRemove:['lasso2d','select2d'],toImageButtonOptions:{format:'png',filename:'robustez',height:900,width:1600,scale:2}})}
 function axis(extra){return Object.assign({gridcolor:T.grid,zerolinecolor:T.border,linecolor:T.border,tickcolor:T.border,color:T.mute,tickfont:{color:T.mute,size:10},titlefont:{color:T.mute,size:10}},extra||{})}
 function purge(){if(typeof Plotly!=='undefined')Plotly.purge('chart');document.getElementById('chart').innerHTML=''}
@@ -379,11 +380,11 @@ function renderCurrent(){
 function cellGrid(x,y,m,agg){const xs=[...new Set(D.trials.map(t=>value(t,x)).filter(v=>v!=null))].sort((a,b)=>a-b);const ys=[...new Set(D.trials.map(t=>value(t,y)).filter(v=>v!=null))].sort((a,b)=>a-b);const map=new Map();for(const t of D.trials){const xv=value(t,x),yv=value(t,y),mv=value(t,m);if(xv==null||yv==null||mv==null)continue;const key=xv+'|'+yv;if(!map.has(key))map.set(key,[]);map.get(key).push(mv)}const z=ys.map(yv=>xs.map(xv=>aggregate(map.get(xv+'|'+yv)||[],agg)));return{xs,ys,z,map}}
 function renderRanking(){purge();const s=State.ranking;const trials=sortedTrials(s.sort,dir(s.sort)==='max').slice(0,250);const cols=['trial','score','roi_total','max_drawdown','profit_factor','sharpe_ratio','total_trades',...PARAM_KEYS.slice(0,7)];const head=cols.map(c=>`<th class="${c==='trial'?'':'num'}">${esc(label(c))}</th>`).join('');const rows=trials.map(t=>`<tr>${cols.map(c=>{const v=c==='trial'?t.trial:value(t,c);return `<td class="${c==='trial'?'':'num'} ${cls(c,v)}">${esc(c==='trial'?'#'+v:fmt(c,v))}</td>`}).join('')}</tr>`).join('');document.getElementById('chart').innerHTML=`<div class="rank-wrap"><table class="data-table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;const b=best();stats([['MEJOR TRIAL','#'+b.trial],['SCORE',fmt('score',b.score),'pos'],['ORDEN',label(s.sort)],['MOSTRADOS',String(trials.length)]])}
 function renderHeatmap(){const s=State.heatmap,g=cellGrid(s.x,s.y,s.metric,s.agg);plot([{type:'heatmap',x:g.xs,y:g.ys,z:g.z,colorscale:colorscale(s.metric),hoverongaps:false,colorbar:{title:{text:label(s.metric),font:{color:T.mute}},tickfont:{color:T.mute}},hovertemplate:label(s.x)+': %{x}<br>'+label(s.y)+': %{y}<br>'+label(s.metric)+': %{z:.4f}<extra></extra>'}],{title:{text:s.agg.toUpperCase()+' '+label(s.metric)+' - '+label(s.x)+' x '+label(s.y),font:{size:12}},xaxis:axis({title:label(s.x)}),yaxis:axis({title:label(s.y)}),height:650});stats([['X',label(s.x)],['Y',label(s.y)],['METRICA',label(s.metric)],['AGG',s.agg.toUpperCase()]])}
-function renderTopZone(){const s=State.topzone;const vals=D.trials.map(t=>num(value(t,s.metric))).filter(v=>v!==null).sort((a,b)=>dir(s.metric)==='max'?b-a:a-b);const cut=vals[Math.max(0,Math.floor(vals.length*(Number(s.top)/100))-1)]??null;const top=D.trials.filter(t=>{const v=num(value(t,s.metric));return v!==null&&(dir(s.metric)==='max'?v>=cut:v<=cut)});const xs=[...new Set(D.trials.map(t=>value(t,s.x)).filter(v=>v!=null))].sort((a,b)=>a-b);const ys=[...new Set(D.trials.map(t=>value(t,s.y)).filter(v=>v!=null))].sort((a,b)=>a-b);const counts=new Map();for(const t of top){const key=value(t,s.x)+'|'+value(t,s.y);counts.set(key,(counts.get(key)||0)+1)}const z=ys.map(yv=>xs.map(xv=>counts.get(xv+'|'+yv)||0));plot([{type:'heatmap',x:xs,y:ys,z,colorscale:[[0,T.panel2],[.5,T.accent2],[1,T.accent]],colorbar:{title:{text:'TOP TRIALS',font:{color:T.mute}},tickfont:{color:T.mute}},hovertemplate:label(s.x)+': %{x}<br>'+label(s.y)+': %{y}<br>Top trials: %{z}<extra></extra>'}],{title:{text:'CONCENTRACION TOP '+s.top+'% - '+label(s.metric),font:{size:12}},xaxis:axis({title:label(s.x)}),yaxis:axis({title:label(s.y)}),height:650});stats([['CORTE',fmt(s.metric,cut)],['TRIALS TOP',String(top.length)],['TOTAL',String(D.trials.length)]])}
+function renderTopZone(){const s=State.topzone;const vals=D.trials.map(t=>num(value(t,s.metric))).filter(v=>v!==null).sort((a,b)=>dir(s.metric)==='max'?b-a:a-b);const cut=vals[Math.max(0,Math.floor(vals.length*(Number(s.top)/100))-1)]??null;const top=D.trials.filter(t=>{const v=num(value(t,s.metric));return v!==null&&(dir(s.metric)==='max'?v>=cut:v<=cut)});const xs=[...new Set(D.trials.map(t=>value(t,s.x)).filter(v=>v!=null))].sort((a,b)=>a-b);const ys=[...new Set(D.trials.map(t=>value(t,s.y)).filter(v=>v!=null))].sort((a,b)=>a-b);const counts=new Map();for(const t of top){const key=value(t,s.x)+'|'+value(t,s.y);counts.set(key,(counts.get(key)||0)+1)}const z=ys.map(yv=>xs.map(xv=>counts.get(xv+'|'+yv)||0));plot([{type:'heatmap',x:xs,y:ys,z,colorscale:PERF_SCALE_HIGH_GOOD,colorbar:{title:{text:'TOP TRIALS',font:{color:T.mute}},tickfont:{color:T.mute}},hovertemplate:label(s.x)+': %{x}<br>'+label(s.y)+': %{y}<br>Top trials: %{z}<extra></extra>'}],{title:{text:'CONCENTRACION TOP '+s.top+'% - '+label(s.metric),font:{size:12}},xaxis:axis({title:label(s.x)}),yaxis:axis({title:label(s.y)}),height:650});stats([['CORTE',fmt(s.metric,cut)],['TRIALS TOP',String(top.length)],['TOTAL',String(D.trials.length)]])}
 function renderScatter2D(){const s=State.scatter2d;plot([{type:'scattergl',mode:'markers',x:D.trials.map(t=>value(t,s.x)),y:D.trials.map(t=>value(t,s.y)),text:D.trials.map(t=>'#'+t.trial),marker:{size:7,color:D.trials.map(t=>value(t,s.color)),colorscale:colorscale(s.color),showscale:true,colorbar:{title:{text:label(s.color),font:{color:T.mute}},tickfont:{color:T.mute}},line:{color:'#000',width:.5}},hovertemplate:'Trial %{text}<br>'+label(s.x)+': %{x}<br>'+label(s.y)+': %{y}<extra></extra>'}],{title:{text:label(s.x)+' vs '+label(s.y),font:{size:12}},xaxis:axis({title:label(s.x)}),yaxis:axis({title:label(s.y)}),height:650});stats([['MODO','2 EJES'],['X',label(s.x)],['Y',label(s.y)],['COLOR',label(s.color)]])}
 function renderScatter3D(){const s=State.scatter3d;plot([{type:'scatter3d',mode:'markers',x:D.trials.map(t=>value(t,s.x)),y:D.trials.map(t=>value(t,s.y)),z:D.trials.map(t=>value(t,s.z)),text:D.trials.map(t=>'#'+t.trial),marker:{size:4,color:D.trials.map(t=>value(t,s.color)),colorscale:colorscale(s.color),showscale:true,colorbar:{title:{text:label(s.color),font:{color:T.mute}},tickfont:{color:T.mute}},opacity:.85},hovertemplate:'Trial %{text}<br>'+label(s.x)+': %{x}<br>'+label(s.y)+': %{y}<br>'+label(s.z)+': %{z}<extra></extra>'}],{scene:{xaxis:{title:label(s.x),color:T.mute,gridcolor:T.grid,backgroundcolor:T.bg,showbackground:true},yaxis:{title:label(s.y),color:T.mute,gridcolor:T.grid,backgroundcolor:T.bg,showbackground:true},zaxis:{title:label(s.z),color:T.mute,gridcolor:T.grid,backgroundcolor:T.bg,showbackground:true},bgcolor:T.bg},height:700});stats([['MODO','3 EJES'],['COLOR',label(s.color)]])}
 function renderPareto(){const s=State.pareto,N=D.trials.length,xs=D.trials.map(t=>num(value(t,s.x))),ys=D.trials.map(t=>num(value(t,s.y)));const valid=xs.map((x,i)=>x!==null&&ys[i]!==null),dom=new Array(N).fill(false);for(let i=0;i<N;i++){if(!valid[i])continue;for(let j=0;j<N;j++){if(i===j||!valid[j])continue;const xb=dir(s.x)==='max'?xs[j]>=xs[i]:xs[j]<=xs[i],yb=dir(s.y)==='max'?ys[j]>=ys[i]:ys[j]<=ys[i],xs2=dir(s.x)==='max'?xs[j]>xs[i]:xs[j]<xs[i],ys2=dir(s.y)==='max'?ys[j]>ys[i]:ys[j]<ys[i];if(xb&&yb&&(xs2||ys2)){dom[i]=true;break}}}const front=D.trials.map((t,i)=>({t,i,x:xs[i],y:ys[i]})).filter(o=>valid[o.i]&&!dom[o.i]).sort((a,b)=>a.x-b.x);plot([{type:'scatter',mode:'markers',x:xs.map((x,i)=>valid[i]&&dom[i]?x:null),y:ys.map((y,i)=>valid[i]&&dom[i]?y:null),marker:{size:7,color:T.dim,opacity:.45},text:D.trials.map(t=>'#'+t.trial),name:'Dominados',hovertemplate:'Trial %{text}<br>'+label(s.x)+': %{x}<br>'+label(s.y)+': %{y}<extra></extra>'},{type:'scatter',mode:'lines+markers',x:front.map(o=>o.x),y:front.map(o=>o.y),text:front.map(o=>'#'+o.t.trial),marker:{size:10,color:T.accent,line:{color:'#fff',width:1}},line:{color:T.accent,width:1.5,dash:'dot'},name:'Frontera',hovertemplate:'Trial %{text}<br>'+label(s.x)+': %{x}<br>'+label(s.y)+': %{y}<extra></extra>'}],{title:{text:'PARETO - '+label(s.x)+' vs '+label(s.y),font:{size:12}},xaxis:axis({title:label(s.x)}),yaxis:axis({title:label(s.y)}),legend:{font:{color:T.text},bgcolor:T.panel,bordercolor:T.border,borderwidth:1},height:650});stats([['FRONTERA',String(front.length)],['DOMINADOS',String(dom.filter(Boolean).length)]])}
-function renderCorrelation(){const ys=[...PARAM_KEYS],xs=['score',...METRIC_KEYS,...DERIVED_KEYS];const z=ys.map(p=>xs.map(m=>pearson(D.trials.map(t=>value(t,p)),D.trials.map(t=>value(t,m)))));plot([{type:'heatmap',x:xs.map(label),y:ys.map(label),z,colorscale:[[0,T.neg],[.5,T.panel2],[1,T.pos]],zmin:-1,zmax:1,colorbar:{title:{text:'r',font:{color:T.mute}},tickfont:{color:T.mute}},hovertemplate:'%{y}<br>%{x}<br>r=%{z:.3f}<extra></extra>'}],{title:{text:'CORRELACION PARAMETRO - RESULTADO',font:{size:12}},xaxis:axis({tickangle:-35}),yaxis:axis({automargin:true}),height:Math.max(560,ys.length*34+160),margin:{l:170,r:30,t:48,b:130}});stats([['PARAMS',String(ys.length)],['VARIABLES',String(xs.length)]])}
+function renderCorrelation(){const ys=[...PARAM_KEYS],xs=['score',...METRIC_KEYS,...DERIVED_KEYS];const z=ys.map(p=>xs.map(m=>pearson(D.trials.map(t=>value(t,p)),D.trials.map(t=>value(t,m)))));plot([{type:'heatmap',x:xs.map(label),y:ys.map(label),z,colorscale:CORRELATION_SCALE,zmin:-1,zmax:1,colorbar:{title:{text:'r',font:{color:T.mute}},tickfont:{color:T.mute}},hovertemplate:'%{y}<br>%{x}<br>r=%{z:.3f}<extra></extra>'}],{title:{text:'CORRELACION PARAMETRO - RESULTADO',font:{size:12}},xaxis:axis({tickangle:-35}),yaxis:axis({automargin:true}),height:Math.max(560,ys.length*34+160),margin:{l:170,r:30,t:48,b:130}});stats([['PARAMS',String(ys.length)],['VARIABLES',String(xs.length)]])}
 function renderConvergence(){const s=State.convergence;const ordered=[...D.trials].sort((a,b)=>a.trial-b.trial);let bestVal=null;const bestLine=[];for(const t of ordered){const v=num(value(t,s.metric));if(v!==null&&(bestVal===null||(dir(s.metric)==='max'?v>bestVal:v<bestVal)))bestVal=v;bestLine.push(bestVal)}plot([{type:'scatter',mode:'markers',x:ordered.map(t=>t.trial),y:ordered.map(t=>value(t,s.metric)),marker:{size:5,color:T.dim},name:'Trial'},{type:'scatter',mode:'lines',x:ordered.map(t=>t.trial),y:bestLine,line:{color:T.accent,width:2},name:'Mejor acumulado'}],{title:{text:'CONVERGENCIA - '+label(s.metric),font:{size:12}},xaxis:axis({title:'TRIAL'}),yaxis:axis({title:label(s.metric)}),height:620,legend:{font:{color:T.text},bgcolor:T.panel,bordercolor:T.border,borderwidth:1}});stats([['ULTIMO BEST',fmt(s.metric,bestLine[bestLine.length-1])],['TRIALS',String(ordered.length)]])}
 function renderDistribution(){const s=State.distribution,vs=cleanValues(s.metric).sort((a,b)=>a-b);if(!vs.length){purge();stats([['SIN DATOS','-']]);return}const mean=aggregate(vs,'mean'),med=aggregate(vs,'median'),std=aggregate(vs,'std');plot([{type:'histogram',x:vs,nbinsx:Math.min(60,Math.max(12,Math.floor(Math.sqrt(vs.length)))),marker:{color:T.accent,line:{color:'#000',width:1}},name:'Histograma'},{type:'box',x:vs,marker:{color:T.pos},boxpoints:'outliers',name:'Box'}],{title:{text:'DISTRIBUCION - '+label(s.metric),font:{size:12}},xaxis:axis({title:label(s.metric)}),yaxis:axis({title:'TRIALS'}),height:620,bargap:.04,showlegend:false,shapes:[{type:'line',x0:mean,x1:mean,yref:'paper',y0:0,y1:1,line:{color:T.accent2,width:1.5,dash:'dot'}}]});stats([['MEDIA',fmt(s.metric,mean)],['MEDIANA',fmt(s.metric,med)],['DESV',fmt(s.metric,std)],['MIN',fmt(s.metric,vs[0])],['MAX',fmt(s.metric,vs[vs.length-1])]])}
 function renderSensitivity(){const s=State.sensitivity;const ms=D.trials.map(t=>value(t,s.metric));const rows=PARAM_KEYS.map(p=>({p,c:pearson(D.trials.map(t=>value(t,p)),ms)})).filter(r=>r.c!==null).sort((a,b)=>Math.abs(b.c)-Math.abs(a.c));plot([{type:'bar',orientation:'h',x:rows.map(r=>r.c),y:rows.map(r=>label(r.p)),marker:{color:rows.map(r=>r.c>=0?T.pos:T.neg)},text:rows.map(r=>r.c.toFixed(3)),textposition:'outside',hovertemplate:'%{y}<br>r=%{x:.4f}<extra></extra>'}],{title:{text:'SENSIBILIDAD - '+label(s.metric),font:{size:12}},xaxis:axis({title:'CORRELACION',range:[-1.1,1.1],zeroline:true,zerolinecolor:T.border}),yaxis:axis({automargin:true,categoryorder:'array',categoryarray:rows.slice().reverse().map(r=>label(r.p))}),height:Math.max(420,rows.length*38+130),margin:{l:170,r:50,t:48,b:60}});stats(rows.length?[['MAS INFLUYE',label(rows[0].p)],['R',rows[0].c.toFixed(3)]]:[]) }

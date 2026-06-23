@@ -47,7 +47,7 @@ class EMATendencia(BaseEstrategia):
 
     # ── Señales y salidas ────────────────────────────────────────────────
 
-    def generar_señales(self, df: pl.DataFrame, params: dict) -> pl.Series:
+    def generar_senales(self, df: pl.DataFrame, params: dict) -> pl.Series:
         ema_r, ema_l = self._emas(params)
         diff = ema_r - ema_l
         diff_prev = self.shift(diff, 1)

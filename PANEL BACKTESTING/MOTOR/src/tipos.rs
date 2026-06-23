@@ -86,15 +86,6 @@ pub struct SimConfig {
     pub exit_velas: usize,
     pub exit_trail_act_pct: f64,
     pub exit_trail_dist_pct: f64,
-    pub paridad_riesgo: bool,
-    pub paridad_riesgo_max_pct: f64,
-    pub paridad_apalancamiento_min: f64,
-    pub paridad_apalancamiento_max: f64,
-    pub exit_sl_ewma_mult: f64,
-    pub exit_tp_ewma_mult: f64,
-    pub exit_trail_act_ewma_mult: f64,
-    pub exit_trail_dist_ewma_mult: f64,
-    pub paridad_skip_bajo_min: bool,
 }
 
 /// Vista SoA (Struct-of-Arrays) sobre las velas. No copia datos: las slices

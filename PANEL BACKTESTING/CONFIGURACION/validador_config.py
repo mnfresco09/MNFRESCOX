@@ -1,11 +1,13 @@
 import importlib
-import math
 import sys
+
+from DATOS.tiempo import TIMEFRAMES_ORDENADOS
 
 TIMEFRAMES_VALIDOS = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
 FORMATOS_VALIDOS   = {"feather", "parquet", "csv"}
 EXIT_TYPES_VALIDOS = {"FIXED", "BARS", "TRAILING", "CUSTOM", "ALL"}
 SAMPLERS_VALIDOS   = {"QMC", "TPE", "HYBRID"}
+SCORES_VALIDOS     = {"PSR", "SHARPE", "CALMAR", "ROI"}
 EXTENSIONES        = {"feather": ".feather", "parquet": ".parquet", "csv": ".csv"}
 
 
@@ -22,13 +24,18 @@ def validar(cfg) -> None:
         errores.append(f"FORMATO_DATOS '{cfg.FORMATO_DATOS}' no válido. Opciones: {FORMATOS_VALIDOS}")
 
     # --- Archivos en HISTORICO ---
+    # Igual que el cargador: vale cualquier timeframe soportado como base, no
+    # solo 1m. Basta con encontrar al menos un archivo {activo}_*_{tf}{ext}.
     ext = EXTENSIONES[cfg.FORMATO_DATOS]
     for activo in activos:
-        patron = f"{activo}_*_1m{ext}"
-        encontrados = list(cfg.CARPETA_HISTORICO.glob(patron))
+        patrones = [f"{activo}_*_{tf}{ext}" for tf in TIMEFRAMES_ORDENADOS]
+        encontrados = [
+            ruta for patron in patrones for ruta in cfg.CARPETA_HISTORICO.glob(patron)
+        ]
         if not encontrados:
             errores.append(
-                f"No se encontró archivo para '{activo}' con patrón '{patron}' "
+                f"No se encontró archivo para '{activo}' con patrón "
+                f"'{activo}_*_<tf>{ext}' (tf en {list(TIMEFRAMES_ORDENADOS)}) "
                 f"en {cfg.CARPETA_HISTORICO}"
             )
 
@@ -73,7 +80,6 @@ def validar(cfg) -> None:
         errores.append("COMISION_PCT debe estar entre 0 y 1 (ej: 0.0005 para 0.05%).")
     if cfg.COMISION_LADOS not in (1, 2):
         errores.append("COMISION_LADOS debe ser 1 (apertura) o 2 (apertura y cierre).")
-    _validar_paridad_riesgo(cfg, errores)
 
     # --- Salidas ---
     if cfg.EXIT_TYPE not in EXIT_TYPES_VALIDOS:
@@ -86,8 +92,20 @@ def validar(cfg) -> None:
         errores.append(f"OPTUNA_SAMPLER '{cfg.OPTUNA_SAMPLER}' no válido. Opciones: {SAMPLERS_VALIDOS}")
     if cfg.N_TRIALS < 1:
         errores.append("N_TRIALS debe ser >= 1.")
+    funcion_score = str(getattr(cfg, "FUNCION_SCORE", "PSR")).upper()
+    if funcion_score not in SCORES_VALIDOS:
+        errores.append(f"FUNCION_SCORE '{getattr(cfg, 'FUNCION_SCORE', None)}' no válido. Opciones: {SCORES_VALIDOS}")
+    min_trades_score = getattr(cfg, "MIN_TRADES_SCORE", 0)
+    if not isinstance(min_trades_score, int) or min_trades_score < 0:
+        errores.append("MIN_TRADES_SCORE debe ser un entero >= 0.")
     if cfg.N_JOBS == 0:
         errores.append("N_JOBS no puede ser 0. Usa 1, -1 o -2.")
+    max_jobs_pert = getattr(cfg, "PERTURBACIONES_MAX_JOBS", 4)
+    if not isinstance(max_jobs_pert, int) or max_jobs_pert < 1:
+        errores.append("PERTURBACIONES_MAX_JOBS debe ser un entero >= 1.")
+    validar_pert = getattr(cfg, "VALIDAR_PERTURBACIONES", False)
+    if not isinstance(validar_pert, bool):
+        errores.append("VALIDAR_PERTURBACIONES debe ser True o False.")
     _validar_semillas(cfg, errores)
 
     _validar_perturbaciones(cfg, errores)
@@ -125,10 +143,16 @@ def _validar_modulos_salida(exit_type: str, errores: list[str]) -> None:
     if exit_type in {"BARS", "ALL"}:
         velas = _importar_salida("velas", errores)
         if velas is not None:
-            _validar_mayor_cero(velas, "EXIT_SL_PCT", errores)
+            usar_sl = getattr(velas, "USAR_SL_EMERGENCIA", True)
+            if not isinstance(usar_sl, bool):
+                errores.append("SALIDAS.velas.USAR_SL_EMERGENCIA debe ser True o False.")
+                usar_sl = True
+            if usar_sl:
+                _validar_mayor_cero(velas, "EXIT_SL_PCT", errores)
             _validar_entero_mayor_cero(velas, "EXIT_VELAS", errores)
             if bool(getattr(velas, "OPTIMIZAR_SALIDAS", False)):
-                _validar_rango(velas, "EXIT_SL_MIN", "EXIT_SL_MAX", errores)
+                if usar_sl:
+                    _validar_rango(velas, "EXIT_SL_MIN", "EXIT_SL_MAX", errores)
                 _validar_rango(velas, "EXIT_VELAS_MIN", "EXIT_VELAS_MAX", errores)
 
     if exit_type in {"TRAILING", "ALL"}:
@@ -179,54 +203,6 @@ def _validar_semillas(cfg, errores: list[str]) -> None:
         errores.append("OPTUNA_SEED debe ser int cuando USAR_SEED=True.")
 
 
-def _validar_paridad_riesgo(cfg, errores: list[str]) -> None:
-    usar = getattr(cfg, "USAR_PARIDAD_RIESGO", False)
-    optimizar = getattr(cfg, "OPTIMIZAR_PARIDAD_RIESGO", True)
-    if not isinstance(usar, bool):
-        errores.append("USAR_PARIDAD_RIESGO debe ser True o False.")
-    if not isinstance(optimizar, bool):
-        errores.append("OPTIMIZAR_PARIDAD_RIESGO debe ser True o False.")
-
-    paridad = _importar_salida("paridad", errores)
-    if paridad is None:
-        return
-
-    _validar_mayor_cero(paridad, "RIESGO_MAXIMO_PCT", errores)
-    _validar_rango(paridad, "RIESGO_MAXIMO_MIN", "RIESGO_MAXIMO_MAX", errores)
-    _validar_entero_mayor_cero(paridad, "VOL_HALFLIFE", errores)
-    _validar_rango(paridad, "VOL_HALFLIFE_MIN", "VOL_HALFLIFE_MAX", errores)
-    _validar_mayor_cero(paridad, "SL_EWMA_MULT", errores)
-    _validar_rango(paridad, "SL_EWMA_MULT_MIN", "SL_EWMA_MULT_MAX", errores)
-    _validar_mayor_cero(paridad, "TP_EWMA_MULT", errores)
-    _validar_rango(paridad, "TP_EWMA_MULT_MIN", "TP_EWMA_MULT_MAX", errores)
-    _validar_mayor_cero(paridad, "TRAIL_ACT_EWMA_MULT", errores)
-    _validar_rango(paridad, "TRAIL_ACT_EWMA_MULT_MIN", "TRAIL_ACT_EWMA_MULT_MAX", errores)
-    _validar_mayor_cero(paridad, "TRAIL_DIST_EWMA_MULT", errores)
-    _validar_rango(paridad, "TRAIL_DIST_EWMA_MULT_MIN", "TRAIL_DIST_EWMA_MULT_MAX", errores)
-
-    try:
-        lev_min = float(getattr(paridad, "PARIDAD_APALANCAMIENTO_MIN"))
-        lev_max = float(getattr(paridad, "PARIDAD_APALANCAMIENTO_MAX"))
-    except Exception:
-        errores.append(
-            "SALIDAS.paridad.PARIDAD_APALANCAMIENTO_MIN/MAX deben existir y ser numericos."
-        )
-        return
-
-    if not math.isfinite(lev_min) or lev_min <= 0.0:
-        errores.append("SALIDAS.paridad.PARIDAD_APALANCAMIENTO_MIN debe ser finito y > 0.")
-    if not math.isfinite(lev_max) or lev_max <= 0.0:
-        errores.append("SALIDAS.paridad.PARIDAD_APALANCAMIENTO_MAX debe ser finito y > 0.")
-    if lev_min > lev_max:
-        errores.append(
-            "SALIDAS.paridad.PARIDAD_APALANCAMIENTO_MIN no puede ser mayor que "
-            "PARIDAD_APALANCAMIENTO_MAX."
-        )
-    skip = getattr(paridad, "SKIP_SI_APALANCAMIENTO_MENOR_MIN", True)
-    if not isinstance(skip, bool):
-        errores.append("SALIDAS.paridad.SKIP_SI_APALANCAMIENTO_MENOR_MIN debe ser True o False.")
-
-
 def _validar_kernel_perturbaciones(errores: list[str]) -> None:
     try:
         from DATOS.perturbaciones import validar_kernel_numba
@@ -266,16 +242,6 @@ def _cfg_float_rango(
             errores.append(f"{nombre} debe ser {op} {minimo}.")
     if maximo is not None and valor > maximo:
         errores.append(f"{nombre} debe ser <= {maximo}.")
-
-
-def _cfg_int_min(cfg, nombre: str, errores: list[str], *, minimo: int) -> None:
-    try:
-        valor = int(getattr(cfg, nombre))
-    except Exception:
-        errores.append(f"{nombre} debe existir y ser entero cuando PERTURBACIONES_ACTIVAS=True.")
-        return
-    if valor < minimo:
-        errores.append(f"{nombre} debe ser >= {minimo}.")
 
 
 def _validar_mayor_cero(modulo, atributo: str, errores: list[str]) -> None:

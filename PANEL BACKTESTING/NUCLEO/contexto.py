@@ -17,6 +17,8 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 
+from COMUN.numpy_utiles import a_contiguo
+from DATOS.tiempo import serie_timestamp_us
 from NUCLEO.proyeccion import construir_mapeo
 
 
@@ -50,16 +52,6 @@ class SimConfigMotor:
     exit_velas: int
     exit_trail_act_pct: float = 0.0
     exit_trail_dist_pct: float = 0.0
-    paridad_riesgo: bool = False
-    paridad_riesgo_max_pct: float = 0.0
-    paridad_apalancamiento_min: float = 1.0
-    paridad_apalancamiento_max: float = 1.0
-    risk_vol_ewma: np.ndarray | None = None
-    exit_sl_ewma_mult: float = 0.0
-    exit_tp_ewma_mult: float = 0.0
-    exit_trail_act_ewma_mult: float = 0.0
-    exit_trail_dist_ewma_mult: float = 0.0
-    paridad_skip_bajo_min: bool = True
 
 
 @dataclass(frozen=True)
@@ -111,11 +103,7 @@ def construir_arrays_motor(df: pl.DataFrame) -> ArraysMotor:
 
 
 def _columna_f64(df: pl.DataFrame, nombre: str) -> np.ndarray:
-    serie = df[nombre].cast(pl.Float64)
-    arr = serie.to_numpy()
-    if arr.dtype != np.float64 or not arr.flags["C_CONTIGUOUS"]:
-        arr = np.ascontiguousarray(arr, dtype=np.float64)
-    return arr
+    return a_contiguo(df[nombre].cast(pl.Float64).to_numpy(), np.float64)
 
 
 def _mismo_dataframe_temporal(df_base: pl.DataFrame, df_tf: pl.DataFrame) -> bool:
@@ -123,28 +111,10 @@ def _mismo_dataframe_temporal(df_base: pl.DataFrame, df_tf: pl.DataFrame) -> boo
 
 
 def _timestamps_us(df: pl.DataFrame) -> np.ndarray:
-    dtype = df.schema.get("timestamp")
-    if dtype is None:
-        raise ValueError("El DataFrame no contiene columna 'timestamp'.")
-
-    if isinstance(dtype, pl.Datetime):
-        serie = df.select(pl.col("timestamp").dt.epoch("us")).to_series()
-        arr = serie.to_numpy()
-    elif dtype in (pl.Int64, pl.Int32, pl.UInt64, pl.UInt32):
-        arr = df["timestamp"].cast(pl.Int64).to_numpy()
-    else:
-        raise ValueError(f"timestamp debe ser Datetime o entero en microsegundos, no {dtype}.")
-
-    if arr.dtype != np.int64 or not arr.flags["C_CONTIGUOUS"]:
-        arr = np.ascontiguousarray(arr, dtype=np.int64)
-    return arr
+    return a_contiguo(serie_timestamp_us(df).to_numpy(), np.int64)
 
 
 def _volume_array(df: pl.DataFrame) -> np.ndarray:
     if "volume" not in df.columns:
         return np.zeros(df.height, dtype=np.float64)
-    serie = df["volume"].cast(pl.Float64).fill_null(0.0)
-    arr = serie.to_numpy()
-    if arr.dtype != np.float64 or not arr.flags["C_CONTIGUOUS"]:
-        arr = np.ascontiguousarray(arr, dtype=np.float64)
-    return arr
+    return a_contiguo(df["volume"].cast(pl.Float64).fill_null(0.0).to_numpy(), np.float64)

@@ -17,6 +17,8 @@ from typing import ClassVar
 
 import numpy as np
 import polars as pl
+
+from COMUN.numpy_utiles import a_contiguo
 from NUCLEO.base_estrategia import BaseEstrategia
 
 try:
@@ -91,7 +93,7 @@ class VWAPCVD(BaseEstrategia):
         super().bind(arrays, cache)
         _precalentar_vwapcvd_jit()
 
-    def generar_señales(self, df: pl.DataFrame, params: dict) -> pl.Series:
+    def generar_senales(self, df: pl.DataFrame, params: dict) -> pl.Series:
         halflife, norm_mult, clip_sigmas, umbral, min_distance_z, max_distance_z = _normalizar_params(params)
         valores = self._indicadores(df, halflife, norm_mult, clip_sigmas)
         vwap = valores[IDX_VWAP]
@@ -395,10 +397,7 @@ def _clip(value: float, lower: float, upper: float) -> float:
 
 def _columna_float(df: pl.DataFrame, nombre: str) -> np.ndarray:
     serie = df[nombre].cast(pl.Float64).fill_null(0.0).fill_nan(0.0)
-    arr = serie.to_numpy()
-    if arr.dtype != np.float64 or not arr.flags["C_CONTIGUOUS"]:
-        arr = np.ascontiguousarray(arr, dtype=np.float64)
-    return arr
+    return a_contiguo(serie.to_numpy(), np.float64)
 
 
 def _serie_overlay(df: pl.DataFrame, valores: np.ndarray, color: str, nombre: str) -> dict:

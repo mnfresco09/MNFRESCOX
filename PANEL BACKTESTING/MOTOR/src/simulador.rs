@@ -234,7 +234,6 @@ impl Acumuladores {
 /// Versión "slim": sólo devuelve métricas. Usada por Optuna en cada trial.
 pub fn simular_metricas(
     velas: VelasSoA,
-    risk_vol_ewma: &[f64],
     senales: &[i8],
     salidas_custom: &[i8],
     config: &SimConfig,
@@ -242,7 +241,6 @@ pub fn simular_metricas(
     let mut acc = Acumuladores::nuevo(config.saldo_inicial);
     simular_core(
         velas,
-        risk_vol_ewma,
         senales,
         salidas_custom,
         config,
@@ -256,7 +254,6 @@ pub fn simular_metricas(
 /// Sólo se usa en el replay de los top-N trials para alimentar reportes.
 pub fn simular_full(
     velas: VelasSoA,
-    risk_vol_ewma: &[f64],
     senales: &[i8],
     salidas_custom: &[i8],
     config: &SimConfig,
@@ -268,7 +265,6 @@ pub fn simular_full(
 
     simular_core(
         velas,
-        risk_vol_ewma,
         senales,
         salidas_custom,
         config,
@@ -304,7 +300,6 @@ pub fn simular_full(
 
 fn simular_core<F>(
     velas: VelasSoA,
-    risk_vol_ewma: &[f64],
     senales: &[i8],
     salidas_custom: &[i8],
     config: &SimConfig,
@@ -320,11 +315,6 @@ fn simular_core<F>(
         salidas_custom.len(),
         "velas y salidas_custom deben coincidir"
     );
-    debug_assert!(
-        !config.paridad_riesgo || n == risk_vol_ewma.len(),
-        "velas y risk_vol_ewma deben coincidir con paridad activa"
-    );
-
     let mut trade_abierto: Option<TradeAbierto> = None;
     let mut senal_pendiente: Option<(usize, Direccion)> = None;
     let mut salida_custom_pendiente = false;
@@ -356,13 +346,8 @@ fn simular_core<F>(
                 }
                 let precio_entrada = velas.opens[i];
                 let colateral = config.saldo_por_trade;
-                let vol_senal = if config.paridad_riesgo {
-                    risk_vol_ewma.get(idx_senal).copied().unwrap_or(0.0)
-                } else {
-                    0.0
-                };
                 let Some(riesgo) =
-                    resolver_riesgo_entrada(config, direccion, precio_entrada, vol_senal)
+                    resolver_riesgo_entrada(config, direccion, precio_entrada)
                 else {
                     continue;
                 };
@@ -524,158 +509,53 @@ fn resolver_riesgo_entrada(
     config: &SimConfig,
     direccion: Direccion,
     precio_entrada: f64,
-    vol_senal: f64,
 ) -> Option<RiesgoEntrada> {
     if !precio_entrada.is_finite() || precio_entrada <= 0.0 {
         return None;
     }
 
-    if !config.paridad_riesgo {
-        let apalancamiento = config.apalancamiento;
-        let precio_sl = if config.exit_sl_pct > 0.0 {
-            capital::calcular_precio_sl(
-                direccion,
-                precio_entrada,
-                config.exit_sl_pct,
-                apalancamiento,
-            )
-        } else {
-            0.0
-        };
-        let precio_tp = if config.exit_type == ExitType::Fixed && config.exit_tp_pct > 0.0 {
-            capital::calcular_precio_tp(
-                direccion,
-                precio_entrada,
-                config.exit_tp_pct,
-                apalancamiento,
-            )
-        } else {
-            0.0
-        };
-        let (trail_act_price, trail_dist_price) = if config.exit_type == ExitType::Trailing {
-            (
-                capital::calcular_precio_tp(
-                    direccion,
-                    precio_entrada,
-                    config.exit_trail_act_pct,
-                    apalancamiento,
-                ),
-                capital::calcular_distancia_por_pct_colateral(
-                    precio_entrada,
-                    config.exit_trail_dist_pct,
-                    apalancamiento,
-                ),
-            )
-        } else {
-            (0.0, 0.0)
-        };
-        let risk_sl_dist_pct = if config.exit_sl_pct > 0.0 {
-            config.exit_sl_pct / 100.0 / apalancamiento
-        } else {
-            0.0
-        };
-        return Some(RiesgoEntrada {
-            apalancamiento,
-            precio_sl,
-            precio_tp,
-            trail_act_price,
-            trail_dist_price,
-            risk_vol_ewma: 0.0,
-            risk_sl_dist_pct,
-        });
-    }
-
-    if !vol_senal.is_finite() || vol_senal <= 0.0 {
-        return None;
-    }
-    let sl_dist = vol_senal * config.exit_sl_ewma_mult;
-    if !distancia_valida(sl_dist) {
-        return None;
-    }
-    let riesgo_max = config.paridad_riesgo_max_pct / 100.0;
-    if !riesgo_max.is_finite() || riesgo_max <= 0.0 {
-        return None;
-    }
-    let bruto = riesgo_max / sl_dist;
-    if !bruto.is_finite() || bruto <= 0.0 {
-        return None;
-    }
-    if config.paridad_skip_bajo_min && bruto < config.paridad_apalancamiento_min {
-        return None;
-    }
-    let apalancamiento = bruto
-        .max(config.paridad_apalancamiento_min)
-        .min(config.paridad_apalancamiento_max);
-
-    let precio_sl = precio_en_contra(direccion, precio_entrada, sl_dist);
-    if precio_sl <= 0.0 || !precio_sl.is_finite() {
-        return None;
-    }
-
-    let precio_tp = if config.exit_type == ExitType::Fixed {
-        let tp_dist = vol_senal * config.exit_tp_ewma_mult;
-        if !distancia_valida(tp_dist) {
-            return None;
-        }
-        let precio = precio_a_favor(direccion, precio_entrada, tp_dist);
-        if precio <= 0.0 || !precio.is_finite() {
-            return None;
-        }
-        precio
+    let apalancamiento = config.apalancamiento;
+    let precio_sl = if config.exit_sl_pct > 0.0 {
+        capital::calcular_precio_sl(direccion, precio_entrada, config.exit_sl_pct, apalancamiento)
     } else {
         0.0
     };
-
+    let precio_tp = if config.exit_type == ExitType::Fixed && config.exit_tp_pct > 0.0 {
+        capital::calcular_precio_tp(direccion, precio_entrada, config.exit_tp_pct, apalancamiento)
+    } else {
+        0.0
+    };
     let (trail_act_price, trail_dist_price) = if config.exit_type == ExitType::Trailing {
-        let act_dist = vol_senal * config.exit_trail_act_ewma_mult;
-        let trail_dist = vol_senal * config.exit_trail_dist_ewma_mult;
-        if !distancia_valida(act_dist) || !distancia_valida(trail_dist) || trail_dist >= act_dist {
-            return None;
-        }
-        let act_price = precio_a_favor(direccion, precio_entrada, act_dist);
-        let dist_price = precio_entrada * trail_dist;
-        if act_price <= 0.0
-            || dist_price <= 0.0
-            || !act_price.is_finite()
-            || !dist_price.is_finite()
-        {
-            return None;
-        }
-        (act_price, dist_price)
+        (
+            capital::calcular_precio_tp(
+                direccion,
+                precio_entrada,
+                config.exit_trail_act_pct,
+                apalancamiento,
+            ),
+            capital::calcular_distancia_por_pct_colateral(
+                precio_entrada,
+                config.exit_trail_dist_pct,
+                apalancamiento,
+            ),
+        )
     } else {
         (0.0, 0.0)
     };
-
+    let risk_sl_dist_pct = if config.exit_sl_pct > 0.0 {
+        config.exit_sl_pct / 100.0 / apalancamiento
+    } else {
+        0.0
+    };
     Some(RiesgoEntrada {
         apalancamiento,
         precio_sl,
         precio_tp,
         trail_act_price,
         trail_dist_price,
-        risk_vol_ewma: vol_senal,
-        risk_sl_dist_pct: sl_dist,
+        risk_vol_ewma: 0.0,
+        risk_sl_dist_pct,
     })
-}
-
-#[inline]
-fn distancia_valida(distancia_pct: f64) -> bool {
-    distancia_pct.is_finite() && distancia_pct > 0.0 && distancia_pct < 1.0
-}
-
-#[inline]
-fn precio_en_contra(direccion: Direccion, precio_entrada: f64, distancia_pct: f64) -> f64 {
-    match direccion {
-        Direccion::Long => precio_entrada * (1.0 - distancia_pct),
-        Direccion::Short => precio_entrada * (1.0 + distancia_pct),
-    }
-}
-
-#[inline]
-fn precio_a_favor(direccion: Direccion, precio_entrada: f64, distancia_pct: f64) -> f64 {
-    match direccion {
-        Direccion::Long => precio_entrada * (1.0 + distancia_pct),
-        Direccion::Short => precio_entrada * (1.0 - distancia_pct),
-    }
 }
 
 #[inline]
@@ -870,15 +750,6 @@ mod tests {
             exit_velas: 0,
             exit_trail_act_pct: 0.0,
             exit_trail_dist_pct: 0.0,
-            paridad_riesgo: false,
-            paridad_riesgo_max_pct: 0.0,
-            paridad_apalancamiento_min: 1.0,
-            paridad_apalancamiento_max: 1.0,
-            exit_sl_ewma_mult: 0.0,
-            exit_tp_ewma_mult: 0.0,
-            exit_trail_act_ewma_mult: 0.0,
-            exit_trail_dist_ewma_mult: 0.0,
-            paridad_skip_bajo_min: true,
         }
     }
 
@@ -926,7 +797,7 @@ mod tests {
         let velas = build_soa(&ts, &o, &h, &l, &c);
         let senales = [1i8, 0, 0];
         let salidas = [0i8, 0, 0];
-        let r = simular_full(velas, &[], &senales, &salidas, &cfg_fixed());
+        let r = simular_full(velas,&senales, &salidas, &cfg_fixed());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.idx_senal[0], 0);
         assert_eq!(r.idx_entrada[0], 1);
@@ -943,7 +814,7 @@ mod tests {
         let velas = build_soa(&ts, &o, &h, &l, &c);
         let senales = [1i8, 0, -1, 0];
         let salidas = [0i8, 0, 0, 0];
-        let r = simular_full(velas, &[], &senales, &salidas, &cfg_fixed());
+        let r = simular_full(velas,&senales, &salidas, &cfg_fixed());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.direccion[0], 1);
     }
@@ -956,7 +827,7 @@ mod tests {
         let l = [99.0, 99.0, 100.0];
         let c = [100.0, 100.5, 101.5];
         let velas = build_soa(&ts, &o, &h, &l, &c);
-        let r = simular_full(velas, &[], &[1i8, 0, 0], &[0i8, 0, 0], &cfg_fixed());
+        let r = simular_full(velas,&[1i8, 0, 0], &[0i8, 0, 0], &cfg_fixed());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.motivo_salida[0], motivo::END);
         assert!((r.precio_salida[0] - 101.5).abs() < 1e-10);
@@ -970,7 +841,7 @@ mod tests {
         let l = [99.0, 99.0, 94.0];
         let c = [100.0, 100.5, 96.0];
         let velas = build_soa(&ts, &o, &h, &l, &c);
-        let r = simular_full(velas, &[], &[1i8, 0, 0], &[0i8, 0, 0], &cfg_fixed());
+        let r = simular_full(velas,&[1i8, 0, 0], &[0i8, 0, 0], &cfg_fixed());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.motivo_salida[0], motivo::SL);
         assert!((r.precio_salida[0] - 95.0).abs() < 1e-10);
@@ -988,7 +859,7 @@ mod tests {
         cfg.exit_type = ExitType::Bars;
         cfg.exit_tp_pct = 0.0;
         cfg.exit_velas = 2;
-        let r = simular_full(velas, &[], &[1i8, 0, 0, 0], &[0i8, 0, 0, 0], &cfg);
+        let r = simular_full(velas,&[1i8, 0, 0, 0], &[0i8, 0, 0, 0], &cfg);
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.motivo_salida[0], motivo::BARS);
     }
@@ -1001,7 +872,7 @@ mod tests {
         let l = [99.0, 99.0, 100.0, 101.0];
         let c = [100.0, 100.5, 101.5, 102.5];
         let velas = build_soa(&ts, &o, &h, &l, &c);
-        let r = simular_full(velas, &[], &[1i8, 0, 0, 0], &[0i8, 0, 1, 0], &cfg_custom());
+        let r = simular_full(velas,&[1i8, 0, 0, 0], &[0i8, 0, 1, 0], &cfg_custom());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.motivo_salida[0], motivo::CUSTOM);
         assert_eq!(r.idx_salida[0], 3);
@@ -1016,7 +887,7 @@ mod tests {
         let l = [99.0, 99.0, 100.0, 94.0];
         let c = [100.0, 100.5, 101.5, 96.0];
         let velas = build_soa(&ts, &o, &h, &l, &c);
-        let r = simular_full(velas, &[], &[1i8, 0, 0, 0], &[0i8, 0, 1, 0], &cfg_custom());
+        let r = simular_full(velas,&[1i8, 0, 0, 0], &[0i8, 0, 1, 0], &cfg_custom());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.motivo_salida[0], motivo::SL);
         assert_eq!(r.idx_salida[0], 3);
@@ -1052,17 +923,8 @@ mod tests {
             exit_velas: 0,
             exit_trail_act_pct: 0.0,
             exit_trail_dist_pct: 0.0,
-            paridad_riesgo: false,
-            paridad_riesgo_max_pct: 0.0,
-            paridad_apalancamiento_min: 1.0,
-            paridad_apalancamiento_max: 1.0,
-            exit_sl_ewma_mult: 0.0,
-            exit_tp_ewma_mult: 0.0,
-            exit_trail_act_ewma_mult: 0.0,
-            exit_trail_dist_ewma_mult: 0.0,
-            paridad_skip_bajo_min: true,
         };
-        let r = simular_full(velas, &[], &[1i8, 0, 0], &[0i8, 0, 0], &cfg);
+        let r = simular_full(velas,&[1i8, 0, 0], &[0i8, 0, 0], &cfg);
         assert_eq!(r.metricas.total_trades, 1);
         assert!((r.comision_total[0] - 2.1).abs() < 1e-10);
         assert!((r.pnl[0] - 7.9).abs() < 1e-10);
@@ -1089,17 +951,8 @@ mod tests {
             exit_velas: 0,
             exit_trail_act_pct: 0.0,
             exit_trail_dist_pct: 0.0,
-            paridad_riesgo: false,
-            paridad_riesgo_max_pct: 0.0,
-            paridad_apalancamiento_min: 1.0,
-            paridad_apalancamiento_max: 1.0,
-            exit_sl_ewma_mult: 0.0,
-            exit_tp_ewma_mult: 0.0,
-            exit_trail_act_ewma_mult: 0.0,
-            exit_trail_dist_ewma_mult: 0.0,
-            paridad_skip_bajo_min: true,
         };
-        let r = simular_full(velas, &[], &[1i8, 0, 0], &[0i8, 0, 0], &cfg);
+        let r = simular_full(velas,&[1i8, 0, 0], &[0i8, 0, 0], &cfg);
         assert!((r.comision_total[0] - 1.0).abs() < 1e-10);
         assert!((r.pnl[0] - 9.0).abs() < 1e-10);
     }
@@ -1112,7 +965,7 @@ mod tests {
         let l = [100.0, 101.5, 101.8, 102.0];
         let c = [100.0, 102.5, 102.0, 102.8];
         let velas = build_soa(&ts, &o, &h, &l, &c);
-        let r = simular_full(velas, &[], &[1i8, 0, 0, 0], &[0i8; 4], &cfg_trailing());
+        let r = simular_full(velas,&[1i8, 0, 0, 0], &[0i8; 4], &cfg_trailing());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.motivo_salida[0], motivo::TRAILING);
         assert_eq!(r.idx_salida[0], 2);
@@ -1127,41 +980,11 @@ mod tests {
         let l = [100.0, 97.0, 97.2, 97.0];
         let c = [100.0, 97.5, 98.0, 97.2];
         let velas = build_soa(&ts, &o, &h, &l, &c);
-        let r = simular_full(velas, &[], &[-1i8, 0, 0, 0], &[0i8; 4], &cfg_trailing());
+        let r = simular_full(velas,&[-1i8, 0, 0, 0], &[0i8; 4], &cfg_trailing());
         assert_eq!(r.metricas.total_trades, 1);
         assert_eq!(r.motivo_salida[0], motivo::TRAILING);
         assert_eq!(r.idx_salida[0], 2);
         assert!((r.precio_salida[0] - 98.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_paridad_riesgo_calcula_apalancamiento_y_sl_desde_vol_ewma() {
-        let ts = [1, 2, 3];
-        let o = [100.0, 100.0, 100.0];
-        let h = [100.0, 100.1, 100.2];
-        let l = [100.0, 99.79, 99.5];
-        let c = [100.0, 100.0, 99.6];
-        let velas = build_soa(&ts, &o, &h, &l, &c);
-        let risk_vol = [0.001, 0.0, 0.0];
-        let mut cfg = cfg_fixed();
-        cfg.comision_pct = 0.0;
-        cfg.apalancamiento = 35.0;
-        cfg.paridad_riesgo = true;
-        cfg.paridad_riesgo_max_pct = 5.0;
-        cfg.paridad_apalancamiento_min = 1.0;
-        cfg.paridad_apalancamiento_max = 50.0;
-        cfg.exit_sl_ewma_mult = 2.0;
-        cfg.exit_tp_ewma_mult = 4.0;
-
-        let r = simular_full(velas, &risk_vol, &[1i8, 0, 0], &[0i8, 0, 0], &cfg);
-
-        assert_eq!(r.metricas.total_trades, 1);
-        assert_eq!(r.motivo_salida[0], motivo::SL);
-        assert!((r.apalancamiento[0] - 25.0).abs() < 1e-10);
-        assert!((r.risk_vol_ewma[0] - 0.001).abs() < 1e-12);
-        assert!((r.risk_sl_dist_pct[0] - 0.002).abs() < 1e-12);
-        assert!((r.precio_salida[0] - 99.8).abs() < 1e-10);
-        assert!((r.roi[0] + 0.05).abs() < 1e-10);
     }
 
     #[test]
@@ -1174,8 +997,8 @@ mod tests {
         let velas = build_soa(&ts, &o, &h, &l, &c);
         let s = [1i8, 0, 0, 0, 0];
         let x = [0i8; 5];
-        let m_slim = simular_metricas(velas, &[], &s, &x, &cfg_fixed());
-        let m_full = simular_full(velas, &[], &s, &x, &cfg_fixed()).metricas;
+        let m_slim = simular_metricas(velas,&s, &x, &cfg_fixed());
+        let m_full = simular_full(velas,&s, &x, &cfg_fixed()).metricas;
         assert_eq!(m_slim.total_trades, m_full.total_trades);
         assert!((m_slim.saldo_final - m_full.saldo_final).abs() < 1e-10);
         assert!((m_slim.pnl_total - m_full.pnl_total).abs() < 1e-10);

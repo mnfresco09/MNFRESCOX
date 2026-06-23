@@ -1,6 +1,9 @@
 polars
 optuna
 rich
+matplotlib
+pillow
+reportlab
 numpy==2.3.5
 llvmlite==0.45.1
 numba==0.62.1

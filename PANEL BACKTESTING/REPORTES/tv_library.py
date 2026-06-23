@@ -29,7 +29,7 @@ def obtener_script_libreria() -> str:
 def _intentar_descarga() -> None:
     try:
         _ASSETS.mkdir(parents=True, exist_ok=True)
-        print(f"[HTML] Descargando TradingView Lightweight Charts desde CDN...")
+        print("[HTML] Descargando TradingView Lightweight Charts desde CDN...")
         with urllib.request.urlopen(_CDN, timeout=30) as resp:
             datos = resp.read()
         _LIB_PATH.write_bytes(datos)

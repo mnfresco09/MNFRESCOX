@@ -20,6 +20,8 @@ from types import ModuleType
 
 import numpy as np
 
+from COMUN.numpy_utiles import a_contiguo
+
 
 MOTOR_DIR = Path(__file__).resolve().parent
 EXTENSION_NAME = "motor_backtesting"
@@ -36,41 +38,8 @@ def simular_metricas(arrays, senales, *, sim_cfg, salidas_custom=None):
     cómputo, lo que permite escalar con `n_jobs > 1`.
     """
     motor = cargar_motor()
-    salidas = arrays.salidas_neutras if salidas_custom is None else _ensure_int8(salidas_custom)
-    senales_arr = _ensure_int8(senales)
-    risk_vol = _risk_vol_array(arrays, sim_cfg)
-    _validar_longitud(arrays, senales_arr, salidas, risk_vol)
-    return motor.simulate_metrics(
-        arrays.timestamps,
-        arrays.opens,
-        arrays.highs,
-        arrays.lows,
-        arrays.closes,
-        risk_vol,
-        senales_arr,
-        salidas,
-        float(sim_cfg.saldo_inicial),
-        float(sim_cfg.saldo_por_trade),
-        float(sim_cfg.apalancamiento),
-        float(sim_cfg.saldo_minimo),
-        float(sim_cfg.comision_pct),
-        int(sim_cfg.comision_lados),
-        str(sim_cfg.exit_type),
-        float(sim_cfg.exit_sl_pct),
-        float(sim_cfg.exit_tp_pct),
-        int(sim_cfg.exit_velas),
-        float(getattr(sim_cfg, "exit_trail_act_pct", 0.0)),
-        float(getattr(sim_cfg, "exit_trail_dist_pct", 0.0)),
-        bool(getattr(sim_cfg, "paridad_riesgo", False)),
-        float(getattr(sim_cfg, "paridad_riesgo_max_pct", 0.0)),
-        float(getattr(sim_cfg, "paridad_apalancamiento_min", 1.0)),
-        float(getattr(sim_cfg, "paridad_apalancamiento_max", 1.0)),
-        float(getattr(sim_cfg, "exit_sl_ewma_mult", 0.0)),
-        float(getattr(sim_cfg, "exit_tp_ewma_mult", 0.0)),
-        float(getattr(sim_cfg, "exit_trail_act_ewma_mult", 0.0)),
-        float(getattr(sim_cfg, "exit_trail_dist_ewma_mult", 0.0)),
-        bool(getattr(sim_cfg, "paridad_skip_bajo_min", True)),
-    )
+    argumentos = _argumentos_motor(arrays, senales, salidas_custom, sim_cfg)
+    return motor.simulate_metrics(*argumentos)
 
 
 def simular_full(arrays, senales, *, sim_cfg, salidas_custom=None):
@@ -81,19 +50,34 @@ def simular_full(arrays, senales, *, sim_cfg, salidas_custom=None):
     arrays numpy y libera la memoria interna del motor.
     """
     motor = cargar_motor()
+    argumentos = _argumentos_motor(arrays, senales, salidas_custom, sim_cfg)
+    return motor.simulate_full(*argumentos)
+
+
+def _argumentos_motor(arrays, senales, salidas_custom, sim_cfg) -> tuple:
+    """Construye, en UN solo sitio, la tupla de argumentos posicionales que
+    espera el motor Rust (`simulate_metrics` y `simulate_full` comparten firma).
+
+    Tener una unica fuente del orden y el tipado de los ~30 argumentos elimina
+    el riesgo de que las dos rutas se desincronicen: si la firma del motor
+    cambia, solo se toca aqui. Los buffers (timestamps/OHLC/senales/salidas)
+    van primero y la configuracion escalar despues, en el mismo orden que la
+    `#[pyo3(signature = ...)]` de `MOTOR/src/lib.rs`.
+    """
     salidas = arrays.salidas_neutras if salidas_custom is None else _ensure_int8(salidas_custom)
     senales_arr = _ensure_int8(senales)
-    risk_vol = _risk_vol_array(arrays, sim_cfg)
-    _validar_longitud(arrays, senales_arr, salidas, risk_vol)
-    return motor.simulate_full(
+    _validar_longitud(arrays, senales_arr, salidas)
+
+    buffers = (
         arrays.timestamps,
         arrays.opens,
         arrays.highs,
         arrays.lows,
         arrays.closes,
-        risk_vol,
         senales_arr,
         salidas,
+    )
+    configuracion = (
         float(sim_cfg.saldo_inicial),
         float(sim_cfg.saldo_por_trade),
         float(sim_cfg.apalancamiento),
@@ -106,16 +90,8 @@ def simular_full(arrays, senales, *, sim_cfg, salidas_custom=None):
         int(sim_cfg.exit_velas),
         float(getattr(sim_cfg, "exit_trail_act_pct", 0.0)),
         float(getattr(sim_cfg, "exit_trail_dist_pct", 0.0)),
-        bool(getattr(sim_cfg, "paridad_riesgo", False)),
-        float(getattr(sim_cfg, "paridad_riesgo_max_pct", 0.0)),
-        float(getattr(sim_cfg, "paridad_apalancamiento_min", 1.0)),
-        float(getattr(sim_cfg, "paridad_apalancamiento_max", 1.0)),
-        float(getattr(sim_cfg, "exit_sl_ewma_mult", 0.0)),
-        float(getattr(sim_cfg, "exit_tp_ewma_mult", 0.0)),
-        float(getattr(sim_cfg, "exit_trail_act_ewma_mult", 0.0)),
-        float(getattr(sim_cfg, "exit_trail_dist_ewma_mult", 0.0)),
-        bool(getattr(sim_cfg, "paridad_skip_bajo_min", True)),
     )
+    return buffers + configuracion
 
 
 def cargar_motor() -> ModuleType:
@@ -132,46 +108,16 @@ def cargar_motor() -> ModuleType:
 def _ensure_int8(serie_o_array) -> np.ndarray:
     """Devuelve un ndarray contiguo int8. Acepta pl.Series o np.ndarray."""
     if isinstance(serie_o_array, np.ndarray):
-        if serie_o_array.dtype == np.int8 and serie_o_array.flags["C_CONTIGUOUS"]:
-            return serie_o_array
-        return np.ascontiguousarray(serie_o_array, dtype=np.int8)
+        return a_contiguo(serie_o_array, np.int8)
     # pl.Series: vamos por to_numpy(). Si la serie ya es Int8, polars devuelve
     # la vista subyacente sin copia.
-    arr = serie_o_array.to_numpy()
-    if arr.dtype != np.int8 or not arr.flags["C_CONTIGUOUS"]:
-        arr = np.ascontiguousarray(arr, dtype=np.int8)
-    return arr
-
-
-def _risk_vol_array(arrays, sim_cfg) -> np.ndarray:
-    if bool(getattr(sim_cfg, "paridad_riesgo", False)):
-        risk_vol = getattr(sim_cfg, "risk_vol_ewma", None)
-        if risk_vol is None:
-            raise ValueError("[PARIDAD] Falta risk_vol_ewma en SimConfigMotor.")
-        return _ensure_float64(risk_vol)
-    # Buffer f64 ya existente, sin asignar un array nuevo por trial.
-    volumes = getattr(arrays, "volumes", None)
-    if volumes is not None:
-        return _ensure_float64(volumes)
-    return np.zeros(arrays.timestamps.shape[0], dtype=np.float64)
-
-
-def _ensure_float64(serie_o_array) -> np.ndarray:
-    if isinstance(serie_o_array, np.ndarray):
-        if serie_o_array.dtype == np.float64 and serie_o_array.flags["C_CONTIGUOUS"]:
-            return serie_o_array
-        return np.ascontiguousarray(serie_o_array, dtype=np.float64)
-    arr = serie_o_array.to_numpy()
-    if arr.dtype != np.float64 or not arr.flags["C_CONTIGUOUS"]:
-        arr = np.ascontiguousarray(arr, dtype=np.float64)
-    return arr
+    return a_contiguo(serie_o_array.to_numpy(), np.int8)
 
 
 def _validar_longitud(
     arrays,
     senales: np.ndarray,
     salidas: np.ndarray,
-    risk_vol: np.ndarray,
 ) -> None:
     n = arrays.timestamps.shape[0]
     if senales.shape[0] != n:
@@ -181,10 +127,6 @@ def _validar_longitud(
     if salidas.shape[0] != n:
         raise ValueError(
             f"Arrays y salidas no coinciden: arrays={n:,}, salidas={salidas.shape[0]:,}."
-        )
-    if risk_vol.shape[0] != n:
-        raise ValueError(
-            f"Arrays y risk_vol_ewma no coinciden: arrays={n:,}, risk_vol={risk_vol.shape[0]:,}."
         )
 
 

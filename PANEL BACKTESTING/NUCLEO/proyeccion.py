@@ -5,7 +5,8 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
-from DATOS.resampleo import segundos_timeframe
+from COMUN.numpy_utiles import a_contiguo
+from DATOS.tiempo import expr_timestamp_us, intervalo_us, segundos_timeframe
 
 
 def construir_mapeo(
@@ -20,21 +21,21 @@ def construir_mapeo(
     muestren 00:00, 00:15, 00:30, etc. Para ejecutar sin lookahead, la senal
     de esa vela se proyecta a la ultima vela base incluida en la ventana.
     """
-    base_intervalo_us = _intervalo_us(df_base)
+    base_intervalo_us = intervalo_us(df_base)
     tf_intervalo_us = (
         segundos_timeframe(timeframe) * 1_000_000
         if timeframe is not None
-        else _intervalo_us(df_tf)
+        else intervalo_us(df_tf)
     )
     offset_cierre_us = max(0, int(tf_intervalo_us) - int(base_intervalo_us))
 
     base_con_idx = (
         df_base.with_row_index("base_idx")
-        .select([_timestamp_us_expr(df_base).alias("_ts_us"), "base_idx"])
+        .select([expr_timestamp_us(df_base).alias("_ts_us"), "base_idx"])
         .sort("_ts_us")
     )
     tf_operativo = df_tf.select(
-        (_timestamp_us_expr(df_tf) + offset_cierre_us).alias("_ts_us")
+        (expr_timestamp_us(df_tf) + offset_cierre_us).alias("_ts_us")
     )
     mapeo_serie = (
         tf_operativo
@@ -58,10 +59,7 @@ def construir_mapeo(
             f"inicio del timeframe base. Indices: {muestras}."
         )
 
-    arr = mapeo_serie.cast(pl.Int64).to_numpy()
-    if arr.dtype != np.int64 or not arr.flags["C_CONTIGUOUS"]:
-        arr = np.ascontiguousarray(arr, dtype=np.int64)
-    return arr
+    return a_contiguo(mapeo_serie.cast(pl.Int64).to_numpy(), np.int64)
 
 
 def proyectar_senales_a_base(
@@ -93,24 +91,3 @@ def proyectar_senales_a_base(
     validos = (tf_to_base_idx >= 0) & (tf_to_base_idx < int(base_len))
     arr[tf_to_base_idx[validos]] = valores_tf[validos]
     return pl.Series("senal", arr)
-
-
-def _timestamp_us_expr(df: pl.DataFrame) -> pl.Expr:
-    dtype = df.schema.get("timestamp")
-    if dtype is None:
-        raise ValueError("[PROYECCION] Falta columna timestamp.")
-    if isinstance(dtype, pl.Datetime):
-        return pl.col("timestamp").dt.epoch("us")
-    return pl.col("timestamp").cast(pl.Int64)
-
-
-def _intervalo_us(df: pl.DataFrame) -> int:
-    if df.height < 2:
-        raise ValueError("[PROYECCION] Se necesitan al menos 2 velas para inferir intervalo.")
-
-    ts = df.select(_timestamp_us_expr(df).alias("_ts_us")).get_column("_ts_us")
-    diffs = ts.diff().drop_nulls()
-    diffs = diffs.filter(diffs > 0)
-    if diffs.is_empty():
-        raise ValueError("[PROYECCION] No se pudo inferir intervalo temporal.")
-    return int(diffs.min())

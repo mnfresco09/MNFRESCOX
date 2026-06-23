@@ -58,17 +58,17 @@ class VWAPDistanceReversion(BaseEstrategia):
 
     def espacio_busqueda(self, trial) -> dict:
         return {
-            "halflife_bars": trial.suggest_int("halflife_bars", 35, 65, step=1),
-            "normalization_multiplier": trial.suggest_float("normalization_multiplier", 1.1, 2.5, step=0.1),
-            "vwap_clip_sigmas": trial.suggest_float("vwap_clip_sigmas", 2.0, 3.5, step=0.1),
-            "umbral_distance_z": trial.suggest_float("umbral_distance_z", 0.30, 1.00, step=0.1),
+            "halflife_bars": trial.suggest_int("halflife_bars", 30, 150, step=1),
+            "normalization_multiplier": trial.suggest_float("normalization_multiplier", 0.5, 4.5, step=0.25),
+            "vwap_clip_sigmas": trial.suggest_float("vwap_clip_sigmas", 1.0, 6.0, step=0.25),
+            "umbral_distance_z": trial.suggest_float("umbral_distance_z", 0.50, 3.50, step=0.1),
         }
 
     def bind(self, arrays, cache=None) -> None:
         super().bind(arrays, cache)
         _precalentar_vwap_distance_jit()
 
-    def generar_señales(self, df: pl.DataFrame, params: dict) -> pl.Series:
+    def generar_senales(self, df: pl.DataFrame, params: dict) -> pl.Series:
         halflife, norm_mult, clip_sigmas, umbral = _normalizar_params(params)
         valores = self._indicadores(halflife, norm_mult, clip_sigmas)
         vwap = valores[IDX_VWAP]

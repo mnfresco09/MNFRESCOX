@@ -1,0 +1,10 @@
+numpy>=2.0,<3
+pandas>=2.2,<3
+scipy>=1.14,<2
+scikit-learn>=1.5,<2
+cvxpy>=1.6,<2
+yfinance>=0.2.54,<1
+pyarrow>=18,<23
+plotly>=6,<7
+xlsxwriter>=3.2,<4
+pytest>=8,<10

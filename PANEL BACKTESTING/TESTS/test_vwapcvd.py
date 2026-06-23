@@ -10,7 +10,10 @@ import polars as pl
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ESTRATEGIAS.vwapcvd import (  # noqa: E402
+    DEFAULT_MAX_DISTANCE_Z,
+    DEFAULT_MIN_DISTANCE_Z,
     IDX_CVD_Z,
+    IDX_DISTANCE_Z,
     IDX_VWAP,
     VWAPCVD,
     _calcular_vwap_cvd,
@@ -33,7 +36,7 @@ class VWAPCVDTest(unittest.TestCase):
         estrategia = VWAPCVD()
         estrategia.bind(construir_arrays_motor(df), CacheIndicadores())
         try:
-            senales = getattr(estrategia, "generar_se\u00f1ales")(df, params).to_numpy()
+            senales = getattr(estrategia, "generar_senales")(df, params).to_numpy()
             indicadores = estrategia.indicadores_para_grafica(df, params)
         finally:
             estrategia.desvincular()
@@ -48,15 +51,38 @@ class VWAPCVDTest(unittest.TestCase):
             params["vwap_clip_sigmas"],
         )
         vwap = valores[IDX_VWAP]
+        distance_z = valores[IDX_DISTANCE_Z]
         cvd_z = valores[IDX_CVD_Z]
         cvd_z_prev = _shift(cvd_z)
         close = df["close"].to_numpy()
         umbral = params["umbral_cvd"]
+        min_distance_z = DEFAULT_MIN_DISTANCE_Z
+        max_distance_z = DEFAULT_MAX_DISTANCE_Z
 
         esperado = np.zeros(df.height, dtype=np.int8)
-        finitos = np.isfinite(close) & np.isfinite(vwap) & np.isfinite(cvd_z_prev) & np.isfinite(cvd_z)
-        long_mask = finitos & (close > vwap) & (cvd_z_prev <= umbral) & (cvd_z > umbral)
-        short_mask = finitos & (close < vwap) & (cvd_z_prev >= -umbral) & (cvd_z < -umbral)
+        finitos = (
+            np.isfinite(close)
+            & np.isfinite(vwap)
+            & np.isfinite(distance_z)
+            & np.isfinite(cvd_z_prev)
+            & np.isfinite(cvd_z)
+        )
+        long_mask = (
+            finitos
+            & (close > vwap)
+            & (distance_z >= min_distance_z)
+            & (distance_z <= max_distance_z)
+            & (cvd_z_prev <= umbral)
+            & (cvd_z > umbral)
+        )
+        short_mask = (
+            finitos
+            & (close < vwap)
+            & (distance_z <= -min_distance_z)
+            & (distance_z >= -max_distance_z)
+            & (cvd_z_prev >= -umbral)
+            & (cvd_z < -umbral)
+        )
         warmup = _warmup(params["halflife_bars"], params["normalization_multiplier"])
         long_mask[:warmup] = False
         short_mask[:warmup] = False
@@ -64,7 +90,7 @@ class VWAPCVDTest(unittest.TestCase):
         esperado[short_mask] = -1
 
         np.testing.assert_array_equal(senales, esperado)
-        self.assertEqual({valor: int((senales == valor).sum()) for valor in (-1, 0, 1)}, {-1: 14, 0: 1173, 1: 13})
+        self.assertEqual({valor: int((senales == valor).sum()) for valor in (-1, 0, 1)}, {-1: 10, 0: 1178, 1: 12})
         self.assertTrue((close[senales == 1] > vwap[senales == 1]).all())
         self.assertTrue((close[senales == -1] < vwap[senales == -1]).all())
         self.assertTrue((cvd_z[senales == 1] > umbral).all())

@@ -97,7 +97,7 @@ class VWAPDistanceReversionTest(unittest.TestCase):
         self.assertEqual(estrategia.COLUMNAS_REQUERIDAS, {"volume"})
         estrategia.bind(construir_arrays_motor(df), CacheIndicadores())
         try:
-            senales = getattr(estrategia, "generar_se\u00f1ales")(df, params).to_numpy()
+            senales = getattr(estrategia, "generar_senales")(df, params).to_numpy()
             indicadores = estrategia.indicadores_para_grafica(df, params)
             valores = _calcular_vwap_distance(
                 df["close"].to_numpy(),

@@ -12,10 +12,24 @@ __pycache__/
 # Se mantiene el .gitkeep para conservar la estructura de carpeta.
 PANEL BACKTESTING/HISTORICO/*
 !PANEL BACKTESTING/HISTORICO/.gitkeep
+PANEL BACKTESTING/HISTORICO_*/
+PANEL BACKTESTING/HISTORICO_RESPALDO_1m/
+
+# Datos historicos generados del panel de portfolio.
+PANEL PORTFOLIO/HISTORICO/*
+!PANEL PORTFOLIO/HISTORICO/.gitkeep
+
+# Estado local de herramientas de agente.
+.superpowers/
 
 # Resultados generados por ejecuciones locales.
 PANEL BACKTESTING/RESULTADOS/*
 !PANEL BACKTESTING/RESULTADOS/.gitkeep
+
+# Artefactos locales del generador de ejercicios FRM.
+.formula_cache/
+.matplotlib/
+FRM_Ejercicios_Resueltos.pdf
 
 # ZIPs y CSVs temporales del descargador (se regeneran en cada ejecución).
 DESCARGADOR/tmp/

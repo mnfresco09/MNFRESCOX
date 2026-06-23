@@ -123,7 +123,7 @@ class VATCalculosTest(unittest.TestCase):
         estrategia.bind(construir_arrays_motor(df), CacheIndicadores())
         params = {"hl_vwap": 12, "hl_cvd": 6, "umbral": 0.35}
         try:
-            senales = getattr(estrategia, "generar_se\u00f1ales")(df, params).to_numpy()
+            senales = getattr(estrategia, "generar_senales")(df, params).to_numpy()
             salidas = estrategia.generar_salidas(df, params).to_numpy()
             vwap, vat_z = _calcular_vat(
                 df["close"].to_numpy(),
@@ -253,7 +253,7 @@ class PerturbacionesVATTest(unittest.TestCase):
         estrategia.bind(construir_arrays_motor(resampled), CacheIndicadores())
         params = {"hl_vwap": 20, "hl_cvd": 8, "umbral": 0.5}
         try:
-            senales = getattr(estrategia, "generar_se\u00f1ales")(resampled, params).to_numpy()
+            senales = getattr(estrategia, "generar_senales")(resampled, params).to_numpy()
             indicadores = estrategia.indicadores_para_grafica(resampled, params)
             vwap, vat_z = _calcular_vat(
                 resampled["close"].to_numpy(),

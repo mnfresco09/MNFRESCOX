@@ -8,56 +8,53 @@ CARPETA_HISTORICO = RAIZ / "HISTORICO"
 CARPETA_RESULTADOS = RAIZ / "RESULTADOS"
 
 # ---------------------------------------------------------------------------
-# ACTIVOS Y DATOS
+# ACTIVOS Y DATOS "BTC", "GOLD", "BRENT", "EURUSD", "SP500"
 # ---------------------------------------------------------------------------
-ACTIVOS = ["BTC"]          # Un activo o lista: ["BTC", "GOLD"]
+ACTIVOS = ["BTC"]   # un activo o lista
 FORMATO_DATOS = "parquet"          # "feather" | "parquet" | "csv"
 
 # True = activo continuo 24/7: cualquier hueco temporal es error.
 # False = activo con cierre de mercado: se permiten saltos entre sesiones
 #         siempre conservando orden, duplicados, OHLC y trazabilidad.
+# Nota: el dataset horario de BTC tiene algunos huecos puntuales, por eso va a
+# False; si en el futuro se carga un BTC 1m sin huecos, puede volver a True.
 MERCADO_24_7 = {
-    "BTC": True,
+    "BTC": False,
     "GOLD": False,
+    "BRENT": False,
+    "EURUSD": False,
+    "SP500": False,
 }
 
 # ---------------------------------------------------------------------------
 # TIMEFRAMES
 # ---------------------------------------------------------------------------
-# El sistema resamplea desde 1m automáticamente.
-# Opciones: "1m" "5m" "15m" "30m" "1h" "4h" "1d"
+# El sistema resamplea hacia arriba desde el timeframe base disponible.
+# La base actual de los datos es 1h, asi que el minimo usable es "1h".
+# Opciones validas con base 1h: "1h" "4h" "1d".
 TIMEFRAMES = ["1h"]
 
 # ---------------------------------------------------------------------------
 # FECHAS 2020-01-01 hasta 2025-12-31
 # ---------------------------------------------------------------------------
-FECHA_INICIO = "2020-01-01"
-FECHA_FIN    = "2025-12-31"
+FECHA_INICIO = "2021-01-01"
+FECHA_FIN    = "2024-12-31"
 
 # ---------------------------------------------------------------------------
 # ESTRATEGIAS
 # ---------------------------------------------------------------------------
 # ID numérico, lista de IDs, o "all" para ejecutar todas.
-ESTRATEGIA_ID = 5
+ESTRATEGIA_ID = 1
 
 # ---------------------------------------------------------------------------
 # CAPITAL Y COMISIONES
 # ---------------------------------------------------------------------------
 SALDO_INICIAL          = 10_000     # Capital inicial en USD
 SALDO_USADO_POR_TRADE  = 500        # Colateral por operación en USD
-APALANCAMIENTO         = 35         # Multiplicador sobre el colateral
+APALANCAMIENTO         = 8        # Multiplicador sobre el colateral
 SALDO_MINIMO_OPERATIVO = 1_000      # El backtest para si el saldo cae aquí
 COMISION_PCT           = 0.0005     # 0.05% por operación (ej. Binance taker)
 COMISION_LADOS         = 2          # 1 = solo apertura | 2 = apertura y cierre
-
-# ---------------------------------------------------------------------------
-# PARIDAD DE RIESGO
-# ---------------------------------------------------------------------------
-# False = usa APALANCAMIENTO y porcentajes de SALIDAS como hasta ahora.
-# True  = usa volatilidad EWMA para calcular SL/TP y apalancamiento por trade.
-# Los valores, rangos y limites de apalancamiento estan en SALIDAS/paridad.py.
-USAR_PARIDAD_RIESGO = True
-OPTIMIZAR_PARIDAD_RIESGO = True
 
 # ---------------------------------------------------------------------------
 # SALIDAS
@@ -66,20 +63,36 @@ OPTIMIZAR_PARIDAD_RIESGO = True
 # "BARS"  → Cierre por número máximo de velas   → parámetros en SALIDAS/velas.py
 # "TRAILING" → SL de seguridad + trailing stop  → parámetros en SALIDAS/trailing.py
 # "CUSTOM"→ Cierre por generar_salidas()         → parámetros en SALIDAS/personalizada.py
-# Paridad de riesgo, si esta activa, usa parametros en SALIDAS/paridad.py.
 # "ALL"   → Ejecuta todos por separado y guarda cada resultado
-EXIT_TYPE = "TRAILING"
+EXIT_TYPE = "BARS"
 
 # ---------------------------------------------------------------------------
 # OPTIMIZACIÓN (OPTUNA)
 # ---------------------------------------------------------------------------
 # Potencias de 2 recomendadas para QMC: 64, 128, 256, 512
-N_TRIALS = 100
+N_TRIALS = 300
 
 # "QMC"    → Exploración uniforme (Sobol). Recomendado para campañas grandes.
 # "TPE"    → Guiado por resultados anteriores; su coste crece con el histórico.
 # "HYBRID" → QMC primera mitad + TPE segunda mitad; útil sólo en campañas moderadas.
 OPTUNA_SAMPLER = "QMC"
+
+# ---------------------------------------------------------------------------
+# FUNCIÓN DE SCORE (lo que Optuna maximiza)
+# ---------------------------------------------------------------------------
+# Métrica que define qué es un "buen" trial. Todas tienen base estadística:
+# "PSR"    → Probabilistic Sharpe Ratio (recomendado). Probabilidad (0..1) de que
+#            el Sharpe real sea > 0. Penaliza por sí solo las muestras pequeñas.
+# "SHARPE" → Sharpe anualizado (rentabilidad ajustada por volatilidad).
+# "CALMAR" → CAGR / Max Drawdown (rentabilidad anual frente al peor desplome).
+# "ROI"    → Retorno total simple (sin ajuste de riesgo; el más básico).
+FUNCION_SCORE = "PSR"
+
+# Mínimo de operaciones para puntuar un trial (0 = sin mínimo).
+# Por debajo, el score es 0: evita premiar estrategias con muy pocas
+# operaciones, cuyas métricas son ruido estadístico. PSR ya penaliza la
+# muestra pequeña, pero este filtro duro añade una garantía explícita.
+MIN_TRADES_SCORE = 30
 
 # True  = usa las semillas configuradas y permite reproducibilidad.
 # False = ignora las semillas y cada ejecución explora caminos aleatorios.
@@ -93,7 +106,7 @@ OPTUNA_SEED = 42
 # ---------------------------------------------------------------------------
 # False = todos los trials ven el Parquet original.
 # True  = cada trial ve un camino alternativo plausible, generado en memoria.
-PERTURBACIONES_ACTIVAS = True
+PERTURBACIONES_ACTIVAS = False
 # Entero obligatorio cuando USAR_SEED = True y PERTURBACIONES_ACTIVAS = True.
 PERTURBACIONES_SEED = 42
 
@@ -101,6 +114,9 @@ PERTURBACIONES_SEED = 42
 # Los valores de la tabla se calculan desde el Parquet cargado.
 GRANULARIDAD_CUBOS = 0.005
 PERCENTIL_TABLA = 0.10
+# True valida todas las invariantes OHLCV/order-flow despues de cada trial.
+# Usarlo para desarrollo/auditoria; en optimizacion grande añade coste O(n).
+VALIDAR_PERTURBACIONES = False
 
 # ---------------------------------------------------------------------------
 # PARALELISMO
@@ -109,6 +125,10 @@ PERCENTIL_TABLA = 0.10
 # -2 → todos los cores menos uno (recomendado)
 #  1 → secuencial (útil para depurar)
 N_JOBS = -2
+
+# Las perturbaciones procesan el histórico base completo por trial. Este tope
+# evita saturar memoria/cache cuando N_JOBS apunta a todos los cores.
+PERTURBACIONES_MAX_JOBS = 4
 
 # ---------------------------------------------------------------------------
 # RESULTADOS Y REPORTING

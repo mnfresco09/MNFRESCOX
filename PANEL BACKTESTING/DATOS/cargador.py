@@ -2,7 +2,7 @@ import polars as pl
 from pathlib import Path
 from datetime import date, timedelta
 
-from DATOS.resampleo import TIMEFRAMES_ORDENADOS
+from DATOS.tiempo import TIMEFRAMES_ORDENADOS
 
 
 _LECTORES = {

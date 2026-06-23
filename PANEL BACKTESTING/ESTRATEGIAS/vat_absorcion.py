@@ -13,6 +13,8 @@ from threading import Lock
 import numpy as np
 import polars as pl
 
+from COMUN.numpy_utiles import a_contiguo
+from DATOS.tiempo import serie_timestamp_us
 from NUCLEO.base_estrategia import BaseEstrategia
 
 try:
@@ -50,7 +52,7 @@ class VwapAbsorptionTrend(BaseEstrategia):
         super().bind(arrays, cache)
         _precalentar_vat_jit()
 
-    def generar_señales(self, df: pl.DataFrame, params: dict) -> pl.Series:
+    def generar_senales(self, df: pl.DataFrame, params: dict) -> pl.Series:
         hl_vwap, hl_cvd, umbral = _normalizar_params(params)
         vwap, vat_z = self._vat(df, hl_vwap=hl_vwap, hl_cvd=hl_cvd)
         warmup = _warmup(hl_vwap, hl_cvd)
@@ -239,11 +241,7 @@ def _retorno(close: np.ndarray, idx: int) -> float:
 
 
 def _columna_float(df: pl.DataFrame, nombre: str) -> np.ndarray:
-    serie = df[nombre].cast(pl.Float64).fill_null(0.0)
-    arr = serie.to_numpy()
-    if arr.dtype != np.float64 or not arr.flags["C_CONTIGUOUS"]:
-        arr = np.ascontiguousarray(arr, dtype=np.float64)
-    return arr
+    return a_contiguo(df[nombre].cast(pl.Float64).fill_null(0.0).to_numpy(), np.float64)
 
 
 def _serie_overlay(df: pl.DataFrame, valores: np.ndarray, color: str, nombre: str) -> dict:
@@ -283,12 +281,4 @@ def _puntos_finitos(df: pl.DataFrame, valores: np.ndarray, *, decimales: int) ->
 
 
 def _timestamps_us(df: pl.DataFrame) -> np.ndarray:
-    dtype = df.schema.get("timestamp")
-    if isinstance(dtype, pl.Datetime):
-        serie = df.select(pl.col("timestamp").dt.epoch("us")).to_series()
-    else:
-        serie = df["timestamp"].cast(pl.Int64)
-    arr = serie.to_numpy()
-    if arr.dtype != np.int64 or not arr.flags["C_CONTIGUOUS"]:
-        arr = np.ascontiguousarray(arr, dtype=np.int64)
-    return arr
+    return a_contiguo(serie_timestamp_us(df).to_numpy(), np.int64)

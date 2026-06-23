@@ -52,7 +52,7 @@ class RSIReversion(BaseEstrategia):
 
     # ── Señales y salidas ────────────────────────────────────────────────
 
-    def generar_señales(self, df: pl.DataFrame, params: dict) -> pl.Series:
+    def generar_senales(self, df: pl.DataFrame, params: dict) -> pl.Series:
         periodo = int(params["rsi_periodo"])
         sobreventa = float(params["sobreventa"])
         sobrecompra = float(params["sobrecompra"])

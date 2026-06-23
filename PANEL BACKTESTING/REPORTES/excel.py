@@ -1,203 +1,88 @@
+"""Excel del backtest: una hoja por trial con tabla de trades, grafico de
+balance y un panel de analisis/robustez (veredicto + valoraciones).
+
+Diseno minimalista. La presentacion de metricas (etiquetas, formato y juicio
+BUENO/REGULAR/MALO) viene de `REPORTES.metricas_presentacion`, la misma fuente
+que usa el report HTML, de modo que ambos coinciden siempre.
+"""
+
 from __future__ import annotations
 
 import re
 import unicodedata
 import zipfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 import xlsxwriter
 
-from REPORTES.persistencia import equity_dataframe, resumen_trials_dataframe, trades_dataframe
-
-
-# ── Orden de columnas ─────────────────────────────────────────────────────────
-
-ID_ORDER = ["trial", "activo", "estrategia", "salida", "score"]
-METRIC_ORDER = [
-    "total_trades",
-    "trades_long",
-    "trades_short",
-    "trades_ganadores",
-    "trades_perdedores",
-    "win_rate",
-    "roi_total",
-    "expectancy",
-    "max_drawdown",
-    "profit_factor",
-    "sharpe_ratio",
-    "trades_por_dia",
-    "pnl_bruto_total",
-    "pnl_total",
-    "pnl_promedio",
-    "saldo_inicial",
-    "saldo_final",
-    "duracion_media_seg",
-]
-SUMMARY_EXCLUDED_COLS = {
-    "timeframe",
-    "timeframe_ejecucion",
-    "trades_neutros",
-    "parado_por_saldo",
-    "duracion_media_velas",
-    "param_exit_type",
-    "param_exit_velas",
-}
-
-# ── Nombres de cabecera ───────────────────────────────────────────────────────
-
-SUMMARY_NAMES = {
-    "trial":             "TRIAL",
-    "activo":            "ACTIVO",
-    "estrategia":        "ESTRATEGIA",
-    "salida":            "EXIT",
-    "score":             "SCORE",
-    "total_trades":      "TRADES",
-    "trades_long":       "LONG",
-    "trades_short":      "SHORT",
-    "trades_ganadores":  "WIN",
-    "trades_perdedores": "LOSS",
-    "win_rate":          "WIN RATE",
-    "roi_total":         "ROI",
-    "expectancy":        "EXPECT.",
-    "max_drawdown":      "MAX DD",
-    "profit_factor":     "PF",
-    "sharpe_ratio":      "SHARPE",
-    "trades_por_dia":    "TRADES/DÍA",
-    "pnl_bruto_total":   "PNL BRUTO",
-    "pnl_total":         "PNL NETO",
-    "pnl_promedio":      "PNL PROM",
-    "saldo_inicial":     "SALDO INI",
-    "saldo_final":       "SALDO FIN",
-    "duracion_media_seg": "DUR MEDIA",
-    "param_exit_sl_pct": "SL %",
-    "param_exit_tp_pct": "TP %",
-    "param_exit_trail_act_pct": "TRAIL ACT %",
-    "param_exit_trail_dist_pct": "TRAIL DIST %",
-    "param_risk_max_pct": "RIESGO %",
-    "param_risk_vol_halflife": "VOL HL",
-    "param_risk_sl_ewma_mult": "SL VOL x",
-    "param_risk_tp_ewma_mult": "TP VOL x",
-    "param_risk_trail_act_ewma_mult": "TRAIL ACT x",
-    "param_risk_trail_dist_ewma_mult": "TRAIL DIST x",
-}
-
-_TRADE_COLS_OCULTAS  = {"idx_senal", "idx_entrada", "idx_salida", "direccion", "duracion_velas"}
-_EQUITY_COLS_OCULTAS = {"idx_salida"}
-_EQUITY_CHART_DATE_COL = 4
-_EQUITY_CHART_DATE_HEADER = "FECHA GRAF."
-
-TRADE_NAMES = {
-    "ts_senal":        "SEÑAL",
-    "ts_entrada":      "ENTRADA",
-    "ts_salida":       "SALIDA",
-    "direccion_txt":   "DIR",
-    "precio_entrada":  "P. ENTRADA",
-    "precio_salida":   "P. SALIDA",
-    "saldo_apertura":  "SALDO APERT.",
-    "apalancamiento":  "LEV",
-    "tamano_posicion": "TAMAÑO POS.",
-    "risk_vol_ewma":   "VOL EWMA",
-    "risk_sl_dist_pct": "SL DIST",
-    "comision_total":  "COMISIÓN",
-    "pnl_bruto":       "PNL BRUTO",
-    "pnl":             "PNL NETO",
-    "roi":             "ROI",
-    "saldo_post":      "BALANCE",
-    "motivo_salida":   "MOTIVO",
-    "duracion_seg":    "DURACIÓN",
-}
-
-EQUITY_NAMES = {
-    "punto":     "Nº",
-    "trade_num": "TRADE",
-    "ts_salida": "FECHA CIERRE",
-    "saldo":     "BALANCE",
-}
-
-# ── Clasificación de columnas por tipo de formato ────────────────────────────
-
-MONEY_COLS = {
-    "saldo_inicial", "saldo_final",
-    "pnl_bruto_total", "pnl_total", "pnl_promedio",
-    "saldo_apertura", "comision_total",
-    "pnl_bruto", "pnl", "saldo_post", "saldo",
-}
-QUANTITY_COLS = {"tamano_posicion"}
-PCT_COLS      = {"win_rate", "roi_total", "expectancy", "max_drawdown", "roi", "risk_vol_ewma", "risk_sl_dist_pct"}
-PCT_POINT_COLS = {
-    "param_exit_sl_pct",
-    "param_exit_tp_pct",
-    "param_exit_trail_act_pct",
-    "param_exit_trail_dist_pct",
-    "param_risk_max_pct",
-}
-INT_COLS      = {
-    "trial", "total_trades", "trades_long", "trades_short",
-    "trades_ganadores", "trades_perdedores", "trades_neutros",
-    "punto", "trade_num", "param_exit_velas", "param_risk_vol_halflife",
-}
-PRICE_COLS    = {"precio_entrada", "precio_salida"}
-DATE_COLS     = {"ts_senal", "ts_entrada", "ts_salida"}
-DUR_SEG_COLS  = {"duracion_seg", "duracion_media_seg"}
+from REPORTES.analitica import analitica_avanzada
+from REPORTES.metricas_presentacion import construir_analitica
+from REPORTES.persistencia import trades_dataframe
 
 MAX_DETALLES_EXCEL = 5
 
-# ── Paleta profesional ────────────────────────────────────────────────────────
-#   Fondo claro blanco/gris con texto oscuro
-_BG_BASE      = "#FFFFFF"   # fondo principal
-_BG_HEADER    = "#E5E7EB"   # cabecera de hoja
-_BG_SECTION   = "#D1D5DB"   # sección agrupadora
-_BG_ROW_EVEN  = "#F3F4F6"   # fila par (gris muy claro)
-_BG_ROW_ODD   = "#FFFFFF"   # fila impar (blanco)
-_FG_HEADER    = "#1F2937"   # texto cabecera
-_FG_SECTION   = "#111827"   # texto sección
-_FG_MAIN      = "#111827"   # texto principal
-_FG_DIM       = "#6B7280"   # texto secundario
-_BORDER       = "#D1D5DB"   # borde sutil
-_GREEN        = "#15803D"   # positivo
-_RED          = "#B91C1C"   # negativo
-_BLUE_ACCENT  = "#1D4ED8"   # acento azul (score, títulos)
-_GOLD         = "#B45309"   # alerta / stop saldo
-_CHART_LINE   = "#1D4ED8"
+# ── Paleta minimalista profesional (claro) ──────────────────────────────────
+INK = "#0F172A"; SUB = "#64748B"; LINE = "#E2E8F0"; BAND = "#F1F5F9"
+ACC = "#2563EB"; POS = "#15803D"; NEG = "#DC2626"; WARN = "#B45309"; HEAD = "#0F172A"
+INFO = "#94A3B8"
+TINTE = {"good": "#DCFCE7", "ok": "#FEF3C7", "bad": "#FEE2E2", "info": "#FFFFFF"}
+NIVEL_COLOR = {"good": POS, "ok": WARN, "bad": NEG, "info": INFO}
+
+# Tabla de trades: columna -> (cabecera, formato_numero)
+_TRADE_COLS = [
+    ("n",             "#",            "0"),
+    ("direccion_txt", "DIR",          None),
+    ("ts_entrada",    "ENTRADA",      "dd/mm hh:mm"),
+    ("ts_salida",     "SALIDA",       "dd/mm hh:mm"),
+    ("precio_entrada", "P. ENTRADA",  "#,##0.00"),
+    ("precio_salida", "P. SALIDA",    "#,##0.00"),
+    ("apalancamiento", "LEV",         '0"x"'),
+    ("comision_total", "COMISIÓN",    "$#,##0.00"),
+    ("pnl",           "PNL NETO",     "$#,##0.00"),
+    ("roi",           "ROI",          "0.0%"),
+    ("saldo_post",    "BALANCE",      "$#,##0.00"),
+    ("duracion_velas", "DUR",         "0"),
+    ("motivo_salida", "MOTIVO",       None),
+]
+_DATE_COLS = {"ts_entrada", "ts_salida"}
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # API pública
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 
-def generar_excel(run_dir: Path, trials: list, mejor) -> Path:
+def generar_excel(
+    run_dir: Path,
+    trials: list,
+    mejor,
+    *,
+    fecha_inicio: date | None = None,
+    fecha_fin: date | None = None,
+) -> Path | None:
+    """Genera un Excel (una hoja) por cada uno de los top-N trials con replay.
+    Devuelve la ruta del Excel del mejor trial, o None si no hay ninguno."""
     excel_dir = _base_resultados(run_dir) / "EXCEL"
     excel_dir.mkdir(parents=True, exist_ok=True)
 
-    path = _unique_path(excel_dir / _nombre_resumen(mejor))
-    resumen = resumen_trials_dataframe(trials)
-
-    workbook = xlsxwriter.Workbook(
-        str(path),
-        {"nan_inf_to_errors": True, "default_date_format": "dd/mm/yy hh:mm"},
-    )
-    try:
-        formatos = _crear_formatos(workbook)
-        _write_resumen(workbook, resumen, formatos)
-    finally:
-        workbook.close()
-
-    verificar_resumen_excel(path, resumen.height)
-    # Sólo los trials con replay materializado pueden generar detalle.
-    detalles = [
+    top = [
         t for t in sorted(trials, key=lambda t: t.score, reverse=True)
         if t.replay is not None
     ][:MAX_DETALLES_EXCEL]
-    for trial in detalles:
-        _generar_excel_detalle(excel_dir, trial)
+    if not top:
+        return None
 
-    return path
+    primero: Path | None = None
+    for trial in top:
+        path = _generar_excel_trial(excel_dir, trial, fecha_inicio, fecha_fin)
+        if primero is None:
+            primero = path
+    return primero
 
 
-def verificar_resumen_excel(path: Path, filas_resumen: int) -> None:
+def verificar_excel(path: Path, filas_trades: int) -> None:
     if not path.exists():
         raise ValueError(f"[EXCEL] No se genero {path}.")
     with zipfile.ZipFile(path) as zf:
@@ -207,494 +92,239 @@ def verificar_resumen_excel(path: Path, filas_resumen: int) -> None:
             raise ValueError(f"[EXCEL] Falta hoja interna {sheet}.")
         contenido = zf.read(sheet).decode("utf-8")
         filas_xml = contenido.count("<row ")
-        esperadas = filas_resumen + 2
-        if filas_xml != esperadas:
+        if filas_xml < filas_trades + 1:
             raise ValueError(
-                f"[EXCEL] {sheet} no conserva filas: {filas_xml} != {esperadas}."
+                f"[EXCEL] {sheet} no conserva las filas de trades: {filas_xml} < {filas_trades + 1}."
             )
-
-
-def verificar_detalle_excel(path: Path, filas_trades: int, filas_equity: int) -> None:
-    if not path.exists():
-        raise ValueError(f"[EXCEL] No se genero {path}.")
-    esperadas = {
-        "xl/worksheets/sheet1.xml": filas_trades + 1,
-        "xl/worksheets/sheet2.xml": filas_equity + 1,
-    }
-    with zipfile.ZipFile(path) as zf:
-        presentes = set(zf.namelist())
-        for sheet, filas in esperadas.items():
-            if sheet not in presentes:
-                raise ValueError(f"[EXCEL] Falta hoja interna {sheet}.")
-            contenido = zf.read(sheet).decode("utf-8")
-            filas_xml = contenido.count("<row ")
-            if filas_xml != filas:
-                raise ValueError(
-                    f"[EXCEL] {sheet} no conserva filas: {filas_xml} != {filas}."
-                )
         if filas_trades > 0:
-            _verificar_chart_balance_temporal(zf, presentes)
+            charts = [p for p in presentes if p.startswith("xl/charts/chart") and p.endswith(".xml")]
+            if not charts:
+                raise ValueError("[EXCEL] No se genero el grafico de balance.")
 
 
-def _verificar_chart_balance_temporal(zf: zipfile.ZipFile, presentes: set[str]) -> None:
-    charts = sorted(p for p in presentes if p.startswith("xl/charts/chart") and p.endswith(".xml"))
-    if not charts:
-        raise ValueError("[EXCEL] No se genero el grafico de balance.")
+# ═══════════════════════════════════════════════════════════════════════════
+# Generación
+# ═══════════════════════════════════════════════════════════════════════════
 
-    contenido = "\n".join(zf.read(path).decode("utf-8") for path in charts)
-    if "<c:dateAx>" not in contenido:
-        raise ValueError("[EXCEL] El grafico de balance no usa eje temporal.")
-    if "$E$2" not in contenido:
-        raise ValueError("[EXCEL] El grafico de balance no usa la columna temporal.")
-    if "mm/yyyy" not in contenido:
-        raise ValueError("[EXCEL] El grafico de balance no usa formato mensual.")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Generación de hojas
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _generar_excel_detalle(excel_dir: Path, trial) -> Path:
+def _generar_excel_trial(excel_dir: Path, trial, fecha_inicio, fecha_fin) -> Path:
     path = _unique_path(excel_dir / _nombre_detalle(trial))
     trades = trades_dataframe(trial.replay)
-    equity = equity_dataframe(trial.replay)
+    fi, ff = _resolver_fechas(trial, fecha_inicio, fecha_fin)
+    avanzada = analitica_avanzada(
+        metricas=trial.metricas,
+        trades=trial.replay.trades,
+        equity_curve=trial.replay.equity_curve,
+        fecha_inicio=fi,
+        fecha_fin=ff,
+    )
+    panel = construir_analitica(trial.metricas, avanzada)
 
     workbook = xlsxwriter.Workbook(
         str(path),
         {"nan_inf_to_errors": True, "default_date_format": "dd/mm/yy hh:mm"},
     )
     try:
-        formatos = _crear_formatos(workbook)
-        _write_trades(workbook, trades, equity.height, formatos)
-        _write_equity(workbook, equity, trades, formatos)
+        fmt = _crear_formatos(workbook)
+        _write_hoja_trades(workbook, trades, trial, panel, fmt)
     finally:
         workbook.close()
 
-    verificar_detalle_excel(path, trades.height, equity.height)
+    verificar_excel(path, trades.height)
     return path
 
 
-def _write_resumen(workbook, df: pl.DataFrame, formatos: dict) -> None:
-    ws = workbook.add_worksheet("RESUMEN")
-    ws.hide_gridlines(2)
-    ws.set_tab_color(_BLUE_ACCENT)
-
-    columnas = _columnas_resumen(df)
-    secciones = [_seccion_resumen(col) for col in columnas]
-
-    _write_section_headers(ws, secciones, formatos)
-    _write_headers(ws, 1, columnas, SUMMARY_NAMES, formatos["header"])
-
-    for row_idx, row in enumerate(df.select(columnas).rows(named=True), start=2):
-        alt = row_idx % 2 == 0
-        ws.set_row(row_idx, 20)
-        for col_idx, name in enumerate(columnas):
-            fmt = _format_for(name, formatos, alt)
-            _write_cell(ws, row_idx, col_idx, row[name], fmt, name)
-
-    ws.freeze_panes(2, 0)
-    ws.autofilter(1, 0, max(df.height + 1, 1), max(len(columnas) - 1, 0))
-    ws.set_row(0, 18)
-    ws.set_row(1, 28)
-    _set_widths(ws, columnas, df, SUMMARY_NAMES)
-    _add_summary_conditionals(ws, columnas, df.height, formatos)
-
-
-def _write_trades(workbook, df: pl.DataFrame, filas_equity: int, formatos: dict) -> None:
+def _write_hoja_trades(workbook, trades: pl.DataFrame, trial, panel: dict, fmt: dict) -> None:
     ws = workbook.add_worksheet("TRADES")
     ws.hide_gridlines(2)
-    ws.set_tab_color(_GREEN)
+    ws.set_tab_color(ACC)
 
-    columnas = [c for c in df.columns if c not in _TRADE_COLS_OCULTAS]
-
-    _write_headers(ws, 0, columnas, TRADE_NAMES, formatos["header"])
-    for row_idx, row in enumerate(df.rows(named=True), start=1):
-        alt = row_idx % 2 == 0
-        ws.set_row(row_idx, 20)
-        for col_idx, name in enumerate(columnas):
-            fmt = _format_for(name, formatos, alt)
-            _write_cell(ws, row_idx, col_idx, row[name], fmt, name)
-
-    ws.freeze_panes(1, 0)
-    ws.autofilter(0, 0, max(df.height, 1), max(len(columnas) - 1, 0))
-    ws.set_row(0, 28)
-    _set_widths(ws, columnas, df, TRADE_NAMES)
-    _add_trade_conditionals(ws, columnas, df.height, formatos)
-
-    if df.height > 0:
-        _insert_balance_chart(workbook, ws, start_row=df.height + 3, filas_equity=filas_equity)
-
-
-def _write_equity(workbook, df: pl.DataFrame, trades: pl.DataFrame, formatos: dict) -> None:
-    ws = workbook.add_worksheet("EQUITY")
-    ws.hide_gridlines(2)
-    ws.set_tab_color(_CHART_LINE)
-
-    columnas = [c for c in df.columns if c not in _EQUITY_COLS_OCULTAS]
-
-    _write_headers(ws, 0, columnas, EQUITY_NAMES, formatos["header"])
-    for row_idx, row in enumerate(df.rows(named=True), start=1):
-        alt = row_idx % 2 == 0
-        ws.set_row(row_idx, 20)
-        for col_idx, name in enumerate(columnas):
-            fmt = _format_for(name, formatos, alt)
-            _write_cell(ws, row_idx, col_idx, row[name], fmt, name)
-
-    ws.freeze_panes(1, 0)
-    ws.autofilter(0, 0, max(df.height, 1), max(len(columnas) - 1, 0))
-    ws.set_row(0, 28)
-    _set_widths(ws, columnas, df, EQUITY_NAMES)
-    _write_equity_chart_dates(ws, df, trades, formatos)
-
-
-def _write_equity_chart_dates(worksheet, df: pl.DataFrame, trades: pl.DataFrame, formatos: dict) -> None:
-    worksheet.write(0, _EQUITY_CHART_DATE_COL, _EQUITY_CHART_DATE_HEADER, formatos["header"])
-    first_entry_ts = (
-        trades["ts_entrada"][0]
-        if trades.height > 0 and "ts_entrada" in trades.columns
-        else None
+    ws.set_row(0, 24)
+    ws.write(0, 0, f"TRADES · {_nombre_visible(trial.estrategia_nombre)}", fmt["title"])
+    ws.write(
+        1, 0,
+        f"{trial.activo} · {trial.timeframe} · {trial.salida.tipo}    ·    "
+        f"Trial #{int(trial.numero)}    ·    "
+        + datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        fmt["sub"],
     )
-    ts_salida = df["ts_salida"].to_list() if "ts_salida" in df.columns else []
 
-    for idx in range(df.height):
-        row = idx + 1
-        alt = row % 2 == 0
-        value = first_entry_ts if idx == 0 else (
-            ts_salida[idx] if idx < len(ts_salida) else None
-        )
-        _write_cell(
-            worksheet,
-            row,
-            _EQUITY_CHART_DATE_COL,
-            value,
-            formatos["date"][1 if alt else 0],
-            "ts_salida",
-        )
+    hr = 3
+    cols = [c for c in _TRADE_COLS if c[0] == "n" or c[0] in trades.columns]
+    for c, (name, header, _) in enumerate(cols):
+        ws.write(hr, c, header, fmt["header"])
+    ws.set_row(hr, 22)
 
-    worksheet.set_column(_EQUITY_CHART_DATE_COL, _EQUITY_CHART_DATE_COL, 12, None, {"hidden": True})
+    filas = trades.rows(named=True)
+    for i, row in enumerate(filas):
+        rr = hr + 1 + i
+        band = i % 2 == 1
+        ws.set_row(rr, 17)
+        for c, (name, _h, numfmt) in enumerate(cols):
+            valor = (i + 1) if name == "n" else row.get(name)
+            celda = _fmt_celda(fmt, name, numfmt, band)
+            _write_cell(ws, rr, c, valor, celda, name)
+
+    nT = trades.height
+    last = hr + nT
+    col_pnl = next((c for c, (nm, *_r) in enumerate(cols) if nm == "pnl"), None)
+    if col_pnl is not None and nT > 0:
+        ws.conditional_format(hr + 1, col_pnl, last, col_pnl, {"type": "cell", "criteria": ">", "value": 0, "format": fmt["pos"]})
+        ws.conditional_format(hr + 1, col_pnl, last, col_pnl, {"type": "cell", "criteria": "<", "value": 0, "format": fmt["neg"]})
+    ws.freeze_panes(hr + 1, 0)
+    ws.autofilter(hr, 0, max(last, hr + 1), len(cols) - 1)
+    for c, w in enumerate([5, 7, 13, 13, 11, 11, 6, 11, 12, 8, 12, 7, 10][:len(cols)]):
+        ws.set_column(c, c, w)
+
+    _write_panel(ws, panel, trial, fmt)
+
+    col_balance = next((c for c, (nm, *_r) in enumerate(cols) if nm == "saldo_post"), None)
+    if nT > 0 and col_balance is not None:
+        _insert_balance_chart(workbook, ws, fila0=hr + 1, fila_fin=last, col_balance=col_balance, start_row=last + 3)
 
 
-def _insert_balance_chart(workbook, worksheet, *, start_row: int, filas_equity: int) -> None:
-    last_row = max(filas_equity + 1, 2)
+def _write_panel(ws, panel: dict, trial, fmt: dict) -> None:
+    O = 14
+    ws.set_column(13, 13, 2)
+    ws.set_column(O, O, 21); ws.set_column(O + 1, O + 1, 13); ws.set_column(O + 2, O + 2, 11)
+
+    ws.merge_range(0, O, 0, O + 2, f"ANÁLISIS · TRIAL #{int(trial.numero)}", fmt["title2"])
+
+    v = panel["veredicto"]
+    ws.merge_range(
+        1, O, 1, O + 2,
+        f"VEREDICTO · {v['badge']} · {v['favorables']}/{v['total']} favorables",
+        fmt["verdict"][v["nivel"]],
+    )
+    ws.set_row(1, 22)
+
+    fila = 3
+    for seccion in panel["secciones"]:
+        ws.merge_range(fila, O, fila, O + 2, seccion["titulo"], fmt["sec"])
+        ws.set_row(fila, 20)
+        for i, f in enumerate(seccion["filas"]):
+            rr = fila + 1 + i
+            ws.set_row(rr, 18)
+            band = i % 2 == 1
+            ws.write(rr, O, f["label"], fmt["panel_lbl"][1 if band else 0])
+            color = NIVEL_COLOR.get(f["nivel"], INK)
+            valfmt = _panel_val(fmt, color, band)
+            ws.write(rr, O + 1, f["valor"], valfmt)
+            ws.write(rr, O + 2, _nivel_label(f["nivel"]), fmt["chip"][f["nivel"]])
+        fila = fila + 1 + len(seccion["filas"]) + 1
+
+
+def _insert_balance_chart(workbook, ws, *, fila0: int, fila_fin: int, col_balance: int, start_row: int) -> None:
     chart = workbook.add_chart({"type": "area"})
-    chart.add_series(
-        {
-            "name":       "Balance",
-            "categories": f"=EQUITY!$E$2:$E${last_row}",
-            "values":     f"=EQUITY!$D$2:$D${last_row}",
-            "line":  {"color": _CHART_LINE, "width": 2.0},
-            "fill":  {"color": _CHART_LINE, "transparency": 80},
-        }
-    )
-    chart.set_title({"name": "Evolución del balance", "name_font": {"color": _FG_MAIN, "size": 11}})
+    chart.add_series({
+        "name": "Balance",
+        "categories": ["TRADES", fila0, 0, fila_fin, 0],
+        "values": ["TRADES", fila0, col_balance, fila_fin, col_balance],
+        "line": {"color": ACC, "width": 1.75},
+        "fill": {"color": ACC, "transparency": 85},
+    })
+    chart.set_title({"name": "Evolución del balance", "name_font": {"name": "Aptos", "size": 11, "color": INK}})
     chart.set_legend({"none": True})
-    chart.set_y_axis(
-        {
-            "num_format": "$#,##0",
-            "major_gridlines": {"visible": True, "line": {"color": _BORDER, "width": 0.5}},
-            "line": {"none": True},
-            "num_font": {"color": _FG_DIM},
-        }
-    )
-    chart.set_x_axis(
-        {
-            "name": "Fecha",
-            "date_axis": True,
-            "num_format": "mm/yyyy",
-            "major_unit": 3,
-            "major_unit_type": "months",
-            "major_gridlines": {"visible": False},
-            "num_font": {"color": _FG_DIM},
-            "name_font": {"color": _FG_DIM},
-        }
-    )
-    chart.set_plotarea({"border": {"none": True}, "fill": {"color": _BG_BASE}})
-    chart.set_chartarea({"border": {"color": _BORDER}, "fill": {"color": _BG_HEADER}})
-    chart.set_size({"width": 1100, "height": 400})
-    worksheet.insert_chart(start_row, 0, chart, {"x_offset": 2, "y_offset": 5})
+    chart.set_size({"width": 820, "height": 300})
+    chart.set_y_axis({"num_format": "$#,##0", "num_font": {"color": SUB}, "major_gridlines": {"visible": True, "line": {"color": LINE}}})
+    chart.set_x_axis({"name": "Trade #", "num_font": {"color": SUB}})
+    chart.set_chartarea({"border": {"color": LINE}})
+    chart.set_plotarea({"border": {"none": True}})
+    ws.insert_chart(start_row, 0, chart, {"x_offset": 2, "y_offset": 8})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # Formatos
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 
 def _crear_formatos(workbook) -> dict:
-    def _base(bg: str, fg: str = _FG_MAIN, bold: bool = False) -> dict:
-        return {
-            "font_name":  "Calibri",
-            "font_size":  10,
-            "font_color": fg,
-            "bold":       bold,
-            "bg_color":   bg,
-            "align":      "center",
-            "valign":     "vcenter",
-            "bottom":     1,
-            "bottom_color": _BORDER,
-        }
-
-    def fmt(bg: str, num_format: str | None = None, fg: str = _FG_MAIN, bold: bool = False, **extra):
-        params = _base(bg, fg, bold)
-        if num_format is not None:
-            params["num_format"] = num_format
-        params.update(extra)
-        return workbook.add_format(params)
-
-    # Pares (impar, par)
-    def pair(num_fmt=None, fg=_FG_MAIN, bold=False, **extra):
-        return (
-            fmt(_BG_ROW_ODD,  num_fmt, fg, bold, **extra),
-            fmt(_BG_ROW_EVEN, num_fmt, fg, bold, **extra),
-        )
-
-    return {
-        "section": workbook.add_format({
-            "font_name":    "Calibri",
-            "font_size":    8,
-            "bold":         True,
-            "font_color":   _FG_SECTION,
-            "bg_color":     _BG_SECTION,
-            "align":        "center",
-            "valign":       "vcenter",
-            "bottom":       1,
-            "bottom_color": _BORDER,
-            "text_wrap":    False,
-        }),
-        "header": workbook.add_format({
-            "font_name":    "Calibri",
-            "font_size":    9,
-            "bold":         True,
-            "font_color":   _FG_HEADER,
-            "bg_color":     _BG_HEADER,
-            "align":        "center",
-            "valign":       "vcenter",
-            "text_wrap":    True,
-            "bottom":       2,
-            "bottom_color": _BLUE_ACCENT,
-        }),
-        # Datos normales
-        "text":      pair(),
-        "int":       pair("0"),
-        "num":       pair("0.000000"),
-        "ratio":     pair("0.00"),
-        "money":     pair('$#,##0.00'),
-        "quantity3": pair('#,##0.000'),
-        "price":     pair('#,##0.00'),
-        "pct":       pair("0.00%"),
-        "pct_point": pair('0.0"%"'),
-        "date":      pair("dd/mm/yy hh:mm"),
-        "dur":       pair(),         # duración D/H/M → se escribe como string
-        # Condicionales de color (sin fondo, solo color texto)
-        "positive": workbook.add_format({
-            "font_color": _GREEN,
-            "bold":       True,
-            "font_name":  "Calibri",
-            "font_size":  10,
-        }),
-        "negative": workbook.add_format({
-            "font_color": _RED,
-            "bold":       True,
-            "font_name":  "Calibri",
-            "font_size":  10,
-        }),
-        "warning": workbook.add_format({
-            "font_color": _GOLD,
-            "bold":       True,
-            "font_name":  "Calibri",
-            "font_size":  10,
-        }),
+    def base(**k): return workbook.add_format(k)
+    fmt = {
+        "title": base(font_name="Aptos Display", font_size=14, bold=True, font_color=INK),
+        "title2": base(font_name="Aptos Display", font_size=12, bold=True, font_color=INK),
+        "sub": base(font_name="Aptos", font_size=9, font_color=SUB),
+        "header": base(font_name="Aptos", font_size=9, bold=True, font_color="#FFFFFF", bg_color=HEAD, align="center", valign="vcenter"),
+        "sec": base(font_name="Aptos", font_size=9, bold=True, font_color="#FFFFFF", bg_color=ACC, align="center", valign="vcenter"),
+        "pos": base(font_name="Aptos", font_size=10, bold=True, font_color=POS),
+        "neg": base(font_name="Aptos", font_size=10, bold=True, font_color=NEG),
     }
+    fmt["panel_lbl"] = (
+        base(font_name="Aptos", font_size=10, font_color=SUB, align="left", valign="vcenter", bottom=1, bottom_color=LINE),
+        base(font_name="Aptos", font_size=10, font_color=SUB, align="left", valign="vcenter", bottom=1, bottom_color=LINE, bg_color=BAND),
+    )
+    fmt["verdict"] = {
+        lvl: base(font_name="Aptos", font_size=10, bold=True, font_color=NIVEL_COLOR[lvl], bg_color=TINTE[lvl], align="center", valign="vcenter", border=1, border_color=LINE)
+        for lvl in ("good", "ok", "bad")
+    }
+    fmt["chip"] = {
+        lvl: base(font_name="Aptos", font_size=8, bold=True, font_color=NIVEL_COLOR[lvl], bg_color=TINTE[lvl], align="center", valign="vcenter", border=1, border_color=LINE)
+        for lvl in ("good", "ok", "bad", "info")
+    }
+    # Pares (impar, par) para celdas de la tabla, por tipo de formato numerico.
+    fmt["_wb"] = workbook
+    return fmt
 
 
-def _format_for(name: str, formatos: dict, alt: bool):
-    idx = 1 if alt else 0
-    if name in DATE_COLS:
-        return formatos["date"][idx]
-    if name in DUR_SEG_COLS:
-        return formatos["dur"][idx]
-    if name in QUANTITY_COLS:
-        return formatos["quantity3"][idx]
-    if name in MONEY_COLS:
-        return formatos["money"][idx]
-    if name in PRICE_COLS:
-        return formatos["price"][idx]
-    if name in PCT_COLS:
-        return formatos["pct"][idx]
-    if name in PCT_POINT_COLS:
-        return formatos["pct_point"][idx]
-    if name in INT_COLS:
-        return formatos["int"][idx]
-    if name in {
-        "profit_factor", "sharpe_ratio", "trades_por_dia", "duracion_media_velas",
-        "apalancamiento", "param_risk_sl_ewma_mult", "param_risk_tp_ewma_mult",
-        "param_risk_trail_act_ewma_mult", "param_risk_trail_dist_ewma_mult",
-    }:
-        return formatos["ratio"][idx]
-    if name == "score":
-        return formatos["num"][idx]
-    return formatos["text"][idx]
+def _fmt_celda(fmt: dict, name: str, numfmt: str | None, band: bool):
+    wb = fmt["_wb"]
+    d = dict(font_name="Aptos", font_size=10, align="center", valign="vcenter", bottom=1, bottom_color=LINE)
+    if band:
+        d["bg_color"] = BAND
+    if numfmt:
+        d["num_format"] = numfmt
+    if name in ("pnl", "roi"):
+        d["bold"] = True  # color por valor lo pone el formato condicional / inline
+    return wb.add_format(d)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Escritura de celdas
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _write_section_headers(worksheet, secciones: list[str], formatos: dict) -> None:
-    if not secciones:
-        return
-    start = 0
-    current = secciones[0]
-    for idx, section in enumerate(secciones + [None]):
-        if section == current:
-            continue
-        if idx - 1 > start:
-            worksheet.merge_range(0, start, 0, idx - 1, current, formatos["section"])
-        else:
-            worksheet.write(0, start, current, formatos["section"])
-        start = idx
-        current = section
+def _panel_val(fmt: dict, color: str, band: bool):
+    wb = fmt["_wb"]
+    d = dict(font_name="Aptos", font_size=10, bold=True, font_color=color, align="right", valign="vcenter", bottom=1, bottom_color=LINE)
+    if band:
+        d["bg_color"] = BAND
+    return wb.add_format(d)
 
 
-def _write_headers(worksheet, row: int, columnas: list[str], nombres: dict, formato) -> None:
-    for col_idx, name in enumerate(columnas):
-        worksheet.write(row, col_idx, _display_name(name, nombres), formato)
-
-
-def _write_cell(worksheet, row: int, col: int, value: Any, formato, name: str) -> None:
+def _write_cell(ws, row: int, col: int, value: Any, formato, name: str) -> None:
     if value is None:
-        worksheet.write_blank(row, col, None, formato)
+        ws.write_blank(row, col, None, formato)
         return
-
-    if name in DUR_SEG_COLS:
-        worksheet.write_string(row, col, _seg_a_dhm(value), formato)
-        return
-
-    if name in DATE_COLS:
+    if name in _DATE_COLS:
         dt = _datetime_from_us(value)
         if dt is None:
-            worksheet.write(row, col, value, formato)
+            ws.write(row, col, value, formato)
         else:
-            worksheet.write_datetime(row, col, dt, formato)
+            ws.write_datetime(row, col, dt, formato)
         return
-
+    if name == "direccion_txt":
+        ws.write_string(row, col, str(value), formato)
+        return
     if isinstance(value, bool):
-        worksheet.write_string(row, col, "SÍ" if value else "NO", formato)
-    elif isinstance(value, int):
-        worksheet.write_number(row, col, value, formato)
-    elif isinstance(value, float):
-        worksheet.write_number(row, col, value, formato)
+        ws.write_string(row, col, "SÍ" if value else "NO", formato)
+    elif isinstance(value, (int, float)):
+        ws.write_number(row, col, value, formato)
     else:
-        worksheet.write_string(row, col, str(value), formato)
+        ws.write_string(row, col, str(value), formato)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Formato condicional
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _add_summary_conditionals(worksheet, columnas: list[str], filas: int, formatos: dict) -> None:
-    if filas <= 0:
-        return
-    for name in ("roi_total", "pnl_bruto_total", "pnl_total", "score"):
-        if name not in columnas:
-            continue
-        col = columnas.index(name)
-        worksheet.conditional_format(2, col, filas + 1, col, {
-            "type": "cell", "criteria": ">", "value": 0, "format": formatos["positive"],
-        })
-        worksheet.conditional_format(2, col, filas + 1, col, {
-            "type": "cell", "criteria": "<", "value": 0, "format": formatos["negative"],
-        })
-    if "parado_por_saldo" in columnas:
-        col = columnas.index("parado_por_saldo")
-        worksheet.conditional_format(2, col, filas + 1, col, {
-            "type": "text", "criteria": "containing", "value": "SÍ",
-            "format": formatos["warning"],
-        })
-
-
-def _add_trade_conditionals(worksheet, columnas: list[str], filas: int, formatos: dict) -> None:
-    if filas <= 0:
-        return
-    for name in ("pnl_bruto", "pnl"):
-        if name not in columnas:
-            continue
-        col = columnas.index(name)
-        worksheet.conditional_format(1, col, filas, col, {
-            "type": "cell", "criteria": ">", "value": 0, "format": formatos["positive"],
-        })
-        worksheet.conditional_format(1, col, filas, col, {
-            "type": "cell", "criteria": "<", "value": 0, "format": formatos["negative"],
-        })
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Anchos de columna
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _set_widths(worksheet, columnas: list[str], df: pl.DataFrame, nombres: dict) -> None:
-    rows = df.select([c for c in columnas if c in df.columns]).head(25).rows(named=True) if columnas else []
-    for col_idx, name in enumerate(columnas):
-        label_w = len(_display_name(name, nombres)) + 2
-        data_w = 0
-        for row in rows:
-            value = row.get(name)
-            if value is not None:
-                if name in DUR_SEG_COLS:
-                    data_w = max(data_w, len(_seg_a_dhm(value)) + 2)
-                else:
-                    data_w = max(data_w, min(len(str(value)) + 2, 26))
-        width = min(max(label_w, data_w, 9), 26)
-        worksheet.set_column(col_idx, col_idx, width)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # Helpers
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 
-def _seg_a_dhm(segundos: Any) -> str:
-    """Convierte segundos a formato 'DDd HHh MMm' o '—' si es cero/None."""
+def _nivel_label(nivel: str) -> str:
+    return {"good": "BUENO", "ok": "REGULAR", "bad": "MALO", "info": "INFO"}.get(nivel, "")
+
+
+def _resolver_fechas(trial, fecha_inicio, fecha_fin) -> tuple[date, date]:
+    if fecha_inicio is not None and fecha_fin is not None:
+        return fecha_inicio, fecha_fin
+    cols = trial.replay.trades
     try:
-        total = int(float(segundos))
-    except (TypeError, ValueError):
-        return "—"
-    if total <= 0:
-        return "—"
-    dias  = total // 86400
-    horas = (total % 86400) // 3600
-    mins  = (total % 3600) // 60
-    partes = []
-    if dias:
-        partes.append(f"{dias}d")
-    if horas or dias:
-        partes.append(f"{horas:02d}h")
-    partes.append(f"{mins:02d}m")
-    return " ".join(partes)
-
-
-def _columnas_resumen(df: pl.DataFrame) -> list[str]:
-    columnas_visibles = [col for col in df.columns if col not in SUMMARY_EXCLUDED_COLS]
-    existentes = set(columnas_visibles)
-    ids      = [col for col in ID_ORDER     if col in existentes]
-    metricas = [col for col in METRIC_ORDER if col in existentes]
-    params   = sorted(col for col in columnas_visibles if col.startswith("param_"))
-    usados   = set(ids + metricas + params)
-    otros    = [col for col in columnas_visibles if col not in usados]
-    return ids + metricas + otros + params
-
-
-def _seccion_resumen(col: str) -> str:
-    if col in ID_ORDER:
-        return "IDENTIFICACIÓN"
-    if col.startswith("param_"):
-        return "PARÁMETROS"
-    return "MÉTRICAS"
-
-
-def _display_name(name: str, nombres: dict) -> str:
-    if name in nombres:
-        return nombres[name]
-    if name.startswith("param_"):
-        return name.removeprefix("param_").replace("_", " ").upper()
-    return name.replace("_", " ").upper()
+        ini = datetime.fromtimestamp(int(cols["ts_entrada"][0]) / 1_000_000, tz=timezone.utc).date()
+        fin = datetime.fromtimestamp(int(cols["ts_salida"][-1]) / 1_000_000, tz=timezone.utc).date()
+        return ini, fin
+    except Exception:
+        hoy = datetime.now(timezone.utc).date()
+        return hoy, hoy
 
 
 def _datetime_from_us(value: Any) -> datetime | None:
@@ -713,11 +343,6 @@ def _base_resultados(run_dir: Path) -> Path:
     return run_dir
 
 
-def _nombre_resumen(mejor) -> str:
-    estrategia = _nombre_visible(mejor.estrategia_nombre)
-    return f"RESUMEN {estrategia}.xlsx"
-
-
 def _nombre_detalle(trial) -> str:
     return f"TRIAL {int(trial.numero)} - {_score_nombre(trial.score)}.xlsx"
 
@@ -730,7 +355,7 @@ def _score_nombre(score: float) -> str:
 def _unique_path(path: Path) -> Path:
     if not path.exists():
         return path
-    stem   = path.stem
+    stem = path.stem
     suffix = path.suffix
     for idx in range(2, 10_000):
         candidate = path.with_name(f"{stem}_{idx:02d}{suffix}")
@@ -741,8 +366,8 @@ def _unique_path(path: Path) -> Path:
 
 def _slug_excel(value: Any) -> str:
     normalizado = unicodedata.normalize("NFKD", str(value))
-    ascii_text  = normalizado.encode("ascii", "ignore").decode("ascii")
-    slug        = re.sub(r"[^a-zA-Z0-9]+", "_", ascii_text).strip("_").upper()
+    ascii_text = normalizado.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", ascii_text).strip("_").upper()
     return slug or "SIN_NOMBRE"
 
 

@@ -14,6 +14,8 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from COMUN.numpy_utiles import a_contiguo
+
 try:
     from numba import njit
     _NUMBA_IMPORT_ERROR = None
@@ -54,6 +56,10 @@ class BasePerturbaciones:
     low_orig: np.ndarray
     close_orig: np.ndarray
     volume_orig: np.ndarray
+    taker_buy_orig: np.ndarray | None
+    taker_sell_orig: np.ndarray | None
+    vol_delta_orig: np.ndarray | None
+    num_trades_orig: np.ndarray | None
     media_volumen_orig: np.ndarray
     midpoint_orig: np.ndarray
     rango_rel_orig: np.ndarray
@@ -69,6 +75,7 @@ class ConfiguracionPerturbaciones:
     seed_global: int | None
     granularidad_cubos: float
     percentil_tabla: float
+    validar_invariantes: bool = True
     tabla: TablaCondicionales | None = None
     base: BasePerturbaciones | None = None
 
@@ -80,6 +87,7 @@ class ConfiguracionPerturbaciones:
             seed_global=getattr(cfg, "PERTURBACIONES_SEED", None) if usar_seed else None,
             granularidad_cubos=float(getattr(cfg, "GRANULARIDAD_CUBOS", 0.005)),
             percentil_tabla=float(getattr(cfg, "PERCENTIL_TABLA", 0.10)),
+            validar_invariantes=bool(getattr(cfg, "VALIDAR_PERTURBACIONES", False)),
         )
 
     def con_tabla_desde(self, df: pl.DataFrame) -> "ConfiguracionPerturbaciones":
@@ -144,10 +152,18 @@ def aplicar_perturbaciones(
             percentil=config.percentil_tabla,
         )
 
-    taker_buy, has_taker_buy = _array_float_opcional(df, "taker_buy_volume", n)
-    taker_sell, has_taker_sell = _array_float_opcional(df, "taker_sell_volume", n)
-    vol_delta, has_vol_delta = _array_float_opcional(df, "vol_delta", n)
-    num_trades, has_num_trades = _array_int_opcional(df, "num_trades", n)
+    taker_buy, has_taker_buy = _array_float_opcional(
+        df, "taker_buy_volume", n, base.taker_buy_orig,
+    )
+    taker_sell, has_taker_sell = _array_float_opcional(
+        df, "taker_sell_volume", n, base.taker_sell_orig,
+    )
+    vol_delta, has_vol_delta = _array_float_opcional(
+        df, "vol_delta", n, base.vol_delta_orig,
+    )
+    num_trades, has_num_trades = _array_int_opcional(
+        df, "num_trades", n, base.num_trades_orig,
+    )
 
     open_p, high_p, low_p, close_p, volume_p = kernel(
         base.open_orig,
@@ -181,12 +197,12 @@ def aplicar_perturbaciones(
         float(_SIGMA_RANGO_VELA),
         float(_RUIDO_POSICION_OHLC),
         float(_INERCIA_ORDER_FLOW),
-        rng.normal(0.0, 1.0, n).astype(np.float64),
-        rng.normal(0.0, 1.0, n).astype(np.float64),
-        rng.random(n).astype(np.float64),
-        rng.random(n).astype(np.float64),
-        rng.random(n).astype(np.float64),
-        rng.uniform(-1.0, 1.0, n).astype(np.float64),
+        rng.normal(0.0, 1.0, n),
+        rng.normal(0.0, 1.0, n),
+        rng.random(n),
+        rng.random(n),
+        rng.random(n),
+        rng.uniform(-1.0, 1.0, n),
     )
 
     updates: dict[str, np.ndarray] = {
@@ -214,7 +230,8 @@ def aplicar_perturbaciones(
         updates["taker_buy_quote_volume"] = taker_buy * precio_medio
 
     perturbado = df.with_columns([pl.Series(col, values) for col, values in updates.items()])
-    _validar_invariantes(perturbado)
+    if config.validar_invariantes:
+        _validar_invariantes(perturbado)
     return perturbado
 
 
@@ -255,6 +272,10 @@ def _precalcular_base(df: pl.DataFrame) -> BasePerturbaciones:
         low_orig=low_orig,
         close_orig=close_orig,
         volume_orig=volume_orig,
+        taker_buy_orig=_f64_opcional(df, "taker_buy_volume"),
+        taker_sell_orig=_f64_opcional(df, "taker_sell_volume"),
+        vol_delta_orig=_f64_opcional(df, "vol_delta"),
+        num_trades_orig=_i64_opcional(df, "num_trades"),
         media_volumen_orig=media_volumen_orig,
         midpoint_orig=midpoint_orig,
         rango_rel_orig=rango_rel_orig,
@@ -462,13 +483,39 @@ def _prop_taker_sell_original(df: pl.DataFrame, idx: int) -> float:
     return min(max(float(df["taker_sell_volume"][idx]) / volumen, 0.0), 1.0)
 
 
-def _array_float_opcional(df: pl.DataFrame, col: str, n: int) -> tuple[np.ndarray, bool]:
+def _f64_opcional(df: pl.DataFrame, col: str) -> np.ndarray | None:
+    if col not in df.columns:
+        return None
+    return _f64(df, col)
+
+
+def _i64_opcional(df: pl.DataFrame, col: str) -> np.ndarray | None:
+    if col not in df.columns:
+        return None
+    return a_contiguo(df[col].cast(pl.Int64).to_numpy(), np.int64)
+
+
+def _array_float_opcional(
+    df: pl.DataFrame,
+    col: str,
+    n: int,
+    precalculado: np.ndarray | None = None,
+) -> tuple[np.ndarray, bool]:
+    if precalculado is not None and precalculado.shape[0] == n:
+        return precalculado.copy(), True
     if col in df.columns:
         return df[col].cast(pl.Float64).to_numpy().copy(), True
     return np.zeros(n, dtype=np.float64), False
 
 
-def _array_int_opcional(df: pl.DataFrame, col: str, n: int) -> tuple[np.ndarray, bool]:
+def _array_int_opcional(
+    df: pl.DataFrame,
+    col: str,
+    n: int,
+    precalculado: np.ndarray | None = None,
+) -> tuple[np.ndarray, bool]:
+    if precalculado is not None and precalculado.shape[0] == n:
+        return precalculado.copy(), True
     if col in df.columns:
         return df[col].cast(pl.Int64).to_numpy().copy(), True
     return np.zeros(n, dtype=np.int64), False
@@ -715,9 +762,9 @@ def _buscar_cubo(retorno: float, bordes: np.ndarray) -> int:
 if njit is None:
     _kernel_perturbacion = None
 else:
-    _clip_scalar = njit(cache=True)(_clip_scalar)
-    _buscar_cubo = njit(cache=True)(_buscar_cubo)
-    _kernel_perturbacion = njit(cache=True)(_kernel_perturbacion_impl)
+    _clip_scalar = njit(cache=True, nogil=True)(_clip_scalar)
+    _buscar_cubo = njit(cache=True, nogil=True)(_buscar_cubo)
+    _kernel_perturbacion = njit(cache=True, nogil=True)(_kernel_perturbacion_impl)
 
 
 def _validar_invariantes(df: pl.DataFrame) -> None:

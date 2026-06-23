@@ -16,18 +16,10 @@ from math import isclose
 import numpy as np
 import polars as pl
 
+from DATOS.tiempo import MICROSEGUNDOS_POR_TIMEFRAME, intervalo_us, serie_timestamp_us
 from MOTOR.wrapper import MOTIVOS
 
 TOL = 1e-7
-_TIMEFRAME_US = {
-    "1m": 60_000_000,
-    "5m": 5 * 60_000_000,
-    "15m": 15 * 60_000_000,
-    "30m": 30 * 60_000_000,
-    "1h": 60 * 60_000_000,
-    "4h": 4 * 60 * 60_000_000,
-    "1d": 24 * 60 * 60_000_000,
-}
 
 
 @dataclass(frozen=True)
@@ -65,30 +57,65 @@ def verificar_resampleo(origen: pl.DataFrame, destino: pl.DataFrame, timeframe: 
         return
 
     if "volume" in origen.columns and "volume" in destino.columns:
-        origen_ts_us = _timestamp_us(origen)
-        destino_ts_us = _timestamp_us(destino)
-        fin_cubierto_us = int(destino_ts_us[-1])
-        if timeframe in _TIMEFRAME_US and timeframe != "1m":
-            fin_cubierto_us += int(_TIMEFRAME_US[timeframe]) - _intervalo_us(origen)
-        origen_cubierto = origen.filter(origen_ts_us <= fin_cubierto_us)
-        vol_origen = float(origen_cubierto["volume"].sum())
-        vol_destino = float(destino["volume"].sum())
-        if not isclose(vol_origen, vol_destino, rel_tol=TOL, abs_tol=TOL):
-            raise ValueError(
-                "[INTEGRIDAD] Volumen no conservado tras resampleo: "
-                f"origen={vol_origen}, destino={vol_destino}."
-            )
+        _verificar_conservacion_volumen(origen, destino, timeframe)
 
-    origen_ts_us = _timestamp_us(origen)
-    destino_ts_us = _timestamp_us(destino)
+    origen_ts_us = serie_timestamp_us(origen)
+    destino_ts_us = serie_timestamp_us(destino)
     if int(destino_ts_us[0]) < int(origen_ts_us[0]):
         raise ValueError("[INTEGRIDAD] Resampleo creo timestamp inicial anterior al origen.")
     if int(destino_ts_us[-1]) > int(origen_ts_us[-1]):
         raise ValueError("[INTEGRIDAD] Resampleo creo timestamp final posterior al origen.")
-    if timeframe in _TIMEFRAME_US and timeframe != "1m":
-        fin_operativo_us = int(destino_ts_us[-1]) + int(_TIMEFRAME_US[timeframe]) - _intervalo_us(origen)
+    if timeframe in MICROSEGUNDOS_POR_TIMEFRAME and timeframe != "1m":
+        fin_operativo_us = (
+            int(destino_ts_us[-1]) + int(MICROSEGUNDOS_POR_TIMEFRAME[timeframe]) - intervalo_us(origen)
+        )
         if fin_operativo_us > int(origen_ts_us[-1]):
             raise ValueError("[INTEGRIDAD] Resampleo termina despues del origen disponible.")
+
+
+def _verificar_conservacion_volumen(
+    origen: pl.DataFrame, destino: pl.DataFrame, timeframe: str
+) -> None:
+    """Comprueba que el resampleo no inventa ni pierde volumen indebidamente.
+
+    El resampleo agrega por suma y descarta las ventanas incompletas. En
+    mercados 24/7 sin huecos, todas las ventanas estan completas y el volumen
+    de destino debe ser EXACTAMENTE el de origen cubierto. En mercados con
+    sesion (gold, brent, sp500, eurusd) se caen ventanas en los bordes de
+    sesion, asi que el destino puede ser MENOR; lo unico que nunca debe pasar
+    es que se cree volumen (destino > origen). Distinguimos ambos casos por la
+    cobertura: si todas las ventanas posibles estan presentes -> igualdad
+    estricta; si faltan -> solo cota superior.
+    """
+    intervalo_base_us = intervalo_us(origen)
+    destino_ts_us = serie_timestamp_us(destino)
+    fin_cubierto_us = int(destino_ts_us[-1])
+    if timeframe in MICROSEGUNDOS_POR_TIMEFRAME and timeframe != "1m":
+        fin_cubierto_us += int(MICROSEGUNDOS_POR_TIMEFRAME[timeframe]) - intervalo_base_us
+
+    origen_cubierto = origen.filter(serie_timestamp_us(origen) <= fin_cubierto_us)
+    vol_origen = float(origen_cubierto["volume"].sum())
+    vol_destino = float(destino["volume"].sum())
+
+    # Nunca se puede crear volumen.
+    if vol_destino > vol_origen + abs(vol_origen) * TOL + TOL:
+        raise ValueError(
+            "[INTEGRIDAD] El resampleo creo volumen: "
+            f"destino={vol_destino} > origen={vol_origen}."
+        )
+
+    # Cobertura completa = ninguna ventana descartada -> debe conservarse exacto.
+    filas_por_ventana = (
+        int(MICROSEGUNDOS_POR_TIMEFRAME[timeframe]) // intervalo_base_us
+        if timeframe in MICROSEGUNDOS_POR_TIMEFRAME
+        else 1
+    )
+    cobertura_completa = destino.height * filas_por_ventana == origen_cubierto.height
+    if cobertura_completa and not isclose(vol_origen, vol_destino, rel_tol=TOL, abs_tol=TOL):
+        raise ValueError(
+            "[INTEGRIDAD] Volumen no conservado tras resampleo (cobertura completa): "
+            f"origen={vol_origen}, destino={vol_destino}."
+        )
 
 
 def verificar_senales(df: pl.DataFrame, senales) -> dict[int, int]:
@@ -256,20 +283,3 @@ def _verificar_ohlc(etapa: str, df: pl.DataFrame) -> None:
     ).height
     if invalidas:
         raise ValueError(f"[INTEGRIDAD] {etapa}: {invalidas:,} velas OHLC incoherentes.")
-
-
-def _timestamp_us(df: pl.DataFrame) -> pl.Series:
-    dtype = df.schema.get("timestamp")
-    if isinstance(dtype, pl.Datetime):
-        return df.select(pl.col("timestamp").dt.epoch("us")).to_series()
-    return df["timestamp"].cast(pl.Int64)
-
-
-def _intervalo_us(df: pl.DataFrame) -> int:
-    if df.height < 2:
-        raise ValueError("[INTEGRIDAD] No se puede inferir intervalo con menos de 2 filas.")
-    diffs = _timestamp_us(df).diff().drop_nulls()
-    diffs = diffs.filter(diffs > 0)
-    if diffs.is_empty():
-        raise ValueError("[INTEGRIDAD] No se pudo inferir intervalo temporal.")
-    return int(diffs.min())

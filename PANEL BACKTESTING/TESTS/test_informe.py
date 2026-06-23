@@ -14,9 +14,7 @@ class InformeRobustezTest(unittest.TestCase):
     def test_payload_incluye_labels_profesionales_y_metricas_derivadas(self) -> None:
         payload = _payload_minimo()
 
-        self.assertEqual(payload["field_labels"]["risk_sl_ewma_mult"], "SL xVOL")
-        self.assertEqual(payload["field_labels"]["risk_trail_act_ewma_mult"], "TRAIL ACT xVOL")
-        self.assertEqual(payload["field_labels"]["risk_vol_halflife"], "VOL HL")
+        self.assertEqual(payload["field_labels"]["umbral_cvd"], "UMBRAL CVD")
         self.assertIn("return_dd_ratio", payload["derived_keys"])
         self.assertIn("pnl_por_trade", payload["derived_keys"])
         self.assertAlmostEqual(payload["trials"][0]["derived"]["return_dd_ratio"], 4.0)
@@ -45,6 +43,16 @@ class InformeRobustezTest(unittest.TestCase):
         self.assertIn("function renderCurrent", html)
         self.assertIn("buildControls();\n  readControls();", html)
 
+    def test_template_usa_escala_progresiva_rojo_verde_azul(self) -> None:
+        html = _render_html(_payload_minimo())
+
+        self.assertIn("const PERF_SCALE_HIGH_GOOD", html)
+        self.assertIn("[0.00,'#ff3b3b']", html)
+        self.assertIn("[0.68,'#5cdb5c']", html)
+        self.assertIn("[1.00,'#3aa3ff']", html)
+        self.assertIn("function colorscale(k){return dir(k)==='min'?PERF_SCALE_LOW_GOOD:PERF_SCALE_HIGH_GOOD}", html)
+        self.assertNotIn("[[0,T.neg],[.5,T.panel2],[1,T.pos]]", html)
+
 
 def _payload_minimo() -> dict:
     trials = [
@@ -52,10 +60,8 @@ def _payload_minimo() -> dict:
             numero=1,
             score=10.0,
             parametros={
-                "risk_sl_ewma_mult": 2.0,
-                "risk_trail_act_ewma_mult": 4.0,
-                "risk_trail_dist_ewma_mult": 1.0,
-                "risk_vol_halflife": 50,
+                "exit_sl_pct": 20.0,
+                "exit_velas": 50,
                 "umbral_cvd": 1.5,
             },
             metricas={
@@ -71,10 +77,8 @@ def _payload_minimo() -> dict:
             numero=2,
             score=6.0,
             parametros={
-                "risk_sl_ewma_mult": 3.0,
-                "risk_trail_act_ewma_mult": 5.0,
-                "risk_trail_dist_ewma_mult": 1.5,
-                "risk_vol_halflife": 80,
+                "exit_sl_pct": 30.0,
+                "exit_velas": 80,
                 "umbral_cvd": 1.0,
             },
             metricas={

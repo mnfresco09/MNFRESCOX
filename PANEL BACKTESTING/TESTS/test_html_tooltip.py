@@ -10,18 +10,19 @@ from REPORTES.html import _render_html  # noqa: E402
 
 
 class HtmlTooltipTest(unittest.TestCase):
-    def test_tooltip_tiene_modo_paridad_sin_pnl_bruto(self) -> None:
-        html = _render_html(_payload_minimo_paridad(), "")
+    def test_tooltip_estandar_sin_rastro_de_riesgo(self) -> None:
+        html = _render_html(_payload_minimo(), "")
 
-        self.assertIn("const riskMode", html)
-        self.assertIn("function tooltipRiskRows", html)
         self.assertIn("function tooltipStandardRows", html)
-        self.assertIn("TP %", html)
-        self.assertIn("SL %", html)
-        self.assertIn("APALANC.", html)
+        self.assertIn("PNL BRUTO", html)
+        self.assertIn("PNL NETO", html)
+        # La antigua gestión de riesgo (paridad) ya no deja rastro en el report.
+        self.assertNotIn("riskMode", html)
+        self.assertNotIn("tooltipRiskRows", html)
+        self.assertNotIn("risk_tp_ewma_mult", html)
 
     def test_equity_usa_baseline_unica_sobre_saldo_inicial(self) -> None:
-        payload = _payload_minimo_paridad()
+        payload = _payload_minimo()
         payload["equity_curve"] = [
             {"time": 1, "saldo": 1000.0, "equity_pct": 0.0},
             {"time": 2, "saldo": 1040.0, "equity_pct": 4.0},
@@ -39,7 +40,7 @@ class HtmlTooltipTest(unittest.TestCase):
         self.assertNotIn("EQUITY / DRAWDOWN", html)
 
 
-def _payload_minimo_paridad() -> dict:
+def _payload_minimo() -> dict:
     return {
         "titulo": "BTC 1H | TEST | FIXED",
         "trial": 1,
@@ -47,13 +48,12 @@ def _payload_minimo_paridad() -> dict:
         "timeframe_ejecucion": "1m",
         "salida": {"tipo": "FIXED", "sl_pct": 20, "tp_pct": 40, "velas": 0},
         "metricas": {},
-        "parametros": {
-            "risk_max_pct": 5.0,
-            "risk_sl_ewma_mult": 2.0,
-            "risk_tp_ewma_mult": 4.0,
-        },
+        "parametros": {"halflife": 120, "umbral": 0.85},
         "conteo_senales": {},
         "rango": {"velas": 0},
+        "resumen_trades": {},
+        "analitica": {"secciones": [], "veredicto": {}},
+        "distribuciones": {},
         "candles": [],
         "markers": [],
         "trades": [],
