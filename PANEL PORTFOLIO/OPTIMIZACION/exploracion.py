@@ -10,7 +10,7 @@ Hace dos cosas:
      métricas baratas/cerradas o paramétricas (instantáneo): Sharpe táctico,
      Score-proxy, VaR/CVaR paramétrico, STARR (retorno/CVaR), ratio de
      diversificación (Choueifaty) y concentración de riesgo ERC (HHI de MCR).
-     Se criba el Top-5 por criterio y SOLO esa shortlist (más los 4 perfiles) se
+     Se criba el Top-5 por criterio y SOLO esa shortlist (más los candidatos principales) se
      confirma luego con FHS + Monte Carlo precisos (ver RIESGO.exploracion_riesgo).
 
 Convención: VaR/CVaR negativos (pérdida en la cola); estimaciones del modelo.

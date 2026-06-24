@@ -1633,3 +1633,19 @@ Entregar:
 - ventanas stress evaluables;
 - rutas de HTML, Excel y manifiesto;
 - hash del commit final.
+
+## Roadmap V2 — Validación Walk-Forward estricta
+
+La V1 institucional compara motores Champion vs Challenger (`MARKOWITZ`,
+`CVAR`, `NCO`) con score transversal penalizado por CVaR FHS y CDaR. El R² de
+la curva de capital queda como diagnóstico in-sample secundario.
+
+La V2 debe añadir un pipeline Walk-Forward estricto antes de usar linealidad o
+estabilidad histórica como driver principal del score:
+
+- ventanas de estimación y validación sin fuga temporal;
+- rebalanceos realistas con costes y restricciones idénticas a producción;
+- ejecución de cada `OptimizadorBase` por fecha de rebalanceo;
+- métricas OOS por motor: CAGR, CVaR, CDaR, turnover, hit ratio, R² y K-ratio;
+- tabla Champion vs Challenger basada en evidencia OOS, no en pesos fijos
+  in-sample.

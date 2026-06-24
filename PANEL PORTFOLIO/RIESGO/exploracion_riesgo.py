@@ -2,7 +2,7 @@
 
 Estrategia de rendimiento: la frontera (120+ carteras) se criba con métricas
 paramétricas instantáneas; solo la SHORTLIST (unión de los Top-5 por criterio +
-los 4 perfiles headline) se confirma con FHS + Monte Carlo precisos. Así el
+los candidatos principales) se confirma con FHS + Monte Carlo precisos. Así el
 informe muestra cifras exactas donde importa y sigue siendo rápido aunque el
 motor Rust caiga a fallback.
 """
@@ -61,7 +61,7 @@ def construir_exploracion(
             lista.append((firma, cand))
         tops_candidatos[clave] = lista
 
-    # Shortlist = firmas de los Top-5 + las de los 4 perfiles headline.
+    # Shortlist = firmas de los Top-5 + las de los candidatos principales.
     for p in perfiles:
         por_firma.setdefault(_firma(p.pesos), p)
 

@@ -28,8 +28,7 @@ from CONTRATOS.modelos import (
 from DATOS.alineacion import alinear_y_calcular_retornos
 from DATOS.cargador import cargar_cierres
 from DESCARGADOR.cache import asegurar_datos
-from OPTIMIZACION.frontera import construir_frontera
-from OPTIMIZACION.perfiles import curva_top_sharpe, seleccionar_perfiles
+from OPTIMIZACION.estrategias import ejecutar_optimizacion
 from RIESGO.exploracion_riesgo import construir_exploracion
 from RIESGO.forecast import calcular_forecast, calcular_simulacion
 from RIESGO.regimen import detectar_regimen
@@ -64,15 +63,19 @@ def _paso_momentos(ctx: dict, log) -> None:
 
 def _paso_frontera(ctx: dict, log) -> None:
     m = ctx["momentos"]
-    ctx["frontera"] = construir_frontera(m.retornos_ajustados, m.cov_estructural, ctx["cfg"])
-    log(f"Frontera restringida con {len(ctx['frontera'].puntos)} puntos eficientes.")
+    resultado = ejecutar_optimizacion(ctx["entrada"], m, ctx["cfg"])
+    ctx["frontera"] = resultado.frontera
+    ctx["candidatos"] = resultado.candidatos
+    ctx["curva_top_sharpe"] = resultado.curva_top_sharpe
+    ctx["motores_ejecutados"] = resultado.motores_ejecutados
+    motores = ", ".join(resultado.motores_ejecutados)
+    log(f"Frontera restringida con {len(resultado.frontera.puntos)} puntos; motores: {motores}.")
 
 
 def _paso_perfiles(ctx: dict, log) -> None:
-    ctx["candidatos"] = seleccionar_perfiles(ctx["frontera"], ctx["momentos"], ctx["cfg"])
-    ctx["curva_top_sharpe"] = curva_top_sharpe(ctx["frontera"])
-    log("Perfiles dinámicos: " + ", ".join(
-        f"{c.nivel} (vol T+1 {c.volatilidad_tactica:.1%})" for c in ctx["candidatos"]))
+    log("Candidatos Strategy: " + ", ".join(
+        f"{c.motor_optimizacion}/{c.nivel} (vol T+1 {c.volatilidad_tactica:.1%})"
+        for c in ctx["candidatos"]))
 
 
 def _paso_riesgo(ctx: dict, log) -> None:
@@ -112,7 +115,7 @@ def _paso_exploracion(ctx: dict, log) -> None:
 
 def _recomendar(ganadora, regimen) -> Recomendacion:
     detalle = (
-        f"«{ganadora.nivel}» maximiza el score bajo el régimen actual "
+        f"«{ganadora.motor_optimizacion}/{ganadora.nivel}» maximiza el score bajo el régimen actual "
         f"({regimen.etiqueta}): retorno esperado {ganadora.retorno_esperado:.1%}, "
         f"vol T+1 {ganadora.volatilidad_tactica:.1%}, "
         f"VaR 99% FHS diario {ganadora.forecast.var_fhs_99:.2%}."
@@ -128,8 +131,8 @@ PASOS = (
     ("Preparando datos (caché o descarga)", _paso_datos),
     ("Activos y log-retornos alineados", _paso_entrada),
     ("Estadística individual y doble lente de covarianza", _paso_momentos),
-    ("Frontera eficiente restringida", _paso_frontera),
-    ("Selección automática de carteras", _paso_perfiles),
+    ("Optimización Strategy", _paso_frontera),
+    ("Candidatos de motores", _paso_perfiles),
     ("Riesgo histórico, forecast y simulación", _paso_riesgo),
     ("Régimen de mercado", _paso_regimen),
     ("Score final y recomendación", _paso_score),
@@ -148,8 +151,8 @@ def _evaluar_degeneracion(ctx: dict) -> tuple[bool, str]:
     if len(puntos) <= 1 or (vol.max() - vol.min()) <= max(vol.min() * 0.01, 1e-6):
         return True, (
             "El universo y las restricciones actuales NO ofrecen una escalera de riesgo: "
-            "la frontera eficiente colapsa a una única cartera óptima, por lo que Bajo, "
-            "Medio, Alto y Máx Sharpe convergen. Suele deberse a activos dominados "
+            "la frontera eficiente colapsa a una zona casi única, por lo que los candidatos "
+            "pueden converger. Suele deberse a activos dominados "
             "(más volatilidad y menos retorno que otros) o a un tope por activo demasiado "
             "estricto sobre pocos activos. Para abrir el abanico: añade activos con perfil "
             "riesgo-retorno distinto, o eleva PESO_MAXIMO_POR_ACTIVO."

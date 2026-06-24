@@ -6,8 +6,8 @@ módulo de reporting NO recalcula métricas: solo consume `ReportPayload`.
 Flujo de contratos:
   Configuracion + PortfolioInput
     → MomentsResult        (estadística individual + doble lente de covarianza)
-    → ResultadoFrontera    (frontera restringida, 100% de puntos)
-    → PortfolioCandidate×4 (Bajo / Medio / Alto / Máx Sharpe + MCR + score)
+    → ResultadoOptimizacion (Strategy: MARKOWITZ / CVAR / NCO)
+    → PortfolioCandidate×N (contrato común + MCR + score)
     → RiskForecast         (VaR/CVaR FHS y paramétrico, T+1)
     → SimulationSummary    (fan chart, prob. pérdida, CDaR — vía Rust)
     → ReportPayload        (todo agregado para el dashboard)
@@ -85,6 +85,7 @@ class Configuracion:
     n_trayectorias_mc: int
     percentiles_fan: tuple[int, ...]
     semilla: int
+    optimization_engine: str
     # Avanzado
     views_black_litterman: tuple[ViewBlackLitterman, ...]
     parametros_regimen: ParametrosRegimen
@@ -204,17 +205,21 @@ class DescomposicionRiesgo:
 class PortfolioCandidate:
     """Pregunta 3 — una cartera candidata por nivel de riesgo.
 
-    `nivel` ∈ {bajo, medio, alto, max_sharpe}. Las métricas de riesgo táctico
+    `nivel` identifica perfil o motor. Las métricas de riesgo táctico
     (vol T+1, VaR, CDaR) y el score se rellenan tras el forecast.
     """
 
     nivel: str
     pesos: pd.Series
-    retorno_esperado: float                # anual, μ ajustado
+    retorno_esperado: float                # anual, geométrico para Strategy
     volatilidad_estructural: float         # anual, Ledoit-Wolf
     volatilidad_tactica: float             # anual, EWMA T+1
     sharpe: float
     descomposicion: DescomposicionRiesgo
+    retorno_geometrico: float | None = None    # CAGR in-sample con pesos fijos
+    motor_optimizacion: str = ""               # MARKOWITZ / CVAR / NCO
+    r2_curva_capital: float | None = None      # diagnóstico, no driver principal
+    k_ratio: float | None = None               # estabilidad de la curva, diagnóstico
     forecast: "RiskForecast | None" = None
     simulacion: "SimulationSummary | None" = None
     score: float | None = None
@@ -235,6 +240,16 @@ class CriterioRanking:
     descripcion: str
     sentido: str                               # "max" o "min"
     top: tuple[PortfolioCandidate, ...]
+
+
+@dataclass(frozen=True)
+class ResultadoOptimizacion:
+    """Salida única del selector Strategy de optimizadores."""
+
+    frontera: ResultadoFrontera
+    candidatos: tuple[PortfolioCandidate, ...]
+    curva_top_sharpe: pd.DataFrame
+    motores_ejecutados: tuple[str, ...]
 
 
 # ===========================================================================

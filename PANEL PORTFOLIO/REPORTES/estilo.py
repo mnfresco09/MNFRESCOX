@@ -27,6 +27,9 @@ NIVEL_COLOR = {
     "medio": "#1D4ED8",
     "alto": "#7C3AED",
     "max_sharpe": "#059669",
+    "markowitz": "#059669",
+    "cvar": "#B91C1C",
+    "nco": "#7C3AED",
 }
 
 
@@ -78,8 +81,24 @@ def dinero(x: float) -> str:
 
 
 NIVEL_NOMBRE = {
-    "es": {"bajo": "Bajo", "medio": "Medio", "alto": "Alto", "max_sharpe": "Máx Sharpe"},
-    "it": {"bajo": "Basso", "medio": "Medio", "alto": "Alto", "max_sharpe": "Max Sharpe"},
+    "es": {
+        "bajo": "Bajo",
+        "medio": "Medio",
+        "alto": "Alto",
+        "max_sharpe": "Máx Sharpe",
+        "markowitz": "Markowitz",
+        "cvar": "Min-CVaR",
+        "nco": "NCO",
+    },
+    "it": {
+        "bajo": "Basso",
+        "medio": "Medio",
+        "alto": "Alto",
+        "max_sharpe": "Max Sharpe",
+        "markowitz": "Markowitz",
+        "cvar": "Min-CVaR",
+        "nco": "NCO",
+    },
 }
 
 

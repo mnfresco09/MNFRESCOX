@@ -116,10 +116,11 @@ def generar_pdf(payload: ReportPayload, ruta: Path, figuras=None) -> Path:
     E.append(Paragraph("Decisión de cartera y riesgo prospectivo", s["h1"]))
     E.append(Paragraph(
         f"{len(cfg.tickers)} activos · {', '.join(cfg.tickers)} · {cfg.fecha_inicio} → {cfg.fecha_fin} "
-        f"· capital base {estilo.dinero(cap)} · horizonte {cfg.horizonte_dias} días", s["meta"]))
+        f"· capital base {estilo.dinero(cap)} · horizonte {cfg.horizonte_dias} días "
+        f"· motor {cfg.optimization_engine}", s["meta"]))
     E.append(Paragraph(
-        "Dado un conjunto de activos, ¿qué pesos son óptimos para bajo, medio, alto riesgo y Máx "
-        "Sharpe, y cuánto puedo perder razonablemente mañana / este mes bajo el régimen actual?", s["foco"]))
+        "Dado un conjunto de activos, ¿qué motor produce los pesos más robustos frente a cola y "
+        "drawdown, y cuánto puedo perder razonablemente mañana / este mes bajo el régimen actual?", s["foco"]))
 
     # 1 · Contexto
     r = payload.regimen
@@ -128,32 +129,43 @@ def generar_pdf(payload: ReportPayload, ruta: Path, figuras=None) -> Path:
         (r.etiqueta.replace("_", " ").title(), "Régimen", estilo.AMBAR),
         (estilo.pct(r.volatilidad_actual), "Vol táctica T+1", estilo.TINTA),
         (estilo.num(r.correlacion_media_actual), "Correlación media", estilo.TINTA),
-        (estilo.nombre_nivel(rec.nivel, idi), "Recomendada", estilo.VERDE),
+        (f"{rec.motor_optimizacion}/{estilo.nombre_nivel(rec.nivel, idi)}", "Recomendada", estilo.VERDE),
     ]))
     E.append(Spacer(1, 4))
     E.append(Paragraph(r.descripcion, s["nota"]))
 
     # 2 · Tabla maestra
-    E.append(Paragraph("2 · Tabla maestra de decisión — ¿qué pesos debo usar?", s["h2"]))
+    E.append(Paragraph("2 · Tabla maestra de decisión — Champion vs Challenger", s["h2"]))
     if payload.frontera_degenerada:
         aviso = ParagraphStyle("aviso", parent=s["nota"], textColor=colors.HexColor("#7C2D12"),
                                backColor=colors.HexColor("#FFF7ED"), borderPadding=8, spaceAfter=8)
         E.append(Paragraph("⚠ " + payload.nota_frontera, aviso))
-    cab = ["Cartera", "Ret. esp.", "Vol T+1", "VaR99 FHS", "CDaR 30d", "P(pérd.)", "Score", "Decisión"]
+    cab = ["Motor", "Cartera", "Ret. geom.", "Vol T+1", "VaR99", "CVaR99", "CDaR", "R²", "K", "Score", "Decisión"]
     datos = [cab]
     win_idx = None
     for i, c in enumerate(payload.candidatos, start=1):
-        if c.nivel == rec.nivel:
+        if (c.motor_optimizacion, c.nivel) == (rec.motor_optimizacion, rec.nivel):
             win_idx = i
         datos.append([
-            estilo.nombre_nivel(c.nivel, idi), estilo.pct(c.retorno_esperado),
+            c.motor_optimizacion or "—", estilo.nombre_nivel(c.nivel, idi), estilo.pct(c.retorno_esperado),
             estilo.pct(c.volatilidad_tactica), estilo.pct(c.forecast.var_fhs_99, 2),
-            estilo.pct(c.simulacion.cdar_30d, 1), f"{c.simulacion.prob_perdida:.0%}",
-            f"{c.score:.2f}", "RECOMENDADA" if c.nivel == rec.nivel else "—",
+            estilo.pct(c.forecast.cvar_fhs_99, 2), estilo.pct(c.simulacion.cdar_30d, 1),
+            estilo.num(c.r2_curva_capital, 2), estilo.num(c.k_ratio, 2),
+            f"{c.score:.2f}",
+            "RECOMENDADA" if (c.motor_optimizacion, c.nivel) == (rec.motor_optimizacion, rec.nivel) else "—",
         ])
-    E.append(_tabla(datos, [2.6 * cm, 2.0 * cm, 1.7 * cm, 2.2 * cm, 1.9 * cm, 1.9 * cm, 1.5 * cm, 2.6 * cm], win_idx))
+    E.append(_tabla(
+        datos,
+        [1.9 * cm, 1.8 * cm, 1.7 * cm, 1.5 * cm, 1.5 * cm, 1.6 * cm,
+         1.4 * cm, 1.0 * cm, 1.0 * cm, 1.2 * cm, 2.2 * cm],
+        win_idx,
+    ))
     E.append(Spacer(1, 4))
-    E.append(Paragraph(f"{payload.recomendacion.detalle} Criterio: {payload.recomendacion.criterio}.", s["nota"]))
+    E.append(Paragraph(
+        f"{payload.recomendacion.detalle} Criterio: {payload.recomendacion.criterio}. "
+        "R² es diagnóstico in-sample; Walk-Forward estricto queda en roadmap V2.",
+        s["nota"],
+    ))
 
     # 3 · Cartera recomendada + MCR
     E.append(Paragraph("3 · Cartera recomendada y descomposición del riesgo (MCR)", s["h2"]))
@@ -226,7 +238,7 @@ def generar_pdf(payload: ReportPayload, ruta: Path, figuras=None) -> Path:
                         estilo.pct(e.volatilidad), estilo.pct(e.volatilidad_tactica),
                         estilo.num(e.asimetria), estilo.num(e.curtosis)])
     E.append(_tabla(est_tab, [2.6 * cm, 2.1 * cm, 2.1 * cm, 1.8 * cm, 1.9 * cm, 1.7 * cm, 1.7 * cm]))
-    E.append(Paragraph("A2 · Frontera eficiente y perfiles", s["h3"]))
+    E.append(Paragraph("A2 · Frontera eficiente y candidatos", s["h3"]))
     E.append(Image(str(rutas["frontera"]), width=15.0 * cm, height=8.7 * cm))
     E.append(Paragraph("A3 · Correlación — ¿cómo se relacionan?", s["h3"]))
     E.append(Image(str(rutas["correlacion"]), width=9.5 * cm, height=8.5 * cm))

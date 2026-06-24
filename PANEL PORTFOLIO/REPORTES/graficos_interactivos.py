@@ -120,14 +120,15 @@ def frontera(payload: ReportPayload) -> go.Figure:
         hovertemplate=("vol %{x:.2f}% · ret %{y:.2f}% · Sharpe %{customdata[1]:.2f}<br>"
                        "<b>Pesos:</b> %{customdata[0]}<extra></extra>")))
     for c in payload.candidatos:
+        nombre = f"{c.motor_optimizacion}/{estilo.nombre_nivel(c.nivel, payload.configuracion.idioma_reporte)}"
         fig.add_trace(go.Scatter(
             x=[c.volatilidad_estructural * 100], y=[c.retorno_esperado * 100], mode="markers",
             marker=dict(size=14, color=estilo.NIVEL_COLOR.get(c.nivel, estilo.ACENTO),
                         line=dict(color="white", width=1.5)),
-            name=estilo.nombre_nivel(c.nivel, payload.configuracion.idioma_reporte),
-            hovertemplate=f"{estilo.nombre_nivel(c.nivel, payload.configuracion.idioma_reporte)}<br>"
+            name=nombre,
+            hovertemplate=f"{nombre}<br>"
                           "vol %{x:.2f}% · ret %{y:.2f}%<extra></extra>"))
-    f = _layout(fig, "Frontera eficiente restringida y perfiles", "Volatilidad anual (%)",
+    f = _layout(fig, "Frontera eficiente restringida y candidatos", "Volatilidad anual (%)",
                 "Retorno esperado anual (%)", 480)
     f.update_layout(hovermode="closest")
     return f

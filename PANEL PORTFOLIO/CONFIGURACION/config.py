@@ -5,18 +5,18 @@ El panel responde a CUATRO preguntas y nada más:
 
   1. ¿Qué activos tengo?
   2. ¿Cómo se relacionan entre ellos?
-  3. ¿Qué pesos debo usar (Bajo / Medio / Alto / Máx Sharpe)?
+  3. ¿Qué motor produce los pesos más robustos?
   4. ¿Cuánto puedo perder mañana o este mes bajo el régimen actual?
 
 Este es el único archivo que editas. El resto del panel lee de aquí y nunca al
 revés. Las constantes puramente técnicas (anualización, lambda EWMA, tamaño de
 la simulación, semilla) viven en CONFIGURACION/_tecnico.py, fuera de la vista.
 
-PRINCIPIO INSTITUCIONAL: NO se fijan perfiles de riesgo absolutos (ej. "Bajo =
-10% vol"). Los perfiles Bajo / Medio / Alto se derivan DINÁMICAMENTE de los
-percentiles de volatilidad de la propia frontera eficiente del universo actual
-(ver PERCENTILES_PERFIL más abajo). Lo único que el usuario fija son las
-restricciones operativas e institucionales mínimas.
+PRINCIPIO INSTITUCIONAL: el modo ALL compara motores Champion vs Challenger
+(Markowitz, CVaR y NCO). Cuando se usan perfiles de frontera, NO se fijan
+volatilidades absolutas (ej. "Bajo = 10% vol"): se derivan dinámicamente de los
+percentiles de volatilidad del universo actual. Lo único que el usuario fija son
+las restricciones operativas e institucionales mínimas.
 """
 
 from __future__ import annotations
@@ -70,6 +70,11 @@ PERCENTILES_PERFIL: dict[str, float] = {
     "medio": 0.50,
     "alto": 0.80,
 }
+
+# Motor de optimización activo. ALL ejecuta Champion vs Challenger:
+# MARKOWITZ (media-varianza actual), CVAR (Rockafellar-Uryasev) y NCO
+# (Nested Clustered Optimization). Valores: "ALL", "MARKOWITZ", "CVAR", "NCO".
+OPTIMIZATION_ENGINE: str = "ALL"
 
 # Views de Black-Litterman. VACÍO = NO se calcula Black-Litterman; el estimador
 # de retorno cae al shrinkage conservador (fallback institucional). Para

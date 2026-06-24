@@ -59,12 +59,16 @@ PRESETS_REGIMEN: dict[str, dict] = {
 }
 
 # --- Pesos del Score de cartera --------------------------------------------
-# Combinan Sharpe ajustado con penalizaciones estandarizadas (z-scores) por
-# VaR, drawdown, concentración (HHI) y turnover. Suman 1 en magnitud relativa.
+# Súper Score transversal. Recompensa Sharpe/K-ratio, pero el peso institucional
+# recae en CVaR (Expected Shortfall) y CDaR. R²/linealidad queda deliberadamente
+# pequeño: diagnóstico secundario, no driver principal.
 PESOS_SCORE: dict[str, float] = {
-    "sharpe": 1.00,          # recompensa (Sharpe táctico ajustado)
-    "var": 0.60,             # penaliza VaR 99% forecast
-    "cdar": 0.40,            # penaliza Conditional Drawdown at Risk
-    "concentracion": 0.30,   # penaliza HHI (concentración de pesos)
-    "turnover": 0.15,        # penaliza rotación vs cartera previa
+    "sharpe": 0.70,          # recompensa (Sharpe táctico ajustado)
+    "k_ratio": 0.20,         # recompensa estabilidad de la curva de capital
+    "var": 0.25,             # penaliza VaR 99% forecast
+    "cvar": 1.10,            # penaliza Expected Shortfall 99% FHS
+    "cdar": 0.90,            # penaliza Conditional Drawdown at Risk
+    "concentracion": 0.25,   # penaliza HHI (concentración de pesos)
+    "turnover": 0.10,        # penaliza rotación vs cartera previa
+    "linealidad": 0.05,      # R² como diagnóstico secundario
 }

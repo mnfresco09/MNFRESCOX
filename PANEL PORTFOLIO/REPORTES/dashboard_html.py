@@ -2,7 +2,7 @@
 
 Estructura (cada bloque responde una de las 4 preguntas):
   1. Banner de contexto  → régimen, volatilidad táctica, correlación.
-  2. Tabla maestra        → Bajo / Medio / Alto / Máx Sharpe (decisión).
+  2. Tabla maestra        → Champion vs Challenger por motor.
   3. Cartera recomendada  → pesos + descomposición del riesgo (MCR).
   4. Fan chart            → cuánto puedo perder este mes.
   5. VaR forecast         → cuánto puedo perder mañana.
@@ -23,8 +23,8 @@ from CONTRATOS.modelos import ReportPayload
 from . import estilo, graficos_interactivos
 
 _PREGUNTA_FOCO = (
-    "Dado un conjunto de activos, ¿qué pesos son óptimos para bajo, medio, alto "
-    "riesgo y Máx Sharpe, y cuánto puedo perder razonablemente mañana / este mes "
+    "Dado un conjunto de activos, ¿qué motor produce los pesos más robustos "
+    "frente a cola y drawdown, y cuánto puedo perder razonablemente mañana / este mes "
     "bajo el régimen actual?"
 )
 
@@ -51,7 +51,9 @@ def _banner(payload: ReportPayload) -> str:
         + _kpi(estilo.pct(r.volatilidad_actual), "Volatilidad táctica (T+1)", "activo de referencia")
         + _kpi(estilo.num(r.correlacion_media_actual), "Correlación media reciente", "diversificación efectiva")
         + _kpi(estilo.nombre_nivel(payload.recomendada.nivel, payload.configuracion.idioma_reporte),
-               "Cartera recomendada", f"score {payload.recomendada.score:.2f}", estilo.VERDE)
+               "Cartera recomendada",
+               f"{payload.recomendada.motor_optimizacion} · score {payload.recomendada.score:.2f}",
+               estilo.VERDE)
         + "</div>"
     )
 
@@ -59,21 +61,24 @@ def _banner(payload: ReportPayload) -> str:
 def _tabla_maestra(payload: ReportPayload) -> str:
     cfg = payload.configuracion
     filas = []
-    cabecera = ("Cartera", "Retorno esperado", "Vol T+1", "VaR 99% FHS (diario)",
-                "CDaR 30d", "Prob. pérdida", "Score", "Decisión")
+    cabecera = ("Motor", "Cartera", "Retorno geom.", "Vol T+1", "VaR 99% FHS",
+                "CVaR 99% FHS", "CDaR 30d", "R²", "K", "Score", "Decisión")
     th = "".join(f"<th>{_html.escape(c)}</th>" for c in cabecera)
-    ganadora = payload.recomendada.nivel
+    ganadora = (payload.recomendada.motor_optimizacion, payload.recomendada.nivel)
     for c in payload.candidatos:
-        es_win = c.nivel == ganadora
+        es_win = (c.motor_optimizacion, c.nivel) == ganadora
         decision = "★ RECOMENDADA" if es_win else "—"
         cls = ' class="mejor"' if es_win else ""
         filas.append(
-            f"<tr{cls}><th class='metodo'>{_html.escape(estilo.nombre_nivel(c.nivel, cfg.idioma_reporte))}</th>"
+            f"<tr{cls}><th class='metodo'>{_html.escape(c.motor_optimizacion or '—')}</th>"
+            f"<td>{_html.escape(estilo.nombre_nivel(c.nivel, cfg.idioma_reporte))}</td>"
             f"<td>{estilo.pct(c.retorno_esperado)}</td>"
             f"<td>{estilo.pct(c.volatilidad_tactica)}</td>"
             f"<td style='color:{estilo.NEG}'>{estilo.pct(c.forecast.var_fhs_99, 2)}</td>"
+            f"<td style='color:{estilo.NEG}'>{estilo.pct(c.forecast.cvar_fhs_99, 2)}</td>"
             f"<td style='color:{estilo.NEG}'>{estilo.pct(c.simulacion.cdar_30d, 1)}</td>"
-            f"<td>{c.simulacion.prob_perdida:.0%}</td>"
+            f"<td>{estilo.num(c.r2_curva_capital, 2)}</td>"
+            f"<td>{estilo.num(c.k_ratio, 2)}</td>"
             f"<td><b>{c.score:.2f}</b></td>"
             f"<td>{decision}</td></tr>"
         )
@@ -195,7 +200,7 @@ def generar_html(payload: ReportPayload, ruta: Path, figuras=None) -> Path:
     <h1>Decisión de cartera y riesgo prospectivo</h1>
     <div class="meta">{len(cfg.tickers)} activos · {', '.join(_html.escape(t) for t in cfg.tickers)}
       · {cfg.fecha_inicio} → {cfg.fecha_fin} · capital base {estilo.dinero(cfg.capital_base)}
-      · horizonte {cfg.horizonte_dias} días</div>
+      · horizonte {cfg.horizonte_dias} días · motor {cfg.optimization_engine}</div>
     <div class="foco">{_html.escape(_PREGUNTA_FOCO)}</div>
   </header>
 
@@ -206,10 +211,12 @@ def generar_html(payload: ReportPayload, ruta: Path, figuras=None) -> Path:
   </section>
 
   <section>
-    <h2>2 · Tabla maestra de decisión <span class="q">¿qué pesos debo usar?</span></h2>
+    <h2>2 · Tabla maestra de decisión <span class="q">Champion vs Challenger</span></h2>
     {('<div class="aviso">⚠ ' + _html.escape(payload.nota_frontera) + '</div>') if payload.frontera_degenerada else ''}
     {_tabla_maestra(payload)}
-    <p class="nota">{_html.escape(payload.recomendacion.detalle)} Criterio: {_html.escape(payload.recomendacion.criterio)}.</p>
+    <p class="nota">{_html.escape(payload.recomendacion.detalle)} Criterio: {_html.escape(payload.recomendacion.criterio)}.
+      El R² de la curva de capital es diagnóstico in-sample y no determina por sí solo la recomendación.
+      Walk-Forward estricto queda en roadmap V2.</p>
   </section>
 
   <section>
@@ -256,7 +263,7 @@ def generar_html(payload: ReportPayload, ruta: Path, figuras=None) -> Path:
     <h2>Apéndice técnico</h2>
     <h3>A1 · Estadística individual <span class="q">¿qué activos tengo?</span></h3>
     {_tabla_estadistica(payload)}
-    <h3>A2 · Frontera eficiente y perfiles</h3>
+    <h3>A2 · Frontera eficiente y candidatos</h3>
     {_div(figs['frontera'], 'g_frontera')}
     <h3>A3 · Correlación <span class="q">¿cómo se relacionan?</span></h3>
     {_div(figs['correlacion'], 'g_corr')}

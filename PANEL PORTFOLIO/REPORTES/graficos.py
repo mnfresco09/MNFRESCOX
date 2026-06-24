@@ -131,7 +131,7 @@ def var_forecast(payload: ReportPayload, carpeta: Path) -> tuple[Path, str]:
 
 
 def frontera(payload: ReportPayload, carpeta: Path) -> tuple[Path, str]:
-    """Apéndice: mapa riesgo-retorno con nube factible, frontera y los 4 perfiles."""
+    """Apéndice: mapa riesgo-retorno con nube factible, frontera y candidatos."""
     import matplotlib.pyplot as plt
     estilo.aplicar_estilo()
     fr = payload.frontera
@@ -147,8 +147,8 @@ def frontera(payload: ReportPayload, carpeta: Path) -> tuple[Path, str]:
         ax.scatter(c.volatilidad_estructural * 100, c.retorno_esperado * 100, s=120,
                    color=estilo.NIVEL_COLOR.get(c.nivel, estilo.ACENTO),
                    edgecolor="white", zorder=5,
-                   label=estilo.nombre_nivel(c.nivel, payload.configuracion.idioma_reporte))
-    ax.set_title("Frontera eficiente restringida y perfiles (apéndice)")
+                   label=f"{c.motor_optimizacion}/{estilo.nombre_nivel(c.nivel, payload.configuracion.idioma_reporte)}")
+    ax.set_title("Frontera eficiente restringida y candidatos (apéndice)")
     ax.set_xlabel("Volatilidad anual (%)")
     ax.set_ylabel("Retorno esperado anual (%)")
     ax.legend(fontsize=8.5, loc="best")

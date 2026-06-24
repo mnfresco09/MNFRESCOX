@@ -20,6 +20,7 @@ from CONTRATOS.modelos import (
 RAIZ_PANEL = Path(__file__).resolve().parents[1]
 PERFILES_REGIMEN_VALIDOS = frozenset(_tecnico.PRESETS_REGIMEN)
 IDIOMAS_REPORTE_VALIDOS = frozenset({"es", "it"})
+OPTIMIZATION_ENGINES_VALIDOS = frozenset({"ALL", "MARKOWITZ", "CVAR", "NCO"})
 
 
 def _validar_tickers(tickers: Sequence[str], activo_referencia: str) -> tuple[str, ...]:
@@ -93,6 +94,15 @@ def _validar_percentiles_perfil(perc: Mapping[str, float]) -> tuple[tuple[str, f
             raise ErrorConfiguracion(f"Percentil del perfil '{nivel}' debe estar en (0, 1).")
         salida.append((str(nivel), float(p)))
     return tuple(salida)
+
+
+def _validar_optimization_engine(engine: str) -> str:
+    normalizado = str(engine).strip().upper()
+    if normalizado not in OPTIMIZATION_ENGINES_VALIDOS:
+        raise ErrorConfiguracion(
+            f"OPTIMIZATION_ENGINE debe ser uno de {sorted(OPTIMIZATION_ENGINES_VALIDOS)}."
+        )
+    return normalizado
 
 
 def _validar_views(
@@ -172,6 +182,7 @@ def construir_configuracion(
     n_trayectorias_mc: int = 50_000,
     percentiles_fan: Sequence[int] = (5, 25, 50, 75, 95),
     semilla: int = 42,
+    optimization_engine: str = "ALL",
     views_black_litterman: Sequence[Mapping[str, object]] = (),
     perfil_regimen: str = "estandar",
     min_retornos_analisis: int = 252,
@@ -217,6 +228,7 @@ def construir_configuracion(
         else {"bajo": 0.20, "medio": 0.50, "alto": 0.80}
     )
     views = _validar_views(views_black_litterman, tickers_v)
+    optimization_engine_v = _validar_optimization_engine(optimization_engine)
     parametros_regimen = _regimen_desde_preset(perfil_regimen)
     if idioma_reporte not in IDIOMAS_REPORTE_VALIDOS:
         raise ErrorConfiguracion(f"IDIOMA_REPORTE debe ser uno de {sorted(IDIOMAS_REPORTE_VALIDOS)}.")
@@ -242,6 +254,7 @@ def construir_configuracion(
         n_trayectorias_mc=int(n_trayectorias_mc),
         percentiles_fan=percentiles_fan_v,
         semilla=int(semilla),
+        optimization_engine=optimization_engine_v,
         views_black_litterman=views,
         parametros_regimen=parametros_regimen,
         min_retornos_analisis=int(min_retornos_analisis),
@@ -282,6 +295,7 @@ def cargar_configuracion() -> Configuracion:
         n_trayectorias_mc=_tecnico.N_TRAYECTORIAS_MC,
         percentiles_fan=_tecnico.PERCENTILES_FAN,
         semilla=_tecnico.SEMILLA,
+        optimization_engine=getattr(config, "OPTIMIZATION_ENGINE", "ALL"),
         views_black_litterman=config.VIEWS_BLACK_LITTERMAN,
         perfil_regimen=config.PERFIL_REGIMEN,
         min_retornos_analisis=_tecnico.MIN_RETORNOS_ANALISIS,
