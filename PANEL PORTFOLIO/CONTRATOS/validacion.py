@@ -1,4 +1,4 @@
-"""Construcción y validación de la configuración tipada."""
+"""Construcción y validación de la configuración tipada (motor de riesgo)."""
 
 from __future__ import annotations
 
@@ -14,103 +14,27 @@ from CONTRATOS.modelos import (
     Configuracion,
     ParametrosRegimen,
     Restricciones,
-    VentanaStress,
     ViewBlackLitterman,
 )
 
 RAIZ_PANEL = Path(__file__).resolve().parents[1]
-FRECUENCIAS_VALIDAS = frozenset({"M", "W", "Q"})
 PERFILES_REGIMEN_VALIDOS = frozenset(_tecnico.PRESETS_REGIMEN)
-PERFILES_RIESGO_VALIDOS = frozenset((*_tecnico.FRACCION_VOL_NIVEL, "personalizado"))
 IDIOMAS_REPORTE_VALIDOS = frozenset({"es", "it"})
 
 
-def _validar_perfil_riesgo(perfil: str, volatilidad_objetivo: float | None) -> str:
-    if perfil not in PERFILES_RIESGO_VALIDOS:
-        raise ErrorConfiguracion(
-            f"PERFIL_RIESGO debe ser uno de {sorted(PERFILES_RIESGO_VALIDOS)}."
-        )
-    if perfil == "personalizado" and volatilidad_objetivo is None:
-        raise ErrorConfiguracion(
-            "PERFIL_RIESGO='personalizado' requiere VOLATILIDAD_OBJETIVO_ANUAL."
-        )
-    return perfil
-
-
-def _validar_idioma_reporte(idioma: str) -> str:
-    if idioma not in IDIOMAS_REPORTE_VALIDOS:
-        raise ErrorConfiguracion(
-            f"IDIOMA_REPORTE debe ser uno de {sorted(IDIOMAS_REPORTE_VALIDOS)}."
-        )
-    return idioma
-
-
-def _validar_volatilidad_objetivo(volatilidad_objetivo: float | None) -> float | None:
-    if volatilidad_objetivo is None:
-        return None
-    if not math.isfinite(volatilidad_objetivo) or volatilidad_objetivo <= 0:
-        raise ErrorConfiguracion(
-            "VOLATILIDAD_OBJETIVO_ANUAL debe ser un número positivo o None."
-        )
-    return float(volatilidad_objetivo)
-
-
-def _regimen_desde_preset(nombre: str) -> ParametrosRegimen:
-    if nombre not in PERFILES_REGIMEN_VALIDOS:
-        raise ErrorConfiguracion(
-            f"PERFIL_REGIMEN debe ser uno de {sorted(PERFILES_REGIMEN_VALIDOS)}."
-        )
-    p = _tecnico.PRESETS_REGIMEN[nombre]
-    return _validar_regimen(
-        p["umbral_drawdown_crisis"], p["umbral_drawdown_bajista"],
-        p["ventana_volatilidad"], p["ventana_media_larga"], p["ventana_pendiente"],
-        p["percentil_volatilidad_crisis"],
-    )
-
-
-def _validar_tickers(
-    tickers: Sequence[str],
-    activo_referencia: str,
-) -> tuple[str, ...]:
-    if any(not isinstance(ticker, str) for ticker in tickers):
+def _validar_tickers(tickers: Sequence[str], activo_referencia: str) -> tuple[str, ...]:
+    if any(not isinstance(t, str) for t in tickers):
         raise ErrorConfiguracion("TICKERS solo admite valores de texto.")
-    normalizados = tuple(ticker.strip() for ticker in tickers)
+    normalizados = tuple(t.strip() for t in tickers)
     if len(normalizados) < 2:
         raise ErrorConfiguracion("TICKERS debe contener al menos dos activos.")
-    if any(not ticker for ticker in normalizados):
+    if any(not t for t in normalizados):
         raise ErrorConfiguracion("TICKERS no admite valores vacíos.")
     if len(set(normalizados)) != len(normalizados):
         raise ErrorConfiguracion("TICKERS contiene activos duplicados.")
     if activo_referencia not in normalizados:
-        raise ErrorConfiguracion(
-            "ACTIVO_REFERENCIA debe pertenecer a TICKERS."
-        )
+        raise ErrorConfiguracion("ACTIVO_REFERENCIA debe pertenecer a TICKERS.")
     return normalizados
-
-
-def _validar_limite(
-    n_activos: int,
-    solo_largos: bool,
-    peso_maximo: float | None,
-) -> Restricciones:
-    if peso_maximo is None:
-        if not solo_largos:
-            raise ErrorConfiguracion(
-                "PESO_MAXIMO_POR_ACTIVO es obligatorio cuando se permiten cortos."
-            )
-        return Restricciones(solo_largos=True, peso_maximo=None)
-    if not math.isfinite(peso_maximo) or not 0 < peso_maximo <= 1:
-        raise ErrorConfiguracion(
-            "PESO_MAXIMO_POR_ACTIVO debe ser finito y pertenecer a (0, 1]."
-        )
-    if n_activos * peso_maximo < 1 - 1e-12:
-        raise ErrorConfiguracion(
-            "La suma de límites por activo es inviable para alcanzar peso total 1."
-        )
-    return Restricciones(
-        solo_largos=solo_largos,
-        peso_maximo=float(peso_maximo),
-    )
 
 
 def _validar_fechas(fecha_inicio: str, fecha_fin: str) -> tuple[str, str]:
@@ -120,10 +44,55 @@ def _validar_fechas(fecha_inicio: str, fecha_fin: str) -> tuple[str, str]:
     except (TypeError, ValueError) as exc:
         raise ErrorConfiguracion("FECHA_INICIO o FECHA_FIN no es válida.") from exc
     if inicio.tzinfo is not None or fin.tzinfo is not None:
-        raise ErrorConfiguracion("Las fechas de configuración no deben tener zona horaria.")
+        raise ErrorConfiguracion("Las fechas no deben tener zona horaria.")
     if inicio >= fin:
         raise ErrorConfiguracion("FECHA_INICIO debe ser anterior a FECHA_FIN.")
     return inicio.date().isoformat(), fin.date().isoformat()
+
+
+def _validar_restricciones(
+    n_activos: int,
+    solo_largos: bool,
+    peso_maximo: float | None,
+    peso_minimo: float,
+    turnover_maximo: float | None,
+) -> Restricciones:
+    if peso_maximo is not None:
+        if not math.isfinite(peso_maximo) or not 0 < peso_maximo <= 1:
+            raise ErrorConfiguracion("PESO_MAXIMO_POR_ACTIVO debe estar en (0, 1].")
+        if n_activos * peso_maximo < 1 - 1e-12:
+            raise ErrorConfiguracion(
+                "La suma de topes por activo no permite alcanzar peso total 1."
+            )
+    elif not solo_largos:
+        raise ErrorConfiguracion(
+            "PESO_MAXIMO_POR_ACTIVO es obligatorio cuando se permiten cortos."
+        )
+    if not math.isfinite(peso_minimo) or peso_minimo < 0:
+        raise ErrorConfiguracion("PESO_MINIMO_POR_ACTIVO debe ser >= 0.")
+    if n_activos * peso_minimo > 1 + 1e-12:
+        raise ErrorConfiguracion("La suma de suelos por activo supera 1.")
+    if peso_maximo is not None and peso_minimo > peso_maximo:
+        raise ErrorConfiguracion("PESO_MINIMO no puede superar PESO_MAXIMO.")
+    if turnover_maximo is not None and (not math.isfinite(turnover_maximo) or turnover_maximo < 0):
+        raise ErrorConfiguracion("TURNOVER_MAXIMO debe ser >= 0 o None.")
+    return Restricciones(
+        solo_largos=bool(solo_largos),
+        peso_maximo=float(peso_maximo) if peso_maximo is not None else None,
+        peso_minimo=float(peso_minimo),
+        turnover_maximo=float(turnover_maximo) if turnover_maximo is not None else None,
+    )
+
+
+def _validar_percentiles_perfil(perc: Mapping[str, float]) -> tuple[tuple[str, float], ...]:
+    if not perc:
+        raise ErrorConfiguracion("PERCENTILES_PERFIL no puede estar vacío.")
+    salida: list[tuple[str, float]] = []
+    for nivel, p in perc.items():
+        if not math.isfinite(p) or not 0 < p < 1:
+            raise ErrorConfiguracion(f"Percentil del perfil '{nivel}' debe estar en (0, 1).")
+        salida.append((str(nivel), float(p)))
+    return tuple(salida)
 
 
 def _validar_views(
@@ -131,111 +100,51 @@ def _validar_views(
     tickers: tuple[str, ...],
 ) -> tuple[ViewBlackLitterman, ...]:
     resultado: list[ViewBlackLitterman] = []
-    for indice, view in enumerate(views):
+    for i, view in enumerate(views):
         activos_brutos = view.get("activos")
         if not isinstance(activos_brutos, Mapping) or not activos_brutos:
-            raise ErrorConfiguracion(
-                f"View Black-Litterman {indice} debe definir activos."
-            )
+            raise ErrorConfiguracion(f"View Black-Litterman {i} debe definir activos.")
         activos: list[tuple[str, float]] = []
-        for activo, coeficiente_bruto in activos_brutos.items():
+        for activo, coef_bruto in activos_brutos.items():
             if activo not in tickers:
-                raise ErrorConfiguracion(
-                    f"View Black-Litterman {indice}: activo desconocido '{activo}'."
-                )
+                raise ErrorConfiguracion(f"View {i}: activo desconocido '{activo}'.")
             try:
-                coeficiente = float(coeficiente_bruto)
+                coef = float(coef_bruto)
             except (TypeError, ValueError) as exc:
-                raise ErrorConfiguracion(
-                    f"View Black-Litterman {indice}: coeficiente no numérico."
-                ) from exc
-            if not math.isfinite(coeficiente):
-                raise ErrorConfiguracion(
-                    f"View Black-Litterman {indice}: coeficiente no finito."
-                )
-            activos.append((activo, coeficiente))
-        if all(abs(coeficiente) <= 1e-15 for _, coeficiente in activos):
-            raise ErrorConfiguracion(
-                f"View Black-Litterman {indice}: todos los coeficientes son cero."
-            )
+                raise ErrorConfiguracion(f"View {i}: coeficiente no numérico.") from exc
+            if not math.isfinite(coef):
+                raise ErrorConfiguracion(f"View {i}: coeficiente no finito.")
+            activos.append((activo, coef))
+        if all(abs(c) <= 1e-15 for _, c in activos):
+            raise ErrorConfiguracion(f"View {i}: todos los coeficientes son cero.")
         try:
             retorno = float(view.get("retorno_anual", math.nan))
             confianza = float(view.get("confianza", math.nan))
         except (TypeError, ValueError) as exc:
-            raise ErrorConfiguracion(
-                f"View Black-Litterman {indice}: retorno o confianza no numérico."
-            ) from exc
+            raise ErrorConfiguracion(f"View {i}: retorno o confianza no numérico.") from exc
         if not math.isfinite(retorno):
-            raise ErrorConfiguracion(
-                f"View Black-Litterman {indice}: retorno_anual no finito."
-            )
+            raise ErrorConfiguracion(f"View {i}: retorno_anual no finito.")
         if not math.isfinite(confianza) or not 0 < confianza <= 1:
-            raise ErrorConfiguracion(
-                f"View Black-Litterman {indice}: confianza debe estar en (0, 1]."
-            )
-        resultado.append(
-            ViewBlackLitterman(
-                activos=tuple(activos),
-                retorno_anual=retorno,
-                confianza=confianza,
-            )
-        )
+            raise ErrorConfiguracion(f"View {i}: confianza debe estar en (0, 1].")
+        resultado.append(ViewBlackLitterman(tuple(activos), retorno, confianza))
     return tuple(resultado)
 
 
-def _validar_stress(
-    ventanas: Mapping[str, tuple[str, str]],
-) -> tuple[VentanaStress, ...]:
-    if not ventanas:
-        raise ErrorConfiguracion("VENTANAS_STRESS no puede estar vacío.")
-    resultado: list[VentanaStress] = []
-    for nombre, periodo in ventanas.items():
-        if not nombre.strip() or len(periodo) != 2:
-            raise ErrorConfiguracion("Cada ventana de stress requiere nombre e intervalo.")
-        try:
-            inicio = pd.Timestamp(periodo[0])
-            fin = pd.Timestamp(periodo[1])
-        except (TypeError, ValueError) as exc:
-            raise ErrorConfiguracion(
-                f"Ventana de stress '{nombre}' contiene fechas inválidas."
-            ) from exc
-        if inicio.tzinfo is not None or fin.tzinfo is not None:
-            raise ErrorConfiguracion(
-                f"Ventana de stress '{nombre}' no debe tener zona horaria."
-            )
-        if inicio >= fin:
-            raise ErrorConfiguracion(
-                f"Ventana de stress '{nombre}' debe tener inicio anterior al fin."
-            )
-        resultado.append(VentanaStress(nombre=nombre, inicio=inicio, fin=fin))
-    return tuple(resultado)
-
-
-def _validar_regimen(
-    drawdown_crisis: float,
-    drawdown_bajista: float,
-    ventana_volatilidad: int,
-    ventana_media_larga: int,
-    ventana_pendiente: int,
-    percentil_volatilidad_crisis: float,
-) -> ParametrosRegimen:
-    if not drawdown_crisis < drawdown_bajista < 0:
+def _regimen_desde_preset(nombre: str) -> ParametrosRegimen:
+    if nombre not in PERFILES_REGIMEN_VALIDOS:
         raise ErrorConfiguracion(
-            "Los umbrales deben cumplir crisis < bajista < 0."
+            f"PERFIL_REGIMEN debe ser uno de {sorted(PERFILES_REGIMEN_VALIDOS)}."
         )
-    if min(ventana_volatilidad, ventana_media_larga, ventana_pendiente) < 2:
-        raise ErrorConfiguracion("Las ventanas de régimen deben ser al menos 2.")
-    if not 0 < percentil_volatilidad_crisis < 1:
-        raise ErrorConfiguracion(
-            "PERCENTIL_VOLATILIDAD_CRISIS debe pertenecer a (0, 1)."
-        )
+    p = _tecnico.PRESETS_REGIMEN[nombre]
+    if not p["umbral_drawdown_crisis"] < p["umbral_drawdown_bajista"] < 0:
+        raise ErrorConfiguracion("Umbrales de régimen: crisis < bajista < 0.")
     return ParametrosRegimen(
-        drawdown_crisis=float(drawdown_crisis),
-        drawdown_bajista=float(drawdown_bajista),
-        ventana_volatilidad=int(ventana_volatilidad),
-        ventana_media_larga=int(ventana_media_larga),
-        ventana_pendiente=int(ventana_pendiente),
-        percentil_volatilidad_crisis=float(percentil_volatilidad_crisis),
+        drawdown_crisis=float(p["umbral_drawdown_crisis"]),
+        drawdown_bajista=float(p["umbral_drawdown_bajista"]),
+        ventana_volatilidad=int(p["ventana_volatilidad"]),
+        ventana_media_larga=int(p["ventana_media_larga"]),
+        ventana_pendiente=int(p["ventana_pendiente"]),
+        percentil_volatilidad_crisis=float(p["percentil_volatilidad_crisis"]),
     )
 
 
@@ -243,134 +152,139 @@ def construir_configuracion(
     *,
     tickers: Sequence[str],
     activo_referencia: str,
-    peso_maximo: float | None,
-    fecha_inicio: str = "2019-01-01",
-    fecha_fin: str = "2024-12-31",
-    frecuencia_rebalanceo: str = "M",
-    ventana_estimacion: int = 504,
+    fecha_inicio: str,
+    fecha_fin: str,
     solo_largos: bool = True,
-    perfil_riesgo: str = "moderado",
-    volatilidad_objetivo: float | None = None,
-    idioma_reporte: str = "es",
+    peso_maximo: float | None = 0.40,
+    peso_minimo: float = 0.0,
+    turnover_maximo: float | None = None,
+    horizonte_dias: int = 21,
+    capital_base: float = 1_000_000.0,
     tasa_libre_riesgo_anual: float = 0.0,
-    dias_anio: int = 252,
-    coste_transaccion_pb: float = 10.0,
-    nivel_confianza: float = 0.95,
-    min_retornos_analisis: int = 252,
-    views_black_litterman: Sequence[Mapping[str, object]] = (),
-    ventanas_stress: Mapping[str, tuple[str, str]] | None = None,
-    perfil_regimen: str = "estandar",
-    n_carteras_montecarlo: int = 20_000,
+    nivel_confianza_95: float = 0.95,
+    nivel_confianza_99: float = 0.99,
+    percentiles_perfil: Mapping[str, float] | None = None,
+    lambda_ewma: float = 0.94,
+    shrinkage_retorno: float = 0.50,
+    ewma_min_obs: int = 60,
+    n_puntos_frontera: int = 120,
+    n_carteras_factibles: int = 20_000,
+    n_trayectorias_mc: int = 50_000,
+    percentiles_fan: Sequence[int] = (5, 25, 50, 75, 95),
     semilla: int = 42,
+    views_black_litterman: Sequence[Mapping[str, object]] = (),
+    perfil_regimen: str = "estandar",
+    min_retornos_analisis: int = 252,
+    dias_anio: int = 252,
+    idioma_reporte: str = "es",
     carpeta_historico: Path | None = None,
     carpeta_salidas: Path | None = None,
 ) -> Configuracion:
-    """Valida datos declarativos y devuelve una configuración inmutable."""
-
-    tickers_validados = _validar_tickers(tickers, activo_referencia)
-    fecha_inicio_validada, fecha_fin_validada = _validar_fechas(
-        fecha_inicio,
-        fecha_fin,
+    """Valida los parámetros declarativos y devuelve una configuración inmutable."""
+    tickers_v = _validar_tickers(tickers, activo_referencia)
+    inicio_v, fin_v = _validar_fechas(fecha_inicio, fecha_fin)
+    restricciones = _validar_restricciones(
+        len(tickers_v), solo_largos, peso_maximo, peso_minimo, turnover_maximo
     )
-    if frecuencia_rebalanceo not in FRECUENCIAS_VALIDAS:
-        raise ErrorConfiguracion(
-            f"FRECUENCIA_REBALANCEO debe ser una de {sorted(FRECUENCIAS_VALIDAS)}."
-        )
-    if ventana_estimacion < 2:
-        raise ErrorConfiguracion("VENTANA_ESTIMACION_DIAS debe ser al menos 2.")
-    if dias_anio <= 0:
-        raise ErrorConfiguracion("DIAS_ANIO debe ser positivo.")
+
+    if horizonte_dias < 1:
+        raise ErrorConfiguracion("HORIZONTE_DIAS debe ser >= 1.")
+    if not math.isfinite(capital_base) or capital_base <= 0:
+        raise ErrorConfiguracion("CAPITAL_BASE debe ser positivo.")
+    if not math.isfinite(tasa_libre_riesgo_anual):
+        raise ErrorConfiguracion("TASA_LIBRE_RIESGO_ANUAL debe ser finita.")
+    for nombre, nivel in (("95", nivel_confianza_95), ("99", nivel_confianza_99)):
+        if not 0 < nivel < 1:
+            raise ErrorConfiguracion(f"NIVEL_CONFIANZA_{nombre} debe estar en (0, 1).")
+    if nivel_confianza_95 >= nivel_confianza_99:
+        raise ErrorConfiguracion("NIVEL_CONFIANZA_95 debe ser menor que NIVEL_CONFIANZA_99.")
+    if not 0 < lambda_ewma < 1:
+        raise ErrorConfiguracion("LAMBDA_EWMA debe estar en (0, 1).")
+    if not 0 <= shrinkage_retorno <= 1:
+        raise ErrorConfiguracion("SHRINKAGE_RETORNO debe estar en [0, 1].")
+    if min(n_puntos_frontera, n_carteras_factibles, n_trayectorias_mc) <= 0:
+        raise ErrorConfiguracion("Los tamaños de rejilla/simulación deben ser positivos.")
     if min_retornos_analisis < 252:
         raise ErrorConfiguracion("MIN_RETORNOS_ANALISIS debe ser al menos 252.")
-    if ventana_estimacion < min_retornos_analisis:
-        raise ErrorConfiguracion(
-            "VENTANA_ESTIMACION_DIAS no puede ser menor que MIN_RETORNOS_ANALISIS."
-        )
-    for nombre, valor in (
-        ("TASA_LIBRE_RIESGO_ANUAL", tasa_libre_riesgo_anual),
-        ("COSTE_TRANSACCION_PB", coste_transaccion_pb),
-    ):
-        if not math.isfinite(valor):
-            raise ErrorConfiguracion(f"{nombre} debe ser finito.")
-    if coste_transaccion_pb < 0:
-        raise ErrorConfiguracion("COSTE_TRANSACCION_PB no puede ser negativo.")
-    if not 0 < nivel_confianza < 1:
-        raise ErrorConfiguracion("NIVEL_CONFIANZA debe pertenecer a (0, 1).")
-    if n_carteras_montecarlo <= 0:
-        raise ErrorConfiguracion("N_CARTERAS_MONTECARLO debe ser positivo.")
+    if dias_anio <= 0:
+        raise ErrorConfiguracion("DIAS_ANIO debe ser positivo.")
+    percentiles_fan_v = tuple(int(p) for p in percentiles_fan)
+    if any(not 0 < p < 100 for p in percentiles_fan_v):
+        raise ErrorConfiguracion("PERCENTILES_FAN deben estar en (0, 100).")
 
-    restricciones = _validar_limite(
-        len(tickers_validados),
-        solo_largos,
-        peso_maximo,
+    perc_perfil = _validar_percentiles_perfil(
+        percentiles_perfil if percentiles_perfil is not None
+        else {"bajo": 0.20, "medio": 0.50, "alto": 0.80}
     )
-    vol_objetivo_validada = _validar_volatilidad_objetivo(volatilidad_objetivo)
-    perfil_riesgo_validado = _validar_perfil_riesgo(perfil_riesgo, vol_objetivo_validada)
-    idioma_reporte_validado = _validar_idioma_reporte(idioma_reporte)
-    views = _validar_views(views_black_litterman, tickers_validados)
-    stress = _validar_stress(
-        ventanas_stress
-        if ventanas_stress is not None
-        else {"crisis_2022": ("2022-01-03", "2022-10-12")}
-    )
+    views = _validar_views(views_black_litterman, tickers_v)
     parametros_regimen = _regimen_desde_preset(perfil_regimen)
+    if idioma_reporte not in IDIOMAS_REPORTE_VALIDOS:
+        raise ErrorConfiguracion(f"IDIOMA_REPORTE debe ser uno de {sorted(IDIOMAS_REPORTE_VALIDOS)}.")
+
     return Configuracion(
-        tickers=tickers_validados,
-        fecha_inicio=fecha_inicio_validada,
-        fecha_fin=fecha_fin_validada,
+        tickers=tickers_v,
+        fecha_inicio=inicio_v,
+        fecha_fin=fin_v,
         activo_referencia=activo_referencia,
-        frecuencia_rebalanceo=frecuencia_rebalanceo,
-        ventana_estimacion=int(ventana_estimacion),
         restricciones=restricciones,
-        perfil_riesgo=perfil_riesgo_validado,
-        volatilidad_objetivo=vol_objetivo_validada,
-        idioma_reporte=idioma_reporte_validado,
+        horizonte_dias=int(horizonte_dias),
+        capital_base=float(capital_base),
         tasa_libre_riesgo_anual=float(tasa_libre_riesgo_anual),
         dias_anio=int(dias_anio),
-        coste_transaccion_pb=float(coste_transaccion_pb),
-        nivel_confianza=float(nivel_confianza),
-        min_retornos_analisis=int(min_retornos_analisis),
-        views_black_litterman=views,
-        ventanas_stress=stress,
-        parametros_regimen=parametros_regimen,
-        n_carteras_montecarlo=int(n_carteras_montecarlo),
+        nivel_confianza_95=float(nivel_confianza_95),
+        nivel_confianza_99=float(nivel_confianza_99),
+        percentiles_perfil=perc_perfil,
+        lambda_ewma=float(lambda_ewma),
+        shrinkage_retorno=float(shrinkage_retorno),
+        ewma_min_obs=int(ewma_min_obs),
+        n_puntos_frontera=int(n_puntos_frontera),
+        n_carteras_factibles=int(n_carteras_factibles),
+        n_trayectorias_mc=int(n_trayectorias_mc),
+        percentiles_fan=percentiles_fan_v,
         semilla=int(semilla),
+        views_black_litterman=views,
+        parametros_regimen=parametros_regimen,
+        min_retornos_analisis=int(min_retornos_analisis),
+        idioma_reporte=idioma_reporte,
         carpeta_historico=(
-            Path(carpeta_historico)
-            if carpeta_historico is not None
+            Path(carpeta_historico) if carpeta_historico is not None
             else RAIZ_PANEL / "HISTORICO"
         ),
         carpeta_salidas=(
-            Path(carpeta_salidas)
-            if carpeta_salidas is not None
+            Path(carpeta_salidas) if carpeta_salidas is not None
             else RAIZ_PANEL / "SALIDAS"
         ),
     )
 
 
 def cargar_configuracion() -> Configuracion:
-    """Carga exclusivamente los parámetros declarados por el usuario."""
-
+    """Carga exclusivamente los parámetros declarados por el usuario en config.py."""
     return construir_configuracion(
         tickers=config.TICKERS,
         activo_referencia=config.ACTIVO_REFERENCIA,
-        peso_maximo=config.PESO_MAXIMO_POR_ACTIVO,
         fecha_inicio=config.FECHA_INICIO,
         fecha_fin=config.FECHA_FIN,
-        frecuencia_rebalanceo=config.FRECUENCIA_REBALANCEO,
-        ventana_estimacion=config.VENTANA_ESTIMACION_DIAS,
         solo_largos=config.SOLO_LARGOS,
-        perfil_riesgo=config.PERFIL_RIESGO,
-        volatilidad_objetivo=config.VOLATILIDAD_OBJETIVO_ANUAL,
-        idioma_reporte=config.IDIOMA_REPORTE,
+        peso_maximo=config.PESO_MAXIMO_POR_ACTIVO,
+        peso_minimo=config.PESO_MINIMO_POR_ACTIVO,
+        turnover_maximo=config.TURNOVER_MAXIMO,
+        horizonte_dias=config.HORIZONTE_DIAS,
+        capital_base=config.CAPITAL_BASE,
         tasa_libre_riesgo_anual=config.TASA_LIBRE_RIESGO_ANUAL,
-        dias_anio=_tecnico.DIAS_ANIO,
-        coste_transaccion_pb=config.COSTE_TRANSACCION_PB,
-        nivel_confianza=config.NIVEL_CONFIANZA,
-        min_retornos_analisis=_tecnico.MIN_RETORNOS_ANALISIS,
-        views_black_litterman=config.VIEWS_BLACK_LITTERMAN,
-        ventanas_stress=config.VENTANAS_STRESS,
-        perfil_regimen=config.PERFIL_REGIMEN,
-        n_carteras_montecarlo=_tecnico.N_CARTERAS_MONTECARLO,
+        nivel_confianza_95=config.NIVEL_CONFIANZA_95,
+        nivel_confianza_99=config.NIVEL_CONFIANZA_99,
+        percentiles_perfil=config.PERCENTILES_PERFIL,
+        lambda_ewma=_tecnico.LAMBDA_EWMA,
+        shrinkage_retorno=_tecnico.SHRINKAGE_RETORNO,
+        ewma_min_obs=_tecnico.EWMA_MIN_OBS,
+        n_puntos_frontera=_tecnico.N_PUNTOS_FRONTERA,
+        n_carteras_factibles=_tecnico.N_CARTERAS_FACTIBLES,
+        n_trayectorias_mc=_tecnico.N_TRAYECTORIAS_MC,
+        percentiles_fan=_tecnico.PERCENTILES_FAN,
         semilla=_tecnico.SEMILLA,
+        views_black_litterman=config.VIEWS_BLACK_LITTERMAN,
+        perfil_regimen=config.PERFIL_REGIMEN,
+        min_retornos_analisis=_tecnico.MIN_RETORNOS_ANALISIS,
+        dias_anio=_tecnico.DIAS_ANIO,
+        idioma_reporte=config.IDIOMA_REPORTE,
     )

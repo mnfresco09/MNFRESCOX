@@ -1,25 +1,42 @@
-"""Modelos públicos e inmutables compartidos entre las capas."""
+"""Contratos públicos e inmutables compartidos entre las capas.
+
+Estos `dataclasses` tipados son el ÚNICO vehículo de información entre capas. El
+módulo de reporting NO recalcula métricas: solo consume `ReportPayload`.
+
+Flujo de contratos:
+  Configuracion + PortfolioInput
+    → MomentsResult        (estadística individual + doble lente de covarianza)
+    → ResultadoFrontera    (frontera restringida, 100% de puntos)
+    → PortfolioCandidate×4 (Bajo / Medio / Alto / Máx Sharpe + MCR + score)
+    → RiskForecast         (VaR/CVaR FHS y paramétrico, T+1)
+    → SimulationSummary    (fan chart, prob. pérdida, CDaR — vía Rust)
+    → ReportPayload        (todo agregado para el dashboard)
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
 
 import pandas as pd
 
 
+# ===========================================================================
+#  CONFIGURACIÓN
+# ===========================================================================
 @dataclass(frozen=True)
 class Restricciones:
-    """Límites comunes de una cartera."""
+    """Límites institucionales duros de una cartera."""
 
     solo_largos: bool
     peso_maximo: float | None
+    peso_minimo: float = 0.0
+    turnover_maximo: float | None = None
 
 
 @dataclass(frozen=True)
 class ViewBlackLitterman:
-    """Opinión absoluta o relativa expresada sobre una combinación de activos."""
+    """Opinión absoluta o relativa sobre una combinación de activos."""
 
     activos: tuple[tuple[str, float], ...]
     retorno_anual: float
@@ -27,17 +44,8 @@ class ViewBlackLitterman:
 
 
 @dataclass(frozen=True)
-class VentanaStress:
-    """Episodio histórico configurable."""
-
-    nombre: str
-    inicio: pd.Timestamp
-    fin: pd.Timestamp
-
-
-@dataclass(frozen=True)
 class ParametrosRegimen:
-    """Umbrales transparentes para clasificar regímenes."""
+    """Umbrales transparentes para clasificar el régimen de mercado."""
 
     drawdown_crisis: float
     drawdown_bajista: float
@@ -49,32 +57,47 @@ class ParametrosRegimen:
 
 @dataclass(frozen=True)
 class Configuracion:
-    """Configuración validada consumida por el pipeline."""
+    """Configuración validada e inmutable que consume el pipeline."""
 
+    # Pregunta 1 — activos y periodo
     tickers: tuple[str, ...]
     fecha_inicio: str
     fecha_fin: str
     activo_referencia: str
-    frecuencia_rebalanceo: str
-    ventana_estimacion: int
+    # Restricciones y decisión
     restricciones: Restricciones
-    perfil_riesgo: str
-    volatilidad_objetivo: float | None
-    idioma_reporte: str
+    horizonte_dias: int
+    capital_base: float
+    # Convenciones matemáticas
     tasa_libre_riesgo_anual: float
     dias_anio: int
-    coste_transaccion_pb: float
-    nivel_confianza: float
-    min_retornos_analisis: int
-    views_black_litterman: tuple[ViewBlackLitterman, ...]
-    ventanas_stress: tuple[VentanaStress, ...]
-    parametros_regimen: ParametrosRegimen
-    n_carteras_montecarlo: int
+    nivel_confianza_95: float
+    nivel_confianza_99: float
+    # Perfiles dinámicos (percentiles de vol de la frontera)
+    percentiles_perfil: tuple[tuple[str, float], ...]
+    # Doble lente / estimadores
+    lambda_ewma: float
+    shrinkage_retorno: float
+    ewma_min_obs: int
+    # Frontera y simulación
+    n_puntos_frontera: int
+    n_carteras_factibles: int
+    n_trayectorias_mc: int
+    percentiles_fan: tuple[int, ...]
     semilla: int
+    # Avanzado
+    views_black_litterman: tuple[ViewBlackLitterman, ...]
+    parametros_regimen: ParametrosRegimen
+    min_retornos_analisis: int
+    idioma_reporte: str
+    # Rutas
     carpeta_historico: Path
     carpeta_salidas: Path
 
 
+# ===========================================================================
+#  DATOS
+# ===========================================================================
 @dataclass(frozen=True)
 class ResumenActivo:
     """Diagnóstico persistido de un activo descargado."""
@@ -98,26 +121,58 @@ class DatosAlineados:
 
 
 @dataclass(frozen=True)
-class ResultadoPCA:
-    varianza_explicada: pd.Series
-    varianza_acumulada: pd.Series
-    cargas: pd.DataFrame
+class PortfolioInput:
+    """Pregunta 1 — qué activos tengo. Insumo limpio del motor."""
+
+    activos: tuple[str, ...]
+    log_retornos: pd.DataFrame          # diarios, alineados
+    cierres: pd.DataFrame
+    capital_base: float
+    horizonte_dias: int
+
+
+# ===========================================================================
+#  ESTADÍSTICA Y DOBLE LENTE DE COVARIANZA  (preguntas 1 y 2)
+# ===========================================================================
+@dataclass(frozen=True)
+class EstadisticaActivo:
+    """Estadística individual anualizada de un activo."""
+
+    ticker: str
+    retorno_medio: float        # media histórica cruda (anual)
+    retorno_ajustado: float     # tras shrinkage conservador (anual)
+    volatilidad: float          # estructural (anual)
+    volatilidad_tactica: float  # EWMA T+1 (anual)
+    asimetria: float
+    curtosis: float
 
 
 @dataclass(frozen=True)
-class ResultadoAnalisis:
-    log_retornos: pd.DataFrame
-    retornos_esperados: pd.Series
-    covarianza: pd.DataFrame
-    volatilidades: pd.Series
-    correlacion_media: pd.DataFrame
+class MomentsResult:
+    """Pregunta 2 — cómo se relacionan. Doble lente de covarianza.
+
+    - `cov_estructural`: Ledoit-Wolf, bien condicionada → para OPTIMIZAR.
+    - `cov_tactica`: EWMA (RiskMetrics) → para el riesgo de MAÑANA (T+1).
+    """
+
+    activos: tuple[str, ...]
+    retornos_ajustados: pd.Series          # μ tras shrinkage (anual)
+    retornos_medios: pd.Series             # μ histórico crudo (anual)
+    cov_estructural: pd.DataFrame          # Ledoit-Wolf (anual)
+    cov_tactica: pd.DataFrame              # EWMA (anual)
+    volatilidades: pd.Series               # estructural (anual)
+    volatilidades_tacticas: pd.Series      # EWMA T+1 (anual)
+    correlacion: pd.DataFrame
     correlacion_cola: pd.DataFrame
-    diferencia_correlacion_cola: pd.DataFrame
-    observaciones_cola: int
-    pca: ResultadoPCA
-    regimenes: pd.Series
+    shrinkage_cov: float                   # coef. Ledoit-Wolf
+    shrinkage_retorno: float               # intensidad shrinkage de μ
+    estadisticas: tuple[EstadisticaActivo, ...]
+    fuente_tactica: str = "EWMA"           # "EWMA" o "GARCH" (con fallback)
 
 
+# ===========================================================================
+#  FRONTERA Y CANDIDATOS  (pregunta 3)
+# ===========================================================================
 @dataclass(frozen=True)
 class MetricasEstimadas:
     retorno_anual: float
@@ -126,124 +181,159 @@ class MetricasEstimadas:
 
 
 @dataclass(frozen=True)
-class ResultadoAsignacion:
-    nombre: str
-    pesos: pd.Series
-    metricas: MetricasEstimadas
-    estado_solver: str
-    diagnostico: str
-    advertencias: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class ResultadoMonteCarlo:
-    pesos: pd.DataFrame
-    metricas: pd.DataFrame
-
-
-@dataclass(frozen=True)
 class ResultadoFrontera:
-    puntos: pd.DataFrame
-    minima_varianza: ResultadoAsignacion
-    maximo_sharpe: ResultadoAsignacion
-    maximo_retorno_factible: ResultadoAsignacion
+    """Frontera eficiente restringida: el 100% de puntos factibles."""
+
+    puntos: pd.DataFrame                   # [retorno, volatilidad, sharpe, peso·*]
+    nube_factible: pd.DataFrame            # fondo de densidad riesgo-retorno
+    minima_varianza_pesos: pd.Series
+    maximo_sharpe_pesos: pd.Series
 
 
 @dataclass(frozen=True)
-class Rebalanceo:
-    fecha: pd.Timestamp
-    pesos: Mapping[str, pd.Series]
-    rotacion: Mapping[str, float]
-    coste: Mapping[str, float]
+class DescomposicionRiesgo:
+    """Contribución marginal y total al riesgo por activo (MCR)."""
+
+    mcr: pd.Series                         # contribución marginal al riesgo
+    contribucion: pd.Series                # contribución total (∑ = vol cartera)
+    contribucion_pct: pd.Series            # % de la varianza/vol total
+    concentracion_hhi: float               # índice Herfindahl de los pesos
 
 
 @dataclass(frozen=True)
-class ResultadoWalkForward:
-    retornos: pd.DataFrame
-    equity: pd.DataFrame
-    pesos_diarios: Mapping[str, pd.DataFrame]
-    rebalanceos: tuple[Rebalanceo, ...]
+class PortfolioCandidate:
+    """Pregunta 3 — una cartera candidata por nivel de riesgo.
 
-
-@dataclass(frozen=True)
-class MetricasCartera:
-    retorno_anual: float
-    volatilidad_anual: float
-    sharpe: float
-    sortino: float
-    calmar: float
-    max_drawdown: float
-    duracion_drawdown_dias: int
-    fecha_recuperacion: pd.Timestamp | None
-    var: float
-    cvar: float
-
-
-@dataclass(frozen=True)
-class ResultadoStress:
-    nombre: str
-    evaluable: bool
-    observaciones: int
-    metricas: Mapping[str, MetricasCartera]
-
-
-@dataclass(frozen=True)
-class ResultadoRiesgo:
-    walk_forward: ResultadoWalkForward
-    metricas: Mapping[str, MetricasCartera]
-    metricas_por_regimen: Mapping[str, pd.DataFrame]
-    stress: Mapping[str, ResultadoStress]
-    diversificacion_crisis: pd.DataFrame
-    convexidad: pd.DataFrame
-
-
-@dataclass(frozen=True)
-class CarteraNivel:
-    """Cartera eficiente en un nivel de riesgo concreto (bajo/moderado/alto)."""
-
-    nivel: str                        # "bajo" / "moderado" / "alto" / "personalizado"
-    volatilidad_objetivo: float       # volatilidad anual buscada
-    pesos: pd.Series                  # pesos de la cartera eficiente en ese punto
-    retorno_esperado: float           # anual, in-sample (frontera)
-    volatilidad_esperada: float       # anual, in-sample (frontera)
-    metricas_historicas: MetricasCartera  # de esos pesos fijos sobre toda la muestra
-
-
-@dataclass(frozen=True)
-class ResultadoPerfilRiesgo:
-    """RESULTADO PRINCIPAL: los pesos óptimos para cada nivel de riesgo.
-
-    Se entregan los pesos de la cartera eficiente recomendada para el perfil
-    elegido y, además, TODOS los niveles (conservador, moderado, agresivo y
-    opcionalmente personalizado), recorriendo la frontera. Para cada nivel:
-    pesos, retorno y volatilidad esperados (in-sample) y el comportamiento
-    histórico de esos pesos fijos (VaR/CVaR/drawdown sobre toda la muestra).
-    `niveles_frontera` es la tabla escalonada (min-var -> máx retorno) para ver
-    cómo cambia la composición al subir el riesgo.
+    `nivel` ∈ {bajo, medio, alto, max_sharpe}. Las métricas de riesgo táctico
+    (vol T+1, VaR, CDaR) y el score se rellenan tras el forecast.
     """
 
-    carteras: tuple[CarteraNivel, ...]
-    recomendada: CarteraNivel
-    niveles_frontera: pd.DataFrame
+    nivel: str
+    pesos: pd.Series
+    retorno_esperado: float                # anual, μ ajustado
+    volatilidad_estructural: float         # anual, Ledoit-Wolf
+    volatilidad_tactica: float             # anual, EWMA T+1
+    sharpe: float
+    descomposicion: DescomposicionRiesgo
+    forecast: "RiskForecast | None" = None
+    simulacion: "SimulationSummary | None" = None
+    score: float | None = None
+    detalle_score: tuple[tuple[str, float], ...] = ()
+    # Métricas de exploración (pregunta 3, multi-lente).
+    diversificacion: float | None = None       # ratio de diversificación (Choueifaty)
+    starr: float | None = None                 # retorno excedente / CVaR99 (tail-aware)
+    erc_concentracion: float | None = None     # HHI de las contribuciones al riesgo (ERC)
+    clase_riesgo: str | None = None            # banda detectada: bajo / medio / alto
 
 
 @dataclass(frozen=True)
-class PaqueteReporte:
+class CriterioRanking:
+    """Top-N carteras de la frontera bajo un criterio de análisis concreto."""
+
+    clave: str
+    nombre: str
+    descripcion: str
+    sentido: str                               # "max" o "min"
+    top: tuple[PortfolioCandidate, ...]
+
+
+# ===========================================================================
+#  RIESGO PROSPECTIVO  (pregunta 4)
+# ===========================================================================
+@dataclass(frozen=True)
+class RiskForecast:
+    """Pregunta 4 — cuánto puedo perder MAÑANA (T+1).
+
+    Convención de signo: VaR y CVaR son retornos NEGATIVOS (la pérdida en la
+    cola). NUNCA se etiquetan como "pérdida máxima": son estimaciones bajo los
+    supuestos del modelo (VaR 99% diario estimado).
+    """
+
+    horizonte_dias: int
+    volatilidad_tactica_diaria: float
+    # Histórico (distribución empírica realizada)
+    var_hist_95: float
+    var_hist_99: float
+    cvar_hist_95: float
+    cvar_hist_99: float
+    # Paramétrico forecast (vol táctica × cuantil normal/t)
+    var_param_95: float
+    var_param_99: float
+    cvar_param_95: float
+    cvar_param_99: float
+    # Filtered Historical Simulation (motor Rust / fallback)
+    var_fhs_95: float
+    var_fhs_99: float
+    cvar_fhs_95: float
+    cvar_fhs_99: float
+    fuente_fhs: str = "rust"               # "rust" o "python_fallback"
+
+
+@dataclass(frozen=True)
+class SimulationSummary:
+    """Pregunta 4 — cuánto puedo perder este MES (horizonte agregado).
+
+    El motor NUNCA devuelve la matriz completa de trayectorias: solo las series
+    de percentiles para el fan chart, la probabilidad de pérdida y el CDaR.
+    """
+
+    horizonte_dias: int
+    percentiles: tuple[int, ...]
+    # series[percentil] = curva de capital base 1 a lo largo del horizonte
+    sendas_percentil: pd.DataFrame         # index=día, columns=percentiles
+    prob_perdida: float                    # P(retorno horizonte < 0)
+    cdar_30d: float                        # Conditional Drawdown at Risk
+    retorno_mediano: float                 # percentil 50 a horizonte
+    perdida_p5: float                      # cola baja (P5) a horizonte
+    fuente: str = "rust"                   # "rust" o "python_fallback"
+
+
+# ===========================================================================
+#  RÉGIMEN Y AGREGADOS
+# ===========================================================================
+@dataclass(frozen=True)
+class RegimenMercado:
+    """Régimen actual del mercado (baja / alta volatilidad)."""
+
+    etiqueta: str                          # "baja_volatilidad" / "alta_volatilidad" / "crisis"
+    volatilidad_actual: float              # anualizada, ventana corta
+    percentil_volatilidad: float           # posición de la vol actual en su historia
+    correlacion_media_actual: float        # nivel medio de correlación reciente
+    descripcion: str
+
+
+@dataclass(frozen=True)
+class Recomendacion:
+    """Cartera ganadora y por qué (decisión ejecutiva)."""
+
+    nivel: str
+    criterio: str
+    detalle: str
+
+
+@dataclass(frozen=True)
+class ReportPayload:
+    """Contrato ÚNICO que consume el reporting. No se recalcula nada aquí."""
+
     configuracion: Configuracion
-    datos: DatosAlineados
-    analisis: ResultadoAnalisis
-    analisis_actual: ResultadoAnalisis
-    asignaciones: Mapping[str, ResultadoAsignacion]
+    entrada: PortfolioInput
+    momentos: MomentsResult
     frontera: ResultadoFrontera
-    monte_carlo: ResultadoMonteCarlo
-    riesgo: ResultadoRiesgo
-    perfil_riesgo: ResultadoPerfilRiesgo
-    objetivo: str = "comparar"
+    candidatos: tuple[PortfolioCandidate, ...]   # bajo, medio, alto, max_sharpe
+    regimen: RegimenMercado
+    recomendada: PortfolioCandidate
+    recomendacion: Recomendacion
+    curva_top_sharpe: pd.DataFrame = field(default_factory=pd.DataFrame)
+    frontera_degenerada: bool = False
+    nota_frontera: str = ""
+    # Exploración multi-criterio (frontera + nube clasificadas + leaderboard).
+    clasificacion_frontera: pd.DataFrame = field(default_factory=pd.DataFrame)
+    clasificacion_nube: pd.DataFrame = field(default_factory=pd.DataFrame)
+    anclas: tuple[tuple[str, float], ...] = ()
+    leaderboard: tuple[CriterioRanking, ...] = ()
 
 
 @dataclass(frozen=True)
 class RutasReporte:
     html: Path
     pdf: Path
-    excel: Path
-    manifiesto: Path

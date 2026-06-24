@@ -1,13 +1,22 @@
 """Configuración del PANEL PORTFOLIO — SOLO datos y parámetros, cero lógica.
 
+Motor de Riesgo Predictivo orientado a la decisión institucional (buy-side).
+El panel responde a CUATRO preguntas y nada más:
+
+  1. ¿Qué activos tengo?
+  2. ¿Cómo se relacionan entre ellos?
+  3. ¿Qué pesos debo usar (Bajo / Medio / Alto / Máx Sharpe)?
+  4. ¿Cuánto puedo perder mañana o este mes bajo el régimen actual?
+
 Este es el único archivo que editas. El resto del panel lee de aquí y nunca al
-revés. Está dividido en dos bloques:
+revés. Las constantes puramente técnicas (anualización, lambda EWMA, tamaño de
+la simulación, semilla) viven en CONFIGURACION/_tecnico.py, fuera de la vista.
 
-  • BÁSICO   → lo que normalmente tocas (activos, fechas, perfil de riesgo...).
-  • AVANZADO → ajustes finos que rara vez se cambian.
-
-Las constantes puramente técnicas (anualización, tamaño del Monte Carlo, etc.)
-viven en CONFIGURACION/_tecnico.py, fuera de la vista.
+PRINCIPIO INSTITUCIONAL: NO se fijan perfiles de riesgo absolutos (ej. "Bajo =
+10% vol"). Los perfiles Bajo / Medio / Alto se derivan DINÁMICAMENTE de los
+percentiles de volatilidad de la propia frontera eficiente del universo actual
+(ver PERCENTILES_PERFIL más abajo). Lo único que el usuario fija son las
+restricciones operativas e institucionales mínimas.
 """
 
 from __future__ import annotations
@@ -16,63 +25,57 @@ from __future__ import annotations
 #  BÁSICO  — lo que el usuario toca
 # ===========================================================================
 
-# --- Cesta de activos (símbolos de Yahoo Finance) --------------------------
-TICKERS: list[str] = ["BTEC.L", "INRA.AS", "LOCK.L"]
+# --- Pregunta 1: ¿Qué activos tengo? (símbolos de Yahoo Finance) -----------
+TICKERS: list[str] = ["SPY", "QQQ", "TLT", "GLD", "VNQ", "EEM"]
 
-# Activo que representa "el mercado" (correlación de cola y regímenes).
+# Activo que representa "el mercado" (correlación de cola y detección de régimen).
 # Debe pertenecer a TICKERS.
-ACTIVO_REFERENCIA: str = "BTEC.L"
+ACTIVO_REFERENCIA: str = "SPY"
 
 # --- Periodo (datos diarios) -----------------------------------------------
-FECHA_INICIO: str = "2019-08-01"
-FECHA_FIN: str = "2026-06-20"
+FECHA_INICIO: str = "2015-01-01"
+FECHA_FIN: str = "2026-06-22"
 
-# --- Perfil de riesgo e idioma del informe ---------------------------------
-# Perfil que domina la recomendación del informe. También se muestran todos los
-# niveles para ver cómo cambian los pesos al subir el riesgo.
-# Opciones: "conservador" / "moderado" / "agresivo" / "personalizado".
-PERFIL_RIESGO: str = "moderado"
+# --- Restricciones de cartera (institucionales, duras) ---------------------
+SOLO_LARGOS: bool = True                         # True = sin posiciones cortas
+PESO_MAXIMO_POR_ACTIVO: float | None = 0.66      # tope por activo; None = sin tope
+PESO_MINIMO_POR_ACTIVO: float = 0.0              # suelo por activo (long-only)
+TURNOVER_MAXIMO: float | None = None             # rotación máx. vs cartera previa; None = libre
 
-# Si PERFIL_RIESGO = "personalizado", fija aquí la volatilidad anual concreta
-# buscada (ej. 0.10 = 10%). Para los otros perfiles puede quedarse en None.
-VOLATILIDAD_OBJETIVO_ANUAL: float | None = None
+# --- Horizonte de decisión y capital ---------------------------------------
+HORIZONTE_DIAS: int = 21                          # horizonte del forecast (≈1 mes bursátil)
+CAPITAL_BASE: float = 1_000_000.0                 # capital de referencia para € en riesgo
 
-# Idioma por defecto del reporte. Al ejecutar el análisis se puede cambiar por
-# prompt sin tocar este archivo. Opciones: "es" / "it".
+# --- Idioma del informe ----------------------------------------------------
+# Opciones: "es" / "it". Se puede cambiar por prompt al ejecutar, sin tocar esto.
 IDIOMA_REPORTE: str = "es"
-
-# --- Restricciones de cartera ----------------------------------------------
-SOLO_LARGOS: bool = True                        # True = sin posiciones cortas
-PESO_MAXIMO_POR_ACTIVO: float | None = 0.40     # tope por activo; None = sin tope
-
-# --- Rebalanceo y coste (para el backtest walk-forward) --------------------
-FRECUENCIA_REBALANCEO: str = "M"                # "M" mensual, "W" semanal, "Q" trimestral
-VENTANA_ESTIMACION_DIAS: int = 504              # historia usada para estimar (≈2 años)
-COSTE_TRANSACCION_PB: float = 10.0              # coste proporcional sobre la rotación
 
 
 # ===========================================================================
 #  AVANZADO  — rara vez se toca
 # ===========================================================================
 
-# Tasa libre de riesgo anual (para Sharpe y Black-Litterman).
-TASA_LIBRE_RIESGO_ANUAL: float = 0.0
+# Tasa libre de riesgo anual EXPLÍCITA (para Sharpe y Black-Litterman).
+TASA_LIBRE_RIESGO_ANUAL: float = 0.05
 
-# Nivel común para VaR, CVaR y Min-CVaR.
-NIVEL_CONFIANZA: float = 0.95
+# Niveles de confianza para VaR / CVaR (forecast e histórico). Ambos se reportan.
+NIVEL_CONFIANZA_95: float = 0.95
+NIVEL_CONFIANZA_99: float = 0.99
 
-# Views de Black-Litterman. VACÍO = NO se calcula Black-Litterman (sin views es
-# idéntico a la equiponderada 1/N, así que no se duplica). Para activarlo, añade
-# opiniones como:
-#   {"activos": {"BTC-USD": 1.0}, "retorno_anual": 0.20, "confianza": 0.6}
+# Percentiles de la distribución de volatilidad de la frontera eficiente que
+# definen los perfiles DINÁMICOS. No son volatilidades absolutas: se calculan
+# sobre el universo actual cada vez. Bajo=P20, Medio=P50, Alto=P80.
+PERCENTILES_PERFIL: dict[str, float] = {
+    "bajo": 0.20,
+    "medio": 0.50,
+    "alto": 0.80,
+}
+
+# Views de Black-Litterman. VACÍO = NO se calcula Black-Litterman; el estimador
+# de retorno cae al shrinkage conservador (fallback institucional). Para
+# activarlo, añade opiniones defendibles, p. ej.:
+#   {"activos": {"BTEC.L": 1.0}, "retorno_anual": 0.12, "confianza": 0.6}
 VIEWS_BLACK_LITTERMAN: list[dict] = []
 
-# Sensibilidad del etiquetado de regímenes: "conservador" / "estandar" / "sensible".
+# Sensibilidad del etiquetado de régimen: "conservador" / "estandar" / "sensible".
 PERFIL_REGIMEN: str = "estandar"
-
-# Episodios para el stress testing histórico (solo se evalúan si hay cobertura OOS).
-VENTANAS_STRESS: dict[str, tuple[str, str]] = {
-    "crisis_financiera_2008": ("2008-09-01", "2009-03-31"),
-    "covid_2020": ("2020-02-19", "2020-03-23"),
-    "crisis_2022": ("2022-01-03", "2022-10-12"),
-}

@@ -1,0 +1,23 @@
+[package]
+name = "motor_riesgo"
+version = "1.0.0"
+edition = "2021"
+description = "Micro-motor de riesgo del PANEL PORTFOLIO: Filtered Historical Simulation y Monte Carlo por bootstrapping. Compilado como extensión Python via PyO3. AISLADO de PANEL BACKTESTING/MOTOR."
+
+[lib]
+name = "motor_riesgo"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module"] }
+numpy = "0.28"
+rand = "0.8"
+rayon = "1.10"
+
+[build-dependencies]
+pyo3-build-config = "0.28"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3

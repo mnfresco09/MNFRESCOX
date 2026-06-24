@@ -21,12 +21,10 @@ REQUISITOS: dict[str, str] = {
     "pyarrow": "pyarrow",
     "scipy": "scipy",
     "sklearn": "scikit-learn",
-    "cvxpy": "cvxpy",
     "yfinance": "yfinance",
-    "plotly": "plotly",
     "matplotlib": "matplotlib",
+    "plotly": "plotly",
     "reportlab": "reportlab",
-    "xlsxwriter": "XlsxWriter",
     "rich": "rich",
 }
 
