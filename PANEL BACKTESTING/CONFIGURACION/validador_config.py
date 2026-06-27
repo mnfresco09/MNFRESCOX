@@ -8,6 +8,7 @@ FORMATOS_VALIDOS   = {"feather", "parquet", "csv"}
 EXIT_TYPES_VALIDOS = {"FIXED", "BARS", "TRAILING", "CUSTOM", "ALL"}
 SAMPLERS_VALIDOS   = {"QMC", "TPE", "HYBRID"}
 SCORES_VALIDOS     = {"PSR", "SHARPE", "CALMAR", "ROI"}
+MODOS_VALIDOS      = {"investigacion", "veredicto_final"}
 EXTENSIONES        = {"feather": ".feather", "parquet": ".parquet", "csv": ".csv"}
 
 
@@ -56,6 +57,7 @@ def validar(cfg) -> None:
             errores.append(f"Timeframe '{tf}' no válido. Opciones: {TIMEFRAMES_VALIDOS}")
 
     # --- Fechas ---
+    inicio = fin = None
     try:
         from datetime import date
         inicio = date.fromisoformat(cfg.FECHA_INICIO)
@@ -64,6 +66,9 @@ def validar(cfg) -> None:
             errores.append(f"FECHA_INICIO ({cfg.FECHA_INICIO}) no puede ser posterior a FECHA_FIN ({cfg.FECHA_FIN}).")
     except ValueError as e:
         errores.append(f"Formato de fecha incorrecto: {e}. Usa 'AAAA-MM-DD'.")
+
+    # --- Modo y holdout bloqueado (Fase 0) ---
+    _validar_modo_y_holdout(cfg, inicio, fin, errores)
 
     # --- Capital ---
     if cfg.SALDO_INICIAL <= 0:
@@ -189,6 +194,44 @@ def _validar_perturbaciones(cfg, errores: list[str]) -> None:
     _cfg_float_rango(cfg, "GRANULARIDAD_CUBOS", errores, minimo=0.0, maximo=None, cerrado_min=False)
     _cfg_float_rango(cfg, "PERCENTIL_TABLA", errores, minimo=0.0, maximo=0.49, cerrado_min=False)
     _validar_kernel_perturbaciones(errores)
+
+
+def _validar_modo_y_holdout(cfg, inicio, fin, errores: list[str]) -> None:
+    """Valida MODO y HOLDOUT_INICIO (split de tres bloques de la Fase 0).
+
+    El holdout debe caer estrictamente dentro de (FECHA_INICIO, FECHA_FIN] para
+    que exista un bloque de TRAIN/VALIDATION no vacío antes de él y un holdout
+    no vacío hasta el final.
+    """
+    from datetime import date
+
+    modo = getattr(cfg, "MODO", None)
+    if modo not in MODOS_VALIDOS:
+        errores.append(f"MODO '{modo}' no válido. Opciones: {MODOS_VALIDOS}")
+
+    holdout_str = getattr(cfg, "HOLDOUT_INICIO", None)
+    if holdout_str is None:
+        errores.append("HOLDOUT_INICIO debe existir (AAAA-MM-DD) para el split de la Fase 0.")
+        return
+    try:
+        holdout = date.fromisoformat(str(holdout_str))
+    except ValueError as e:
+        errores.append(f"HOLDOUT_INICIO con formato incorrecto: {e}. Usa 'AAAA-MM-DD'.")
+        return
+
+    # Solo se pueden comprobar los límites si las fechas base parsearon bien.
+    if inicio is None or fin is None:
+        return
+    if holdout <= inicio:
+        errores.append(
+            f"HOLDOUT_INICIO ({holdout_str}) debe ser POSTERIOR a FECHA_INICIO "
+            f"({cfg.FECHA_INICIO}); si no, no queda bloque de TRAIN/VALIDATION."
+        )
+    if holdout > fin:
+        errores.append(
+            f"HOLDOUT_INICIO ({holdout_str}) no puede ser posterior a FECHA_FIN "
+            f"({cfg.FECHA_FIN}); el holdout quedaría vacío."
+        )
 
 
 def _validar_semillas(cfg, errores: list[str]) -> None:

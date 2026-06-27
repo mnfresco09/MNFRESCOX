@@ -6,6 +6,10 @@ from pathlib import Path
 RAIZ = Path(__file__).resolve().parents[1]
 CARPETA_HISTORICO = RAIZ / "HISTORICO"
 CARPETA_RESULTADOS = RAIZ / "RESULTADOS"
+# Fase 0 — registro de experimentos. Carpeta y base de datos SQLite donde queda
+# la traza de cada trial de cada run (alimenta el conteo real de N para el DSR).
+CARPETA_REGISTRO_EXPERIMENTOS = RAIZ / "REGISTRO_EXPERIMENTOS"
+BD_EXPERIMENTOS = CARPETA_REGISTRO_EXPERIMENTOS / "experimentos.db"
 
 # ---------------------------------------------------------------------------
 # ACTIVOS Y DATOS "BTC", "GOLD", "BRENT", "EURUSD", "SP500"
@@ -39,6 +43,31 @@ TIMEFRAMES = ["1h"]
 # ---------------------------------------------------------------------------
 FECHA_INICIO = "2021-01-01"
 FECHA_FIN    = "2024-12-31"
+
+# ---------------------------------------------------------------------------
+# MODO DE OPERACIÓN Y HOLDOUT BLOQUEADO  (Fase 0 — la disciplina innegociable)
+# ---------------------------------------------------------------------------
+# El holdout bloqueado es el tramo MÁS RECIENTE de datos que NUNCA entra en
+# ninguna optimización ni validación. Se evalúa UNA SOLA VEZ, al final, con los
+# parámetros ya congelados (Puerta 6 del protocolo). Si "echas un vistazo" antes
+# de tiempo, ese tramo queda quemado para siempre y toda la estadística de
+# arriba se vuelve teatro.
+#
+# MODO controla FÍSICAMENTE qué datos llegan al pipeline:
+#   "investigacion"   → el cargador EXCLUYE el holdout del DataFrame. Es
+#                       imposible que el tramo bloqueado entre en optimización
+#                       o validación. Es el modo de trabajo por defecto.
+#   "veredicto_final" → desbloquea el dataset completo para el examen final.
+#                       Úsalo SOLO cuando los parámetros ya están fijados y vas
+#                       a disparar la única evaluación sobre el holdout.
+MODO = "investigacion"   # "investigacion" | "veredicto_final"
+
+# Inicio del holdout bloqueado (inclusive, AAAA-MM-DD). Todo lo anterior a esta
+# fecha es TRAIN/VALIDATION; desde esta fecha (incluida) hasta FECHA_FIN es el
+# holdout. Debe caer estrictamente dentro de (FECHA_INICIO, FECHA_FIN].
+# Recomendado: los últimos 12-18 meses. Aquí, 2024 completo (~12 meses) sobre un
+# histórico 2021-2024, dejando 3 años para TRAIN/VALIDATION.
+HOLDOUT_INICIO = "2024-01-01"
 
 # ---------------------------------------------------------------------------
 # ESTRATEGIAS

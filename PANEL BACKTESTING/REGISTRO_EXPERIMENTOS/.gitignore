@@ -1,0 +1,4 @@
+# La base de datos de experimentos es local a cada investigador: no se versiona.
+*.db
+*.db-wal
+*.db-shm

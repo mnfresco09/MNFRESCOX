@@ -18,7 +18,9 @@ except ImportError:  # pragma: no cover - perturbaciones ya validan numba en run
 
 from CONFIGURACION import config as cfg
 from CONFIGURACION.validador_config import validar as validar_config
-from DATOS.cargador import cargar
+from COMUN import reproducibilidad
+from COMUN.registro_experimentos import RegistroExperimentos
+from DATOS.cargador import cargar, ruta_datos
 from DATOS.perturbaciones import (
     ConfiguracionPerturbaciones,
     aplicar_perturbaciones,
@@ -130,6 +132,9 @@ class ActivoPreparado:
     estrategias: list
     columnas_requeridas: set[str]
     permitir_huecos: bool
+    # Fase 0: huella de reproducibilidad del run y ruta del fichero de datos.
+    huella_repro: Any = None
+    ruta_datos: Any = None
 
 
 def main() -> None:
@@ -200,6 +205,7 @@ def _preparar_activo(
     ninguna es compatible, se omite el activo entero.
     """
     permitir_huecos = not _es_mercado_24_7(activo)
+    ruta = ruta_datos(activo, cfg)
     df_base = cargar(activo, cfg)
     columnas_disponibles = set(df_base.columns)
 
@@ -230,6 +236,8 @@ def _preparar_activo(
     huella_base = integridad.huella_dataframe(f"{activo} carga", df_base)
     mostrar_huella_datos(huella_base)
     perturbaciones_activo = perturbaciones.con_tabla_desde(df_base)
+    huella_repro = reproducibilidad.calcular_huella(cfg, ruta)
+    print(f"[REPRO] {activo}: {huella_repro.resumen()}")
 
     return ActivoPreparado(
         activo=activo,
@@ -240,6 +248,8 @@ def _preparar_activo(
         estrategias=compatibles,
         columnas_requeridas=columnas_requeridas,
         permitir_huecos=permitir_huecos,
+        huella_repro=huella_repro,
+        ruta_datos=ruta,
     )
 
 
@@ -407,6 +417,18 @@ def _ejecutar_combinacion(
         max_archivos=cfg.MAX_ARCHIVOS,
     )
 
+    # Fase 0: registrar TODOS los trials en la base de experimentos. Esto
+    # alimenta el conteo real de `N` para el Deflated Sharpe (Fase 3): el `N`
+    # correcto no son los trials de este run, sino todos los probados en el
+    # activo a lo largo de la investigación.
+    _registrar_experimento(
+        preparado=preparado,
+        timeframe=timeframe,
+        estrategia=estrategia,
+        salida=salida,
+        trials=trials,
+    )
+
     excel_path = (
         generar_excel(run_dir, trials, mejor, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
         if cfg.USAR_EXCEL else None
@@ -453,6 +475,49 @@ def _ejecutar_combinacion(
     )
     del trials, mejor, run_dir, excel_path, html_paths, informe_path, pdf_path
     gc.collect()
+
+
+def _registrar_experimento(
+    *,
+    preparado: ActivoPreparado,
+    timeframe: str,
+    estrategia,
+    salida: ExitConfig,
+    trials: list[TrialResultado],
+) -> None:
+    """Persiste el run y todos sus trials en la base de experimentos (Fase 0).
+
+    Una incidencia aquí no debe perder los resultados ya guardados en disco,
+    pero sí debe avisar de forma visible: un registro corrupto invalida el `N`
+    del Deflated Sharpe. Por eso se captura, se informa y se continúa, en lugar
+    de abortar la campaña entera.
+    """
+    huella = preparado.huella_repro
+    hb = preparado.huella_base
+    try:
+        with RegistroExperimentos(cfg.BD_EXPERIMENTOS) as registro:
+            run_id = registro.registrar_run(
+                activo=preparado.activo,
+                timeframe=timeframe,
+                estrategia_id=int(estrategia.ID),
+                estrategia_nombre=estrategia.NOMBRE,
+                salida_tipo=salida.tipo,
+                modo=getattr(cfg, "MODO", "investigacion"),
+                n_trials=int(cfg.N_TRIALS),
+                sampler=getattr(cfg, "OPTUNA_SAMPLER", None),
+                funcion_score=getattr(cfg, "FUNCION_SCORE", None),
+                huella=huella.como_dict() if huella is not None else None,
+                ts_datos_inicio=str(getattr(hb, "ts_inicio", None)),
+                ts_datos_fin=str(getattr(hb, "ts_fin", None)),
+                filas_datos=getattr(hb, "filas", None),
+            )
+            n = registro.registrar_trials(run_id, trials)
+        print(f"[REGISTRO] run {run_id}: {n} trials registrados en la base de experimentos.")
+    except Exception as exc:  # noqa: BLE001 - se informa y se continúa
+        print(
+            f"[REGISTRO] AVISO: no se pudo registrar el experimento "
+            f"({preparado.activo}/{timeframe}/{estrategia.NOMBRE}/{salida.tipo}): {exc}"
+        )
 
 
 def _optimizar_combinacion(
