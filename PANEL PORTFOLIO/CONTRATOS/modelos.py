@@ -304,6 +304,28 @@ class SimulationSummary:
 
 
 # ===========================================================================
+#  MÉTRICAS HISTÓRICAS REALIZADAS  (in-sample, cartera seleccionada)
+# ===========================================================================
+@dataclass(frozen=True)
+class MetricasHistoricas:
+    """Desempeño REALIZADO in-sample de la cartera seleccionada.
+
+    Se reconstruye la curva de capital con pesos fijos (rebalanceo diario) sobre
+    el histórico alineado. Son métricas exactas de lo ocurrido, NO un forecast:
+    no deben leerse como promesa de retorno futuro.
+    """
+
+    max_drawdown: float                    # caída exacta peor (negativa)
+    fecha_pico_dd: pd.Timestamp | None     # pico previo al peor valle
+    fecha_valle_dd: pd.Timestamp | None    # fecha del peor valle
+    cagr: float                            # crecimiento anual compuesto
+    sharpe_historico: float                # anualizado, exceso sobre rf
+    calmar: float                          # CAGR / |MaxDD|
+    correlacion_rolling: pd.Series         # correlación media par-a-par móvil
+    ventana_rolling: int                   # ventana usada (p. ej. 252)
+
+
+# ===========================================================================
 #  RÉGIMEN Y AGREGADOS
 # ===========================================================================
 @dataclass(frozen=True)
@@ -338,6 +360,7 @@ class ReportPayload:
     regimen: RegimenMercado
     recomendada: PortfolioCandidate
     recomendacion: Recomendacion
+    metricas_historicas: "MetricasHistoricas | None" = None
     curva_top_sharpe: pd.DataFrame = field(default_factory=pd.DataFrame)
     frontera_degenerada: bool = False
     nota_frontera: str = ""

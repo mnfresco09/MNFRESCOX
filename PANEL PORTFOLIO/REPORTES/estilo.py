@@ -1,22 +1,30 @@
 """Paleta, estilo de gráficos y formateadores compartidos del informe.
 
-Estética institucional sobria: tinta azul-pizarra, acento azul, rojo para
-pérdidas/cola, mucho aire en blanco. Sin chartjunk. Los mismos colores los usan
-el HTML y el PDF para que ambos informes sean idénticos.
+Estética institucional minimalista: fondo blanco puro, líneas finísimas,
+texto en negrita, colores grises suaves. Los gráficos mantienen color pero
+el marco (tablas, KPIs, bordes) es sobrio y limpio.
 """
 
 from __future__ import annotations
 
-# --- Paleta -----------------------------------------------------------------
-TINTA = "#0F172A"        # azul-pizarra oscuro (texto, ejes)
-SUAVE = "#475569"        # gris medio (texto secundario)
-LINEA = "#D9DEE7"        # líneas/bordes finos
-ACENTO = "#1D4ED8"       # azul institucional
+# --- Paleta minimalista -----------------------------------------------------
+TINTA = "#111827"        # gris muy oscuro (texto principal)
+SUAVE = "#6B7280"        # gris medio (texto secundario)
+MUTED = "#9CA3AF"        # gris claro (notas al pie)
+LINEA = "#E5E7EB"        # bordes finos, líneas de tabla
+LINEA_FINA = "#F3F4F6"   # separadores ultra-sutiles
+
+ACENTO = "#1D4ED8"       # azul institucional (sparingly)
 ACENTO_CLARO = "#93B4FF"
-PANEL = "#F6F8FB"        # fondo de tarjetas
+PANEL = "#FFFFFF"        # fondo de tarjetas = blanco puro
+FONDO_NOTA = "#F9FAFB"   # fondo sutil para notas
 NEG = "#B91C1C"          # rojo (pérdidas, VaR, cola)
 VERDE = "#15803D"        # verde (positivo, recomendada)
 AMBAR = "#B45309"        # avisos
+
+# Headers de tabla: gris oscuro (no navy)
+HEADER_BG = "#374151"
+HEADER_FG = "#FFFFFF"
 
 # Colores cualitativos para activos (hasta 10).
 SERIE = ["#1D4ED8", "#0EA5E9", "#7C3AED", "#059669", "#D97706",
@@ -27,32 +35,41 @@ NIVEL_COLOR = {
     "medio": "#1D4ED8",
     "alto": "#7C3AED",
     "max_sharpe": "#059669",
+    "max_k_ratio": "#15803D",
     "markowitz": "#059669",
     "cvar": "#B91C1C",
     "nco": "#7C3AED",
 }
 
+MOTOR_COLOR = {
+    "MARKOWITZ": "#1D4ED8",
+    "CVAR": "#B91C1C",
+    "NCO": "#059669",
+}
+
 
 def aplicar_estilo() -> None:
-    """Configura matplotlib con el estilo institucional (idempotente)."""
+    """Configura matplotlib con el estilo minimalista (idempotente)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     plt.rcParams.update({
-        "figure.dpi": 130,
-        "savefig.dpi": 130,
+        "figure.dpi": 150,
+        "savefig.dpi": 150,
         "font.family": "DejaVu Sans",
-        "font.size": 10.5,
+        "font.size": 10,
+        "font.weight": "normal",
         "axes.edgecolor": LINEA,
         "axes.labelcolor": SUAVE,
         "axes.titlecolor": TINTA,
-        "axes.titlesize": 12.5,
+        "axes.titlesize": 12,
         "axes.titleweight": "bold",
         "axes.grid": True,
+        "axes.linewidth": 0.5,
         "grid.color": LINEA,
-        "grid.linewidth": 0.7,
-        "grid.alpha": 0.7,
+        "grid.linewidth": 0.4,
+        "grid.alpha": 0.6,
         "xtick.color": SUAVE,
         "ytick.color": SUAVE,
         "axes.spines.top": False,
@@ -60,6 +77,7 @@ def aplicar_estilo() -> None:
         "figure.facecolor": "white",
         "axes.facecolor": "white",
         "legend.frameon": False,
+        "legend.fontsize": 9,
     })
 
 
@@ -86,6 +104,7 @@ NIVEL_NOMBRE = {
         "medio": "Medio",
         "alto": "Alto",
         "max_sharpe": "Máx Sharpe",
+        "max_k_ratio": "Máx K-Ratio",
         "markowitz": "Markowitz",
         "cvar": "Min-CVaR",
         "nco": "NCO",
@@ -95,6 +114,7 @@ NIVEL_NOMBRE = {
         "medio": "Medio",
         "alto": "Alto",
         "max_sharpe": "Max Sharpe",
+        "max_k_ratio": "Max K-Ratio",
         "markowitz": "Markowitz",
         "cvar": "Min-CVaR",
         "nco": "NCO",

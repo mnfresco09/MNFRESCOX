@@ -9,8 +9,6 @@ motor Rust caiga a fallback.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import numpy as np
 import pandas as pd
 
@@ -28,7 +26,7 @@ from OPTIMIZACION.exploracion import (
     tabla_exploracion,
     top_por_criterio,
 )
-from RIESGO.forecast import calcular_forecast, calcular_simulacion
+from RIESGO.forecast import enriquecer_candidatos_riesgo
 from RIESGO.score import calcular_score_cartera
 
 
@@ -66,15 +64,23 @@ def construir_exploracion(
         por_firma.setdefault(_firma(p.pesos), p)
 
     # Riesgo PRECISO (FHS + Monte Carlo) solo en la shortlist.
-    enriquecidos: dict[tuple, PortfolioCandidate] = {}
-    for firma, cand in por_firma.items():
-        fc = calcular_forecast(cand.pesos, entrada.log_retornos, momentos, cfg)
-        sim = calcular_simulacion(cand.pesos, entrada.log_retornos, cfg)
-        enriquecidos[firma] = replace(cand, forecast=fc, simulacion=sim)
+    firmas_enriquecidas = list(por_firma)
+    candidatos_enriquecidos = enriquecer_candidatos_riesgo(
+        tuple(por_firma[f] for f in firmas_enriquecidas),
+        entrada.log_retornos,
+        momentos,
+        cfg,
+    )
+    enriquecidos: dict[tuple, PortfolioCandidate] = dict(zip(firmas_enriquecidas, candidatos_enriquecidos))
 
     # Score multifactor preciso sobre la shortlist completa.
     firmas = list(enriquecidos)
-    puntuados = calcular_score_cartera(tuple(enriquecidos[f] for f in firmas), cfg)
+    puntuados = calcular_score_cartera(
+        tuple(enriquecidos[f] for f in firmas),
+        cfg,
+        correlacion=momentos.correlacion,
+        log_retornos=entrada.log_retornos,
+    )
     enriquecidos = {f: c for f, c in zip(firmas, puntuados)}
 
     # Clave de reordenación por la métrica PRECISA (FHS/MC) dentro de cada Top-5.

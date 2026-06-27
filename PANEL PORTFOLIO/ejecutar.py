@@ -98,6 +98,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         configuracion = cargar_configuracion()
         if argumentos.comando == "descargar":
             return _ejecutar_descarga(configuracion)
+            
+        if sys.stdin.isatty():
+            from CONTRATOS.validacion import IDIOMAS_REPORTE_VALIDOS
+            print("\n¿En qué idioma deseas generar el informe? / In quale lingua desideri generare il report?")
+            opciones = "/".join(sorted(IDIOMAS_REPORTE_VALIDOS))
+            idioma = ""
+            while idioma not in IDIOMAS_REPORTE_VALIDOS:
+                idioma = input(f"Idioma [{opciones}] (por defecto '{configuracion.idioma_reporte}'): ").strip().lower()
+                if not idioma:
+                    idioma = configuracion.idioma_reporte
+            
+            from dataclasses import replace
+            configuracion = replace(configuracion, idioma_reporte=idioma)
+            
         return _ejecutar_analisis(configuracion)
     except ErrorPanelPortfolio as exc:
         print(str(exc), file=sys.stderr)

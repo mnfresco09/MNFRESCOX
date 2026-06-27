@@ -8,6 +8,8 @@ fallbacks (matriz singular, Black-Litterman sin views).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -112,6 +114,145 @@ def test_frontera_se_despliega(momentos, cfg):
     assert fr.puntos["volatilidad"].max() > fr.puntos["volatilidad"].min()
 
 
+def test_frontera_alcanza_maximo_retorno_factible(momentos, cfg):
+    from OPTIMIZACION import optimizador as opt
+    from OPTIMIZACION.frontera import construir_frontera
+
+    fr = construir_frontera(momentos.retornos_ajustados, momentos.cov_estructural, cfg)
+    activos = list(momentos.cov_estructural.index)
+    _, retorno_max = opt.rango_retorno_factible(
+        momentos.retornos_ajustados.reindex(activos),
+        cfg.restricciones,
+        len(activos),
+    )
+
+    assert fr.puntos["retorno"].max() == pytest.approx(retorno_max, abs=2e-4)
+
+
+def test_frontera_incluye_minima_varianza_aunque_mu_domine_varianza(cfg):
+    from OPTIMIZACION.frontera import construir_frontera
+    from OPTIMIZACION.optimizador import minima_varianza
+
+    activos = list(ACTIVOS)
+    mu = pd.Series([0.02, 0.08, 0.18, 0.32], index=activos)
+    cov = pd.DataFrame(
+        np.diag([1e-8, 2e-8, 3e-8, 4e-8]),
+        index=activos,
+        columns=activos,
+    )
+
+    fr = construir_frontera(mu, cov, cfg)
+    w_min = minima_varianza(cov, cfg.restricciones)
+    vol_min = float(np.sqrt(w_min.to_numpy() @ cov.to_numpy() @ w_min.to_numpy()))
+
+    assert fr.puntos["volatilidad"].min() == pytest.approx(vol_min, abs=1e-7)
+
+
+def test_nube_factible_conserva_pesos_para_hover(momentos, cfg):
+    from OPTIMIZACION.frontera import construir_frontera
+    fr = construir_frontera(momentos.retornos_ajustados, momentos.cov_estructural, cfg)
+    cols = [f"peso·{a}" for a in ACTIVOS]
+
+    assert set(cols) <= set(fr.nube_factible.columns)
+    pesos = fr.nube_factible[cols].to_numpy(dtype=float)
+    assert np.allclose(pesos.sum(axis=1), 1.0)
+    assert (pesos >= -1e-9).all()
+
+
+def test_figuras_html_muestran_pesos_en_todos_los_puntos(momentos, entrada, cfg):
+    from OPTIMIZACION.frontera import construir_frontera
+    from OPTIMIZACION.perfiles import seleccionar_perfiles
+    from RIESGO.exploracion_riesgo import construir_exploracion
+    from REPORTES import graficos_interactivos
+    from REPORTES.narrativa import texto_frontera_referencia
+
+    fr = construir_frontera(momentos.retornos_ajustados, momentos.cov_estructural, cfg)
+    perfiles = seleccionar_perfiles(fr, momentos, cfg)
+    expl = construir_exploracion(fr, momentos, entrada, cfg, perfiles)
+    payload = SimpleNamespace(
+        frontera=fr,
+        candidatos=perfiles,
+        configuracion=cfg,
+        clasificacion_nube=expl["clasificacion_nube"],
+        clasificacion_frontera=expl["clasificacion_frontera"],
+        anclas=expl["anclas"],
+    )
+
+    fig_frontera = graficos_interactivos.frontera(payload)
+    nube_trace = fig_frontera.data[0]
+    assert nube_trace.customdata is not None
+    assert "Pesos" in nube_trace.hovertemplate
+    assert "Frontera MV" in str(fig_frontera.data[1].name)
+    assert "CVaR/NCO" in texto_frontera_referencia()
+
+    fig_clasificada = graficos_interactivos.frontera_clasificada(payload)
+    trazas_nube = [t for t in fig_clasificada.data if str(t.name).startswith("Universo")]
+    assert trazas_nube
+    assert all(t.customdata is not None for t in trazas_nube)
+    assert all("Pesos" in t.hovertemplate for t in trazas_nube)
+
+
+def test_html_acepta_figuras_png_del_pdf_sin_tuple_to_html(momentos, entrada, cfg, tmp_path, monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    import plotly.graph_objects as go
+
+    from OPTIMIZACION.frontera import construir_frontera
+    from OPTIMIZACION.perfiles import seleccionar_perfiles
+    from REPORTES.dashboard_html import generar_html
+    from RIESGO.forecast import calcular_forecast, calcular_simulacion
+
+    fr = construir_frontera(momentos.retornos_ajustados, momentos.cov_estructural, cfg)
+    candidato = seleccionar_perfiles(fr, momentos, cfg)[0]
+    candidato = replace(
+        candidato,
+        motor_optimizacion="MARKOWITZ",
+        forecast=calcular_forecast(candidato.pesos, entrada.log_retornos, momentos, cfg),
+        simulacion=calcular_simulacion(candidato.pesos, entrada.log_retornos, cfg),
+        score=1.0,
+    )
+    payload = SimpleNamespace(
+        configuracion=cfg,
+        entrada=entrada,
+        momentos=momentos,
+        frontera=fr,
+        candidatos=(candidato,),
+        recomendada=candidato,
+        regimen=SimpleNamespace(
+            etiqueta="baja_volatilidad",
+            percentil_volatilidad=0.2,
+            volatilidad_actual=0.1,
+            correlacion_media_actual=0.3,
+            descripcion="Régimen sintético.",
+        ),
+        recomendacion=SimpleNamespace(detalle="Test.", criterio="Score."),
+        frontera_degenerada=False,
+        nota_frontera="",
+        clasificacion_frontera=fr.puntos,
+        clasificacion_nube=fr.nube_factible,
+        anclas=(),
+        leaderboard=(),
+    )
+    figuras_plotly = {
+        clave: go.Figure(go.Scatter(x=[0, 1], y=[0, 1]))
+        for clave in ("pesos", "mcr", "fan_chart", "var_forecast", "frontera", "correlacion")
+    }
+    monkeypatch.setattr(
+        "REPORTES.dashboard_html.graficos_interactivos.generar_figuras",
+        lambda _payload: figuras_plotly,
+    )
+
+    figuras_png_pdf = {
+        clave: (tmp_path / f"{clave}.png", "data:image/png;base64,AA==")
+        for clave in figuras_plotly
+    }
+    ruta = generar_html(payload, tmp_path / "informe.html", figuras=figuras_png_pdf)
+
+    assert ruta.exists()
+    assert "Informe de cartera" in ruta.read_text(encoding="utf-8")
+
+
 # --------------------------------------------------------------------------- #
 #  Perfiles y MCR                                                              #
 # --------------------------------------------------------------------------- #
@@ -177,6 +318,36 @@ def test_score_asignado_y_finito(momentos, entrada, cfg):
     puntuados = calcular_score_cartera(cands, cfg)
     assert all(np.isfinite(c.score) for c in puntuados)
     assert max(puntuados, key=lambda c: c.score).score is not None
+
+
+def test_enriquecer_candidatos_riesgo_conserva_orden(momentos, entrada, cfg, monkeypatch):
+    from OPTIMIZACION.frontera import construir_frontera
+    from OPTIMIZACION.perfiles import seleccionar_perfiles
+    from RIESGO import forecast
+
+    fr = construir_frontera(momentos.retornos_ajustados, momentos.cov_estructural, cfg)
+    candidatos = seleccionar_perfiles(fr, momentos, cfg)
+
+    def fake_forecast(pesos, *_args):
+        return f"forecast-{float(pesos.iloc[0]):.6f}"
+
+    def fake_simulacion(pesos, *_args):
+        return f"sim-{float(pesos.iloc[0]):.6f}"
+
+    monkeypatch.setattr(forecast, "calcular_forecast", fake_forecast)
+    monkeypatch.setattr(forecast, "calcular_simulacion", fake_simulacion)
+
+    enriquecidos = forecast.enriquecer_candidatos_riesgo(
+        candidatos,
+        entrada.log_retornos,
+        momentos,
+        cfg,
+        max_workers=4,
+    )
+
+    assert [c.nivel for c in enriquecidos] == [c.nivel for c in candidatos]
+    assert all(str(c.forecast).startswith("forecast-") for c in enriquecidos)
+    assert all(str(c.simulacion).startswith("sim-") for c in enriquecidos)
 
 
 def test_binding_montecarlo_no_devuelve_trayectorias():

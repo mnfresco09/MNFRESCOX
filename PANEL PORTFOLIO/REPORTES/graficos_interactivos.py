@@ -11,18 +11,18 @@ import plotly.graph_objects as go
 
 from CONTRATOS.modelos import ReportPayload
 
-from . import estilo
+from . import estilo, narrativa
 
 _FUENTE = "-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif"
 
 
 def _layout(fig: go.Figure, titulo: str, x: str, y: str, alto: int = 430) -> go.Figure:
     fig.update_layout(
-        title=dict(text=titulo, font=dict(size=15, color=estilo.TINTA)),
+        title=dict(text=titulo, font=dict(size=14, color=estilo.TINTA)),
         xaxis_title=x, yaxis_title=y, height=alto,
         font=dict(family=_FUENTE, size=12, color=estilo.SUAVE),
         plot_bgcolor="white", paper_bgcolor="white",
-        margin=dict(l=60, r=24, t=48, b=48),
+        margin=dict(l=60, r=24, t=44, b=48),
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
@@ -56,6 +56,81 @@ def fan_chart(payload: ReportPayload) -> go.Figure:
     titulo = (f"Proyección del capital a {sim.horizonte_dias} días — "
               f"{estilo.nombre_nivel(payload.recomendada.nivel, payload.configuracion.idioma_reporte)}")
     return _layout(fig, titulo, "Días bursátiles", "Capital estimado (€)", 460)
+
+
+def equity_drawdown(payload: ReportPayload) -> go.Figure:
+    """Equity y drawdown histórico (in-sample) de la cartera SELECCIONADA.
+
+    Reconstruye la curva de capital aplicando los pesos recomendados (rebalanceo
+    diario a peso fijo) a los log-retornos alineados desde la fecha de inicio, y
+    su drawdown asociado. Estética de la imagen de referencia pero fondo blanco:
+    equity en verde y drawdown en rojo, ambos como líneas SIN relleno, sobre el
+    mismo eje temporal (drawdown en eje secundario para que sea legible).
+
+    Nota: es desempeño in-sample con pesos fijos, no una promesa de retorno.
+    """
+    cfg = payload.configuracion
+    cap = cfg.capital_base
+    lr = payload.entrada.log_retornos
+    pesos_vec = payload.recomendada.pesos.reindex(lr.columns).fillna(0.0).to_numpy()
+
+    # Retorno simple diario por activo → cartera rebalanceada a peso fijo.
+    simples = np.expm1(lr.to_numpy())
+    port = simples @ pesos_vec
+    equity = cap * np.cumprod(1.0 + port)
+
+    fechas = lr.index.to_numpy()
+    # Sembrar el punto inicial (capital base en la fecha de inicio).
+    if len(fechas) > 1:
+        f0 = fechas[0] - (fechas[1] - fechas[0])
+    else:
+        f0 = fechas[0]
+    fechas_e = np.concatenate([[f0], fechas])
+    equity = np.concatenate([[cap], equity])
+    pico = np.maximum.accumulate(equity)
+    drawdown = (equity / pico - 1.0) * 100.0
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=fechas_e, y=equity, mode="lines", name="Equity (€)",
+        line=dict(color=estilo.VERDE, width=2.0), yaxis="y",
+        hovertemplate="%{x|%d-%m-%Y}<br>Equity: €%{y:,.0f}<extra></extra>"))
+    fig.add_trace(go.Scatter(
+        x=fechas_e, y=drawdown, mode="lines", name="Drawdown (%)",
+        line=dict(color=estilo.NEG, width=1.4), yaxis="y2",
+        hovertemplate="%{x|%d-%m-%Y}<br>Drawdown: %{y:.1f}%<extra></extra>"))
+
+    # Rangos enfrentados: el baseline de cada serie en el CENTRO vertical, para
+    # que equity crezca hacia arriba (mitad superior) y drawdown hacia abajo
+    # (mitad inferior) sin pisarse. Equity: su mínimo cae en el centro; drawdown:
+    # el 0% cae en el centro.
+    e_min, e_max = float(equity.min()), float(equity.max())
+    pad_e = (e_max - e_min) * 0.05 or max(abs(e_max) * 0.05, 1.0)
+    e_top = e_max + pad_e
+    e_lo = 2.0 * e_min - e_top                       # e_min queda en el 50%
+    d_min = float(drawdown.min())
+    pad_d = abs(d_min) * 0.05 or 1.0
+    d_bot = d_min - pad_d                             # 0% queda en el 50%
+
+    nivel = estilo.nombre_nivel(payload.recomendada.nivel, cfg.idioma_reporte)
+    titulo = f"Equity y drawdown histórico — cartera {nivel} (in-sample, peso fijo)"
+    fig.update_layout(
+        title=dict(text=titulo, font=dict(size=14, color=estilo.TINTA)),
+        height=470,
+        font=dict(family=_FUENTE, size=12, color=estilo.SUAVE),
+        plot_bgcolor="white", paper_bgcolor="white",
+        margin=dict(l=66, r=66, t=44, b=48),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        xaxis=dict(title="Fecha", gridcolor=estilo.LINEA, zeroline=False),
+        yaxis=dict(title="Equity (€)", gridcolor=estilo.LINEA, zeroline=False,
+                   tickformat=",.0f", side="left", range=[e_lo, e_top],
+                   title_font=dict(color=estilo.VERDE)),
+        yaxis2=dict(title="Drawdown (%)", overlaying="y", side="right",
+                    showgrid=False, zeroline=True, zerolinecolor=estilo.LINEA,
+                    range=[d_bot, -d_bot], title_font=dict(color=estilo.NEG)),
+    )
+    return fig
 
 
 def pesos(payload: ReportPayload) -> go.Figure:
@@ -106,31 +181,54 @@ def frontera(payload: ReportPayload) -> go.Figure:
     nube = fr.nube_factible
     puntos = fr.puntos
     fig = go.Figure()
+    activos = [c[len("peso·"):] for c in puntos.columns if c.startswith("peso·")]
+    pesos_nube = [_pesos_texto(f, activos) for _, f in nube.iterrows()]
     fig.add_trace(go.Scattergl(
         x=nube["volatilidad"] * 100, y=nube["retorno"] * 100, mode="markers",
         marker=dict(size=4, color=nube["sharpe"], colorscale="Blues", opacity=0.45,
                     colorbar=dict(title="Sharpe")),
-        name="Universo factible", hovertemplate="vol %{x:.2f}% · ret %{y:.2f}%<extra></extra>"))
-    activos = [c[len("peso·"):] for c in puntos.columns if c.startswith("peso·")]
+        name="Universo factible",
+        customdata=list(zip(pesos_nube, nube["sharpe"].astype(float))),
+        hovertemplate=("vol %{x:.2f}% · ret %{y:.2f}% · Sharpe %{customdata[1]:.2f}<br>"
+                       "<b>Pesos:</b> %{customdata[0]}<extra></extra>")))
     pesos_str = [_pesos_texto(f, activos) for _, f in puntos.iterrows()]
     fig.add_trace(go.Scatter(
         x=puntos["volatilidad"] * 100, y=puntos["retorno"] * 100, mode="lines+markers",
         line=dict(color=estilo.TINTA, width=2.0), marker=dict(size=6, color=estilo.TINTA),
-        name="Frontera eficiente", customdata=list(zip(pesos_str, puntos["sharpe"].astype(float))),
+        name="Frontera MV de referencia", customdata=list(zip(pesos_str, puntos["sharpe"].astype(float))),
         hovertemplate=("vol %{x:.2f}% · ret %{y:.2f}% · Sharpe %{customdata[1]:.2f}<br>"
                        "<b>Pesos:</b> %{customdata[0]}<extra></extra>")))
     for c in payload.candidatos:
         nombre = f"{c.motor_optimizacion}/{estilo.nombre_nivel(c.nivel, payload.configuracion.idioma_reporte)}"
+        motor = c.motor_optimizacion or ""
+        pesos_candidato = _pesos_serie_texto(c.pesos)
         fig.add_trace(go.Scatter(
             x=[c.volatilidad_estructural * 100], y=[c.retorno_esperado * 100], mode="markers",
-            marker=dict(size=14, color=estilo.NIVEL_COLOR.get(c.nivel, estilo.ACENTO),
-                        line=dict(color="white", width=1.5)),
+            marker=dict(
+                size=14,
+                color=estilo.MOTOR_COLOR.get(motor, estilo.ACENTO),
+                symbol=_simbolo_motor(motor),
+                line=dict(color="white", width=1.5),
+            ),
             name=nombre,
+            customdata=[(pesos_candidato, c.sharpe)],
             hovertemplate=f"{nombre}<br>"
-                          "vol %{x:.2f}% · ret %{y:.2f}%<extra></extra>"))
-    f = _layout(fig, "Frontera eficiente restringida y candidatos", "Volatilidad anual (%)",
+                          "vol %{x:.2f}% · ret %{y:.2f}% · Sharpe %{customdata[1]:.2f}<br>"
+                          "<b>Pesos:</b> %{customdata[0]}<extra></extra>"))
+    f = _layout(fig, "Riesgo-retorno: frontera MV de referencia vs retadores",
+                "Volatilidad anual (%)",
                 "Retorno esperado anual (%)", 480)
-    f.update_layout(hovermode="closest")
+    f.update_layout(
+        hovermode="closest",
+        margin=dict(l=60, r=24, t=68, b=106),
+        legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="left", x=0),
+        annotations=[dict(
+            text=narrativa.texto_frontera_breve(),
+            xref="paper", yref="paper", x=0, y=-0.30, showarrow=False,
+            xanchor="left", yanchor="top", align="left",
+            font=dict(size=10, color=estilo.SUAVE),
+        )],
+    )
     return f
 
 
@@ -147,10 +245,25 @@ def _pesos_texto(fila, activos: list[str]) -> str:
     return " · ".join(f"{a} {w*100:.1f}%" for a, w in pares if w > 0.005)
 
 
+def _pesos_serie_texto(pesos) -> str:
+    pares = pesos[pesos > 0.005].sort_values(ascending=False)
+    return " · ".join(f"{a} {float(w)*100:.1f}%" for a, w in pares.items())
+
+
+def _simbolo_motor(motor: str) -> str:
+    return {"MARKOWITZ": "circle", "CVAR": "diamond", "NCO": "square"}.get(motor, "circle")
+
+
 def _customdata_frontera(sub, activos: list[str]):
     """[pesos_str, sharpe, diversificacion] por punto."""
     pesos = [_pesos_texto(f, activos) for _, f in sub.iterrows()]
     return list(zip(pesos, sub["sharpe"].astype(float), sub["diversificacion"].astype(float)))
+
+
+def _customdata_universo(sub, activos: list[str]):
+    """[pesos_str, sharpe] por punto de la nube factible."""
+    pesos = [_pesos_texto(f, activos) for _, f in sub.iterrows()]
+    return list(zip(pesos, sub["sharpe"].astype(float)))
 
 
 def frontera_clasificada(payload: ReportPayload) -> go.Figure:
@@ -169,8 +282,12 @@ def frontera_clasificada(payload: ReportPayload) -> go.Figure:
         if not sub.empty:
             fig.add_trace(go.Scattergl(
                 x=sub["volatilidad"] * 100, y=sub["retorno"] * 100, mode="markers",
-                marker=dict(size=4, color=color, opacity=0.18), name=f"Universo {clase}",
-                hoverinfo="skip", showlegend=False))
+                marker=dict(size=4, color=color, opacity=0.18), name=f"Universo factible · {clase}",
+                showlegend=False,
+                customdata=_customdata_universo(sub, activos),
+                hovertemplate=(f"<b>Universo {clase}</b> · vol %{{x:.2f}}% · ret %{{y:.2f}}%<br>"
+                               "Sharpe %{customdata[1]:.2f}<br>"
+                               "<b>Pesos:</b> %{customdata[0]}<extra></extra>")))
     # Frontera por clase (con pesos en el hover y en customdata para el clic).
     for clase, color in _CLASE_COLOR.items():
         sub = cf[cf["clase"] == clase]
@@ -178,7 +295,7 @@ def frontera_clasificada(payload: ReportPayload) -> go.Figure:
             fig.add_trace(go.Scatter(
                 x=sub["volatilidad"] * 100, y=sub["retorno"] * 100, mode="markers",
                 marker=dict(size=8, color=color, line=dict(color="white", width=0.6)),
-                name=f"Frontera · {estilo.nombre_nivel(clase, payload.configuracion.idioma_reporte)}",
+                name=f"Frontera MV · {estilo.nombre_nivel(clase, payload.configuracion.idioma_reporte)}",
                 hovertemplate=(f"<b>{clase.title()}</b> · vol %{{x:.2f}}% · ret %{{y:.2f}}%<br>"
                                "Sharpe %{customdata[1]:.2f} · Div %{customdata[2]:.2f}<br>"
                                "<b>Pesos:</b> %{customdata[0]}<extra></extra>"),
@@ -191,9 +308,13 @@ def frontera_clasificada(payload: ReportPayload) -> go.Figure:
             marker=dict(size=15, color=estilo.TINTA, symbol="diamond", line=dict(color="white", width=1.5)),
             text=[nombre], textposition="top center", textfont=dict(size=9, color=estilo.TINTA),
             name=nombre, showlegend=False, hovertemplate=f"{nombre}<br>vol %{{x:.2f}}%<extra></extra>"))
-    f = _layout(fig, "Frontera clasificada por banda de riesgo (anclas + bandas)",
+    f = _layout(fig, "Frontera MV clasificada por banda de riesgo",
                 "Volatilidad anual (%)", "Retorno esperado anual (%)", 500)
-    f.update_layout(hovermode="closest")
+    f.update_layout(
+        hovermode="closest",
+        margin=dict(l=60, r=24, t=64, b=72),
+        legend=dict(orientation="h", yanchor="top", y=-0.14, xanchor="left", x=0),
+    )
     return f
 
 
@@ -207,9 +328,30 @@ def correlacion(payload: ReportPayload) -> go.Figure:
     return _layout(fig, "Correlación media", "", "", 440)
 
 
+def correlacion_rolling(payload: ReportPayload) -> go.Figure:
+    """Correlación media par-a-par en ventana móvil (cómo varía la diversificación
+    a lo largo del tiempo). Consume la serie ya calculada en MetricasHistoricas."""
+    mh = getattr(payload, "metricas_historicas", None)
+    ventana = mh.ventana_rolling if mh is not None else 252
+    fig = go.Figure()
+    if mh is not None and len(mh.correlacion_rolling):
+        s = mh.correlacion_rolling
+        fig.add_trace(go.Scatter(
+            x=s.index.to_numpy(), y=s.to_numpy(), mode="lines",
+            line=dict(color=estilo.ACENTO, width=1.8),
+            name=f"Correlación media (rolling {ventana}d)",
+            hovertemplate="%{x|%d-%m-%Y}<br>Corr media: %{y:.2f}<extra></extra>"))
+        media = float(s.mean())
+        fig.add_hline(y=media, line=dict(color=estilo.SUAVE, width=1, dash="dash"),
+                      annotation_text=f"media {media:.2f}", annotation_position="top left")
+    return _layout(fig, f"Correlación media móvil ({ventana} días)",
+                   "Fecha", "Correlación media", 380)
+
+
 def generar_figuras(payload: ReportPayload) -> dict[str, go.Figure]:
     figs = {
         "fan_chart": fan_chart(payload),
+        "equity_drawdown": equity_drawdown(payload),
         "pesos": pesos(payload),
         "mcr": mcr(payload),
         "var_forecast": var_forecast(payload),
@@ -218,4 +360,7 @@ def generar_figuras(payload: ReportPayload) -> dict[str, go.Figure]:
     }
     if len(payload.clasificacion_frontera) and len(payload.clasificacion_nube):
         figs["frontera_clasificada"] = frontera_clasificada(payload)
+    mh = getattr(payload, "metricas_historicas", None)
+    if mh is not None and len(getattr(mh, "correlacion_rolling", [])):
+        figs["correlacion_rolling"] = correlacion_rolling(payload)
     return figs

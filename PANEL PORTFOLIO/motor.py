@@ -14,11 +14,10 @@ Cada paso recibe un contexto mutable y un `log`. El resultado es un
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import pandas as pd
 
 from ANALISIS.analisis import calcular_momentos
+from ANALISIS.historico import calcular_metricas_historicas
 from CONTRATOS.modelos import (
     Configuracion,
     PortfolioInput,
@@ -29,10 +28,14 @@ from DATOS.alineacion import alinear_y_calcular_retornos
 from DATOS.cargador import cargar_cierres
 from DESCARGADOR.cache import asegurar_datos
 from OPTIMIZACION.estrategias import ejecutar_optimizacion
+from OPTIMIZACION.estrategias.consolidacion import (
+    consolidar_por_motor,
+    deduplicar_candidatos,
+)
 from RIESGO.exploracion_riesgo import construir_exploracion
-from RIESGO.forecast import calcular_forecast, calcular_simulacion
+from RIESGO.forecast import enriquecer_candidatos_riesgo
 from RIESGO.regimen import detectar_regimen
-from RIESGO.score import calcular_score_cartera
+from RIESGO.score import calcular_score_compuesto
 
 
 def _paso_datos(ctx: dict, log) -> None:
@@ -64,8 +67,10 @@ def _paso_momentos(ctx: dict, log) -> None:
 def _paso_frontera(ctx: dict, log) -> None:
     m = ctx["momentos"]
     resultado = ejecutar_optimizacion(ctx["entrada"], m, ctx["cfg"])
+    candidatos = deduplicar_candidatos(resultado.candidatos)
     ctx["frontera"] = resultado.frontera
-    ctx["candidatos"] = resultado.candidatos
+    ctx["candidatos"] = candidatos
+    ctx["candidatos_por_motor"] = consolidar_por_motor(candidatos)
     ctx["curva_top_sharpe"] = resultado.curva_top_sharpe
     ctx["motores_ejecutados"] = resultado.motores_ejecutados
     motores = ", ".join(resultado.motores_ejecutados)
@@ -81,14 +86,8 @@ def _paso_perfiles(ctx: dict, log) -> None:
 def _paso_riesgo(ctx: dict, log) -> None:
     cfg = ctx["cfg"]
     log_ret = ctx["entrada"].log_retornos
-    actualizados = []
-    fuente = "rust"
-    for c in ctx["candidatos"]:
-        fc = calcular_forecast(c.pesos, log_ret, ctx["momentos"], cfg)
-        sim = calcular_simulacion(c.pesos, log_ret, cfg)
-        fuente = sim.fuente
-        actualizados.append(replace(c, forecast=fc, simulacion=sim))
-    ctx["candidatos"] = tuple(actualizados)
+    ctx["candidatos"] = enriquecer_candidatos_riesgo(ctx["candidatos"], log_ret, ctx["momentos"], cfg)
+    fuente = ctx["candidatos"][0].simulacion.fuente if ctx["candidatos"] else "n/a"
     log(f"Forecast VaR/CVaR + simulación a {cfg.horizonte_dias}d lista (motor: {fuente}).")
 
 
@@ -98,11 +97,26 @@ def _paso_regimen(ctx: dict, log) -> None:
 
 
 def _paso_score(ctx: dict, log) -> None:
-    ctx["candidatos"] = calcular_score_cartera(ctx["candidatos"], ctx["cfg"])
+    ctx["candidatos"] = calcular_score_compuesto(
+        ctx["candidatos"],
+        ctx["cfg"],
+        correlacion=ctx["momentos"].correlacion,
+        log_retornos=ctx["entrada"].log_retornos,
+    )
+    ctx["candidatos_por_motor"] = consolidar_por_motor(ctx["candidatos"])
     ganadora = max(ctx["candidatos"], key=lambda c: c.score if c.score is not None else -1e18)
     ctx["recomendada"] = ganadora
     ctx["recomendacion"] = _recomendar(ganadora, ctx["regimen"])
-    log(f"Cartera recomendada: {ganadora.nivel} (score {ganadora.score:.2f}).")
+    log(f"Cartera recomendada: {ganadora.motor_optimizacion}/{ganadora.nivel} (score {ganadora.score:.2f}).")
+
+
+def _paso_historico(ctx: dict, log) -> None:
+    m = calcular_metricas_historicas(ctx["entrada"], ctx["recomendada"].pesos, ctx["cfg"])
+    ctx["metricas_historicas"] = m
+    log(
+        f"Métricas in-sample de la recomendada — MaxDD {m.max_drawdown:.1%}, "
+        f"CAGR {m.cagr:.1%}, Sharpe hist. {m.sharpe_historico:.2f}, Calmar {m.calmar:.2f}."
+    )
 
 
 def _paso_exploracion(ctx: dict, log) -> None:
@@ -122,7 +136,10 @@ def _recomendar(ganadora, regimen) -> Recomendacion:
     )
     return Recomendacion(
         nivel=ganadora.nivel,
-        criterio="mayor score (Sharpe táctico penalizado por VaR, CDaR, concentración y turnover)",
+        criterio=(
+            "mayor Súper Score: eficiencia ajustada por Sortino/K-Ratio/Calmar, "
+            "penalizada por cola, drawdown, concentración y reglas duras"
+        ),
         detalle=detalle,
     )
 
@@ -136,6 +153,7 @@ PASOS = (
     ("Riesgo histórico, forecast y simulación", _paso_riesgo),
     ("Régimen de mercado", _paso_regimen),
     ("Score final y recomendación", _paso_score),
+    ("Métricas históricas de la cartera seleccionada", _paso_historico),
     ("Exploración multi-criterio (frontera + leaderboard)", _paso_exploracion),
 )
 
@@ -179,6 +197,7 @@ def ensamblar_payload(ctx: dict, log=lambda *_: None) -> ReportPayload:
         regimen=ctx["regimen"],
         recomendada=ctx["recomendada"],
         recomendacion=ctx["recomendacion"],
+        metricas_historicas=ctx.get("metricas_historicas"),
         curva_top_sharpe=ctx["curva_top_sharpe"],
         frontera_degenerada=degenerada,
         nota_frontera=nota,

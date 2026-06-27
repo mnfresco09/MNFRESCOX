@@ -45,6 +45,7 @@ from OPTIMIZACION.samplers import crear_sampler
 from REPORTES.excel import MAX_DETALLES_EXCEL, generar_excel
 from REPORTES.html import generar_htmls
 from REPORTES.informe import generar_informe
+from REPORTES.reporte_pdf import generar_reporte_pdf
 from REPORTES.persistencia import (
     guardar_optimizacion,
     preparar_resultados_combinacion,
@@ -431,6 +432,15 @@ def _ejecutar_combinacion(
         timeframe=timeframe,
         salida_tipo=salida.tipo,
     )
+    pdf_path = generar_reporte_pdf(
+        run_dir=run_dir,
+        trial=mejor,
+        estrategia=estrategia,
+        activo=activo,
+        timeframe=timeframe,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+    )
 
     mostrar_resumen_run(
         mejor=mejor,
@@ -439,8 +449,9 @@ def _ejecutar_combinacion(
         excel_path=excel_path,
         html_paths=html_paths,
         informe_path=informe_path,
+        dashboard_path=pdf_path,
     )
-    del trials, mejor, run_dir, excel_path, html_paths, informe_path
+    del trials, mejor, run_dir, excel_path, html_paths, informe_path, pdf_path
     gc.collect()
 
 

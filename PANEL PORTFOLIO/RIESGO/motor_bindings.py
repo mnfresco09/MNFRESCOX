@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 from importlib.machinery import ExtensionFileLoader
 from importlib.util import spec_from_loader
 from pathlib import Path
@@ -31,6 +32,7 @@ MOTOR_DIR = Path(__file__).resolve().parents[1] / "MOTOR_RIESGO"
 
 _motor_cache: ModuleType | None = None
 _motor_intentado = False
+_motor_lock = threading.Lock()
 
 
 # ===========================================================================
@@ -94,28 +96,33 @@ def _compilacion_fallida_vigente() -> bool:
 def cargar_motor() -> ModuleType | None:
     """Devuelve el módulo Rust o None si no es posible (→ fallback Python)."""
     global _motor_cache, _motor_intentado
-    if _motor_cache is not None:
-        return _motor_cache
-    if _motor_intentado:
-        return None
-    _motor_intentado = True
-    if not (MOTOR_DIR / "Cargo.toml").exists():
-        return None
-    ruta = _ruta_extension()
-    try:
-        if _fuentes_mas_nuevas(ruta):
-            if _compilacion_fallida_vigente():
-                return None  # build rota conocida: directo al fallback, sin reintentar
-            _compilar()
-        _motor_cache = _importar(ruta)
-        return _motor_cache
-    except (subprocess.CalledProcessError, FileNotFoundError, ImportError, OSError, RuntimeError):
+    with _motor_lock:
+        if _motor_cache is not None:
+            return _motor_cache
+        if _motor_intentado:
+            return None
+        _motor_intentado = True
+        if not (MOTOR_DIR / "Cargo.toml").exists():
+            return None
+        ruta = _ruta_extension()
         try:
-            _MARCADOR_FALLO.parent.mkdir(parents=True, exist_ok=True)
-            _MARCADOR_FALLO.write_text("compilacion fallida", encoding="utf-8")
-        except OSError:
-            pass
-        return None
+            if _fuentes_mas_nuevas(ruta):
+                if _compilacion_fallida_vigente():
+                    return None  # build rota conocida: directo al fallback, sin reintentar
+                _compilar()
+            _motor_cache = _importar(ruta)
+            try:
+                _MARCADOR_FALLO.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return _motor_cache
+        except (subprocess.CalledProcessError, FileNotFoundError, ImportError, OSError, RuntimeError):
+            try:
+                _MARCADOR_FALLO.parent.mkdir(parents=True, exist_ok=True)
+                _MARCADOR_FALLO.write_text("compilacion fallida", encoding="utf-8")
+            except OSError:
+                pass
+            return None
 
 
 # ===========================================================================

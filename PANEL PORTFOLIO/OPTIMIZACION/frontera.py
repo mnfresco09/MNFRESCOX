@@ -1,9 +1,10 @@
-"""Frontera eficiente restringida — el 100% de puntos factibles.
+"""Frontera eficiente Media-Varianza restringida.
 
-Pregunta 3 (mapa): para una rejilla DENSA de retornos objetivo entre el mínimo y
-el máximo factibles, se halla la mínima volatilidad alcanzable respetando las
-restricciones duras. Además se genera una NUBE de carteras factibles (fondo de
-densidad riesgo-retorno) para visualizar el universo completo de opciones.
+Pregunta 3 (mapa): para una rejilla densa de retornos objetivo entre la cartera
+de mínima varianza y el máximo retorno factible, se halla la mínima volatilidad
+alcanzable respetando las restricciones duras. La nube de fondo muestra carteras
+factibles aleatorias para entender el universo completo; la línea es la frontera
+Media-Varianza de referencia.
 
 Usa la covarianza ESTRUCTURAL (Ledoit-Wolf) y el μ ajustado.
 """
@@ -41,24 +42,37 @@ def construir_frontera(
     w_mv = opt.minima_varianza(cov_estructural, restr)
     w_ms = opt.maximo_sharpe(mu, cov_estructural, rf, restr)
 
-    # Frontera por barrido de aversión al riesgo λ: de máximo retorno (λ→0) a
-    # mínima varianza (λ→∞). Robusto aunque los retornos sean casi planos.
-    aversiones = np.logspace(-2.0, 3.0, cfg.n_puntos_frontera)
+    # Frontera real por retornos objetivo: evita que una escala concreta de λ
+    # deje fuera extremos cuando μ domina numéricamente a la varianza.
+    retorno_min_var = float(w_mv.reindex(activos).to_numpy(dtype=float) @ mu_v)
+    _, retorno_max = opt.rango_retorno_factible(mu.reindex(activos), restr, n)
+    objetivos = np.linspace(
+        min(retorno_min_var, retorno_max),
+        max(retorno_min_var, retorno_max),
+        max(int(cfg.n_puntos_frontera), 2),
+    )
     filas = []
-    vistos: set[tuple[float, float]] = set()
-    for lam in aversiones:
-        w = opt.utilidad_media_varianza(mu, cov_estructural, restr, float(lam))
+    vistos: set[tuple[float, ...]] = set()
+
+    def agregar(w: pd.Series | None) -> None:
         if w is None:
-            continue
+            return
         wv = w.to_numpy()
-        ret, vol, sharpe = _metricas(wv, mu_v, cov_v, rf)
-        clave = (round(ret, 6), round(vol, 6))
+        clave = tuple(np.round(wv, 8))
         if clave in vistos:
-            continue
+            return
         vistos.add(clave)
+        ret, vol, sharpe = _metricas(wv, mu_v, cov_v, rf)
         fila = {"retorno": ret, "volatilidad": vol, "sharpe": sharpe}
         fila.update({f"peso·{a}": float(p) for a, p in zip(activos, wv)})
         filas.append(fila)
+
+    agregar(w_mv)
+    for objetivo in objetivos:
+        w = opt.minima_varianza_para_retorno(mu, cov_estructural, restr, float(objetivo))
+        agregar(w)
+    agregar(w_ms)
+
     if not filas:
         raise ErrorOptimizacion("OPTIMIZACION", "No se pudo construir la frontera eficiente.")
     puntos = pd.DataFrame(filas).sort_values("volatilidad").reset_index(drop=True)
@@ -99,4 +113,6 @@ def _nube_factible(
     var = np.einsum("ij,jk,ik->i", muestras, cov_v, muestras)
     vol = np.sqrt(np.clip(var, 0.0, None))
     sharpe = np.where(vol > 0, (ret - rf) / vol, 0.0)
-    return pd.DataFrame({"retorno": ret, "volatilidad": vol, "sharpe": sharpe})
+    datos = {"retorno": ret, "volatilidad": vol, "sharpe": sharpe}
+    datos.update({f"peso·{a}": muestras[:, i] for i, a in enumerate(activos)})
+    return pd.DataFrame(datos)

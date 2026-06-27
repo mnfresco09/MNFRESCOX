@@ -84,6 +84,7 @@ def mostrar_resumen_run(
     excel_path: Any,
     html_paths: list[Any],
     informe_path: Any,
+    dashboard_path: Any = None,
 ) -> None:
     metricas = getattr(mejor, "metricas", {}) or {}
     titulo = _titulo_resultado(mejor)
@@ -93,6 +94,7 @@ def mostrar_resumen_run(
         excel_path=excel_path,
         html_paths=html_paths,
         informe_path=informe_path,
+        dashboard_path=dashboard_path,
     )
 
     _CONSOLE.print(
@@ -407,6 +409,7 @@ def _tabla_reportes_resultado(
     excel_path: Any,
     html_paths: list[Any],
     informe_path: Any,
+    dashboard_path: Any = None,
 ) -> Table:
     table = Table.grid(expand=True, padding=(0, 2))
     table.add_column(style=THEME.MUTED, width=10, justify="right", no_wrap=True)
@@ -415,6 +418,8 @@ def _tabla_reportes_resultado(
     table.add_row("EXCEL", _archivo_y_carpeta(excel_path) if excel_path is not None else _texto_dim("desactivado"))
     table.add_row("HTML", _texto_valor(f"{len(html_paths)} archivos"))
     table.add_row("INFORME", _archivo_y_carpeta(informe_path))
+    if dashboard_path is not None:
+        table.add_row("PDF", _archivo_y_carpeta(dashboard_path))
     table.add_row("RUN", _archivo_y_carpeta(run_dir))
     return table
 

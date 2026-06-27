@@ -26,11 +26,23 @@ from __future__ import annotations
 # ===========================================================================
 
 # --- Pregunta 1: ¿Qué activos tengo? (símbolos de Yahoo Finance) -----------
-TICKERS: list[str] = ["SPY", "QQQ", "TLT", "GLD", "VNQ", "EEM"]
+TICKERS: list[str] = [
+    "ASML",   # Semiconductores / litografía
+    "ETN",    # Electrificación / power management
+    "ENPH",   # Inversores / solar / electrónica de potencia
+    "FCX",    # Cobre
+    "RTX",    # Defensa / aeroespacial / misiles
+    "ROK",    # Automatización industrial
+    "XYL",    # Agua / bombas / tratamiento
+    "ERII",   # Desalación / recuperación energética
+    "CCJ",    # Uranio
+    "MOS",    # Fertilizantes / fosfato / potasa
+    "GTLS",   # Criogenia / tanques / gases / hidrógeno
+]
 
 # Activo que representa "el mercado" (correlación de cola y detección de régimen).
 # Debe pertenecer a TICKERS.
-ACTIVO_REFERENCIA: str = "SPY"
+ACTIVO_REFERENCIA: str = "XYL"
 
 # --- Periodo (datos diarios) -----------------------------------------------
 FECHA_INICIO: str = "2015-01-01"
@@ -38,12 +50,12 @@ FECHA_FIN: str = "2026-06-22"
 
 # --- Restricciones de cartera (institucionales, duras) ---------------------
 SOLO_LARGOS: bool = True                         # True = sin posiciones cortas
-PESO_MAXIMO_POR_ACTIVO: float | None = 0.66      # tope por activo; None = sin tope
-PESO_MINIMO_POR_ACTIVO: float = 0.0              # suelo por activo (long-only)
+PESO_MAXIMO_POR_ACTIVO: float | None = 0.20      # tope por activo; None = sin tope
+PESO_MINIMO_POR_ACTIVO: float = 0.00             # suelo por activo (long-only)
 TURNOVER_MAXIMO: float | None = None             # rotación máx. vs cartera previa; None = libre
 
 # --- Horizonte de decisión y capital ---------------------------------------
-HORIZONTE_DIAS: int = 21                          # horizonte del forecast (≈1 mes bursátil)
+HORIZONTE_DIAS: int = 252                         # horizonte del forecast (≈1 mes bursátil)
 CAPITAL_BASE: float = 1_000_000.0                 # capital de referencia para € en riesgo
 
 # --- Idioma del informe ----------------------------------------------------
@@ -56,7 +68,7 @@ IDIOMA_REPORTE: str = "es"
 # ===========================================================================
 
 # Tasa libre de riesgo anual EXPLÍCITA (para Sharpe y Black-Litterman).
-TASA_LIBRE_RIESGO_ANUAL: float = 0.05
+TASA_LIBRE_RIESGO_ANUAL: float = 0.035
 
 # Niveles de confianza para VaR / CVaR (forecast e histórico). Ambos se reportan.
 NIVEL_CONFIANZA_95: float = 0.95
@@ -67,8 +79,8 @@ NIVEL_CONFIANZA_99: float = 0.99
 # sobre el universo actual cada vez. Bajo=P20, Medio=P50, Alto=P80.
 PERCENTILES_PERFIL: dict[str, float] = {
     "bajo": 0.20,
-    "medio": 0.50,
-    "alto": 0.80,
+    "medio": 0.40,
+    "alto": 0.70,
 }
 
 # Motor de optimización activo. ALL ejecuta Champion vs Challenger:
@@ -84,3 +96,22 @@ VIEWS_BLACK_LITTERMAN: list[dict] = []
 
 # Sensibilidad del etiquetado de régimen: "conservador" / "estandar" / "sensible".
 PERFIL_REGIMEN: str = "estandar"
+
+
+
+FECHA_INICIO = "2015-01-01"
+FECHA_FIN = "2026-06-25"
+
+TICKERS = [
+    "ASML",   # Semiconductores / litografía
+    "ETN",    # Electrificación / power management
+    "ENPH",   # Inversores / solar / electrónica de potencia
+    "FCX",    # Cobre
+    "RTX",    # Defensa / aeroespacial / misiles
+    "ROK",    # Automatización industrial
+    "XYL",    # Agua / bombas / tratamiento
+    "ERII",   # Desalación / recuperación energética
+    "CCJ",    # Uranio
+    "MOS",    # Fertilizantes / fosfato / potasa
+    "GTLS",   # Criogenia / tanques / gases / hidrógeno
+]

@@ -14,6 +14,10 @@ llaman "pérdida máxima": son estimaciones bajo los supuestos del modelo.
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
@@ -21,6 +25,7 @@ from scipy.stats import norm
 from CONTRATOS.modelos import (
     Configuracion,
     MomentsResult,
+    PortfolioCandidate,
     RiskForecast,
     SimulationSummary,
 )
@@ -124,3 +129,33 @@ def calcular_simulacion(
         perdida_p5=float(resumen["perdida_p5"]),
         fuente=fuente,
     )
+
+
+def enriquecer_candidatos_riesgo(
+    candidatos: tuple[PortfolioCandidate, ...],
+    log_retornos: pd.DataFrame,
+    momentos: MomentsResult,
+    cfg: Configuracion,
+    max_workers: int | None = None,
+) -> tuple[PortfolioCandidate, ...]:
+    """Añade forecast y simulación a candidatos preservando orden.
+
+    No cambia ninguna métrica ni reduce calidad: solo ejecuta en paralelo el
+    cálculo independiente de cada cartera. `executor.map` conserva el orden de
+    `candidatos`, algo importante para el reporte y los tests.
+    """
+    if not candidatos:
+        return ()
+
+    def enriquecer(candidato: PortfolioCandidate) -> PortfolioCandidate:
+        fc = calcular_forecast(candidato.pesos, log_retornos, momentos, cfg)
+        sim = calcular_simulacion(candidato.pesos, log_retornos, cfg)
+        return replace(candidato, forecast=fc, simulacion=sim)
+
+    n_workers = max_workers
+    if n_workers is None:
+        n_workers = min(len(candidatos), max((os.cpu_count() or 1) - 1, 1), 8)
+    if n_workers <= 1 or len(candidatos) == 1:
+        return tuple(enriquecer(c) for c in candidatos)
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        return tuple(pool.map(enriquecer, candidatos))
