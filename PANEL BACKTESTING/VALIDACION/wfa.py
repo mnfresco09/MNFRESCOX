@@ -30,7 +30,7 @@ def generar_ventanas(
     n_obs: int,
     *,
     n_ventanas: int = 5,
-    fraccion_test: float = 0.2,
+    fraccion_test: float = 0.15,
     anchored: bool = False,
 ) -> list[VentanaWFA]:
     """Genera ventanas walk-forward sobre [0, n_obs).

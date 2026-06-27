@@ -22,8 +22,6 @@ from REPORTES.analitica import analitica_avanzada
 from REPORTES.metricas_presentacion import construir_analitica
 from REPORTES.persistencia import trades_dataframe
 
-MAX_DETALLES_EXCEL = 5
-
 # ── Paleta minimalista profesional (claro) ──────────────────────────────────
 INK = "#0F172A"; SUB = "#64748B"; LINE = "#E2E8F0"; BAND = "#F1F5F9"
 ACC = "#2563EB"; POS = "#15803D"; NEG = "#DC2626"; WARN = "#B45309"; HEAD = "#0F172A"
@@ -62,24 +60,15 @@ def generar_excel(
     fecha_inicio: date | None = None,
     fecha_fin: date | None = None,
 ) -> Path | None:
-    """Genera un Excel (una hoja) por cada uno de los top-N trials con replay.
-    Devuelve la ruta del Excel del mejor trial, o None si no hay ninguno."""
-    excel_dir = _base_resultados(run_dir) / "EXCEL"
-    excel_dir.mkdir(parents=True, exist_ok=True)
+    """Genera el Excel del MEJOR trial directamente en la carpeta final.
 
-    top = [
-        t for t in sorted(trials, key=lambda t: t.score, reverse=True)
-        if t.replay is not None
-    ][:MAX_DETALLES_EXCEL]
-    if not top:
+    Un único fichero `resultados.xlsx`. Devuelve su ruta, o None si el mejor
+    trial no tiene replay materializado.
+    """
+    if mejor is None or getattr(mejor, "replay", None) is None:
         return None
-
-    primero: Path | None = None
-    for trial in top:
-        path = _generar_excel_trial(excel_dir, trial, fecha_inicio, fecha_fin)
-        if primero is None:
-            primero = path
-    return primero
+    path = Path(run_dir) / "resultados.xlsx"
+    return _generar_excel_trial(path, mejor, fecha_inicio, fecha_fin)
 
 
 def verificar_excel(path: Path, filas_trades: int) -> None:
@@ -106,8 +95,8 @@ def verificar_excel(path: Path, filas_trades: int) -> None:
 # Generación
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _generar_excel_trial(excel_dir: Path, trial, fecha_inicio, fecha_fin) -> Path:
-    path = _unique_path(excel_dir / _nombre_detalle(trial))
+def _generar_excel_trial(path: Path, trial, fecha_inicio, fecha_fin) -> Path:
+    path = Path(path)
     trades = trades_dataframe(trial.replay)
     fi, ff = _resolver_fechas(trial, fecha_inicio, fecha_fin)
     avanzada = analitica_avanzada(
@@ -334,34 +323,6 @@ def _datetime_from_us(value: Any) -> datetime | None:
         return datetime.fromtimestamp(int(value) / 1_000_000, tz=timezone.utc).replace(tzinfo=None)
     except (TypeError, ValueError, OSError, OverflowError):
         return None
-
-
-def _base_resultados(run_dir: Path) -> Path:
-    run_dir = Path(run_dir)
-    if run_dir.parent.name.upper() == "DATOS":
-        return run_dir.parent.parent
-    return run_dir
-
-
-def _nombre_detalle(trial) -> str:
-    return f"TRIAL {int(trial.numero)} - {_score_nombre(trial.score)}.xlsx"
-
-
-def _score_nombre(score: float) -> str:
-    valor = f"{abs(float(score)):.6f}".rstrip("0").rstrip(".")
-    return f"NEG {valor}" if float(score) < 0 else valor
-
-
-def _unique_path(path: Path) -> Path:
-    if not path.exists():
-        return path
-    stem = path.stem
-    suffix = path.suffix
-    for idx in range(2, 10_000):
-        candidate = path.with_name(f"{stem}_{idx:02d}{suffix}")
-        if not candidate.exists():
-            return candidate
-    raise RuntimeError(f"[EXCEL] No se pudo crear nombre unico para {path}.")
 
 
 def _slug_excel(value: Any) -> str:

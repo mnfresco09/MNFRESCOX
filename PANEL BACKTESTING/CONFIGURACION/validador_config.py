@@ -103,6 +103,16 @@ def validar(cfg) -> None:
     min_trades_score = getattr(cfg, "MIN_TRADES_SCORE", 0)
     if not isinstance(min_trades_score, int) or min_trades_score < 0:
         errores.append("MIN_TRADES_SCORE debe ser un entero >= 0.")
+    if int(getattr(cfg, "TURNOVER_OBJETIVO", 100)) < 1:
+        errores.append("TURNOVER_OBJETIVO debe ser un entero >= 1.")
+    for nombre in ("PENALIZACION_TURNOVER_FACTOR", "PENALIZACION_COMPLEJIDAD_FACTOR"):
+        valor = getattr(cfg, nombre, 0.0)
+        if not isinstance(valor, (int, float)) or float(valor) < 0.0:
+            errores.append(f"{nombre} debe ser un número >= 0.")
+    if not isinstance(getattr(cfg, "OPTUNA_MULTIOBJETIVO", False), bool):
+        errores.append("OPTUNA_MULTIOBJETIVO debe ser True o False.")
+    if not isinstance(getattr(cfg, "MESETA_VECINOS", 7), int) or int(getattr(cfg, "MESETA_VECINOS", 7)) < 1:
+        errores.append("MESETA_VECINOS debe ser un entero >= 1.")
     if cfg.N_JOBS == 0:
         errores.append("N_JOBS no puede ser 0. Usa 1, -1 o -2.")
     max_jobs_pert = getattr(cfg, "PERTURBACIONES_MAX_JOBS", 4)
@@ -114,14 +124,11 @@ def validar(cfg) -> None:
     _validar_semillas(cfg, errores)
 
     _validar_perturbaciones(cfg, errores)
+    _validar_validacion(cfg, errores)
 
     # --- Resultados ---
     if not isinstance(cfg.USAR_EXCEL, bool):
         errores.append("USAR_EXCEL debe ser True o False.")
-    if cfg.MAX_PLOTS < 0:
-        errores.append("MAX_PLOTS debe ser >= 0.")
-    if cfg.MAX_ARCHIVOS < 1:
-        errores.append("MAX_ARCHIVOS debe ser >= 1.")
     rango = str(cfg.GRAFICA_RANGO).lower()
     if rango != "all" and rango != "custom" and not (rango.endswith("m") and rango[:-1].isdigit()):
         errores.append("GRAFICA_RANGO debe ser 'all', 'custom' o un texto como '3m'.")
@@ -232,6 +239,65 @@ def _validar_modo_y_holdout(cfg, inicio, fin, errores: list[str]) -> None:
             f"HOLDOUT_INICIO ({holdout_str}) no puede ser posterior a FECHA_FIN "
             f"({cfg.FECHA_FIN}); el holdout quedaría vacío."
         )
+
+
+def _validar_validacion(cfg, errores: list[str]) -> None:
+    """Valida los parámetros de la validación OOS (Fases 2-7)."""
+    if not isinstance(getattr(cfg, "VALIDACION_ACTIVA", False), bool):
+        errores.append("VALIDACION_ACTIVA debe ser True o False.")
+    if not getattr(cfg, "VALIDACION_ACTIVA", False):
+        return
+
+    n_grupos = getattr(cfg, "VALIDACION_N_GRUPOS", 6)
+    k = getattr(cfg, "VALIDACION_K", 2)
+    if not isinstance(n_grupos, int) or n_grupos < 2:
+        errores.append("VALIDACION_N_GRUPOS debe ser un entero >= 2.")
+    if not isinstance(k, int) or k < 1:
+        errores.append("VALIDACION_K debe ser un entero >= 1.")
+    elif isinstance(n_grupos, int) and k >= n_grupos:
+        errores.append(f"VALIDACION_K ({k}) debe ser < VALIDACION_N_GRUPOS ({n_grupos}).")
+
+    n_trials = getattr(cfg, "VALIDACION_N_TRIALS", 100)
+    if not isinstance(n_trials, int) or n_trials < 1:
+        errores.append("VALIDACION_N_TRIALS debe ser un entero >= 1.")
+
+    embargo = getattr(cfg, "VALIDACION_EMBARGO", 0.01)
+    if not isinstance(embargo, (int, float)) or not (0.0 <= float(embargo) < 1.0):
+        errores.append("VALIDACION_EMBARGO debe estar en [0, 1).")
+
+    dur = getattr(cfg, "VALIDACION_DURACION_TRADE", 1)
+    if not isinstance(dur, int) or dur < 1:
+        errores.append("VALIDACION_DURACION_TRADE debe ser un entero >= 1.")
+
+    if not isinstance(getattr(cfg, "VALIDACION_WFA_ACTIVA", True), bool):
+        errores.append("VALIDACION_WFA_ACTIVA debe ser True o False.")
+    if not isinstance(getattr(cfg, "VALIDACION_WFA_ANCHORED", False), bool):
+        errores.append("VALIDACION_WFA_ANCHORED debe ser True o False.")
+    ventanas = getattr(cfg, "VALIDACION_WFA_VENTANAS", 5)
+    if not isinstance(ventanas, int) or ventanas < 1:
+        errores.append("VALIDACION_WFA_VENTANAS debe ser un entero >= 1.")
+    fraccion = getattr(cfg, "VALIDACION_WFA_FRACCION", 0.15)
+    if not isinstance(fraccion, (int, float)) or not (0.0 < float(fraccion) < 1.0):
+        errores.append("VALIDACION_WFA_FRACCION debe estar en (0, 1).")
+    elif isinstance(ventanas, int) and ventanas >= 1 and (ventanas + 1) * float(fraccion) > 1.0:
+        errores.append(
+            f"(VALIDACION_WFA_VENTANAS+1)·VALIDACION_WFA_FRACCION = "
+            f"{(ventanas + 1) * float(fraccion):.2f} > 1: no queda train suficiente. "
+            f"Reduce VALIDACION_WFA_VENTANAS o VALIDACION_WFA_FRACCION."
+        )
+
+    boot_iter = getattr(cfg, "VALIDACION_BOOTSTRAP_ITER", 10_000)
+    if not isinstance(boot_iter, int) or boot_iter < 1:
+        errores.append("VALIDACION_BOOTSTRAP_ITER debe ser un entero >= 1.")
+    boot_bloque = getattr(cfg, "VALIDACION_BOOTSTRAP_BLOQUE", 1)
+    if not isinstance(boot_bloque, int) or boot_bloque < 1:
+        errores.append("VALIDACION_BOOTSTRAP_BLOQUE debe ser un entero >= 1.")
+    sr_obj = getattr(cfg, "VALIDACION_SHARPE_ANUAL_OBJETIVO", 1.0)
+    if not isinstance(sr_obj, (int, float)) or float(sr_obj) <= 0.0:
+        errores.append("VALIDACION_SHARPE_ANUAL_OBJETIVO debe ser > 0.")
+    nula_iter = getattr(cfg, "VALIDACION_NULA_ITER", 50)
+    if not isinstance(nula_iter, int) or nula_iter < 0:
+        errores.append("VALIDACION_NULA_ITER debe ser un entero >= 0.")
 
 
 def _validar_semillas(cfg, errores: list[str]) -> None:

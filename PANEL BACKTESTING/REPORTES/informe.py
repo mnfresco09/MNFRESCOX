@@ -66,9 +66,7 @@ def generar_informe(
     if not trials:
         raise ValueError("[INFORME] No hay trials para generar el informe.")
 
-    informe_dir = _base_resultados(run_dir) / "INFORME"
-    informe_dir.mkdir(parents=True, exist_ok=True)
-    path = _unique_path(informe_dir / "INFORME ROBUSTEZ.html")
+    path = Path(run_dir) / "analisis_optimizacion.html"
 
     payload = _crear_payload(
         trials=trials,
@@ -237,25 +235,6 @@ def _render_html(payload: dict) -> str:
         .replace("__TITULO__", titulo)
         .replace("__PLOTLY_CDN__", PLOTLY_CDN)
     )
-
-
-def _base_resultados(run_dir: Path) -> Path:
-    run_dir = Path(run_dir)
-    if run_dir.parent.name.upper() == "DATOS":
-        return run_dir.parent.parent
-    return run_dir
-
-
-def _unique_path(path: Path) -> Path:
-    if not path.exists():
-        return path
-    stem = path.stem
-    suffix = path.suffix
-    for idx in range(2, 10_000):
-        candidate = path.with_name(f"{stem}_{idx:02d}{suffix}")
-        if not candidate.exists():
-            return candidate
-    raise RuntimeError(f"[INFORME] No se pudo crear nombre único para {path}.")
 
 
 _TEMPLATE = r"""<!doctype html>

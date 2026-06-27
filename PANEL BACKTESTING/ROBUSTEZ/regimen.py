@@ -13,6 +13,45 @@ from dataclasses import dataclass
 import numpy as np
 
 
+def etiquetas_macd(
+    close,
+    *,
+    rapida: int = 12,
+    lenta: int = 26,
+    senal: int = 9,
+    umbral_lateral: float = 0.1,
+) -> np.ndarray:
+    """Etiqueta cada vela como alcista / bajista / lateral según el MACD.
+
+    Régimen = signo del histograma MACD (macd − señal). Para no clasificar como
+    direccional el ruido cerca de cero, se define una banda lateral proporcional
+    a la desviación típica del histograma (`umbral_lateral` · std).
+
+    Devuelve un array de strings de la misma longitud que `close`.
+    """
+    c = np.asarray(close, dtype=np.float64)
+    if c.size == 0:
+        return np.empty(0, dtype=object)
+    macd = _ema(c, rapida) - _ema(c, lenta)
+    histograma = macd - _ema(macd, senal)
+    sd = float(np.std(histograma)) or 1.0
+    banda = float(umbral_lateral) * sd
+    return np.where(
+        histograma > banda, "alcista",
+        np.where(histograma < -banda, "bajista", "lateral"),
+    )
+
+
+def _ema(x: np.ndarray, span: int) -> np.ndarray:
+    """Media móvil exponencial (mismo criterio de span que pandas.ewm)."""
+    alpha = 2.0 / (float(span) + 1.0)
+    out = np.empty_like(x)
+    out[0] = x[0]
+    for i in range(1, x.shape[0]):
+        out[i] = alpha * x[i] + (1.0 - alpha) * out[i - 1]
+    return out
+
+
 @dataclass(frozen=True)
 class MetricasRegimen:
     regimen: str

@@ -22,53 +22,42 @@ def generar_htmls(
     df_indicadores: pl.DataFrame | None = None,
     trials: list,
     estrategia,
-    max_plots: int,
     grafica_rango: str,
     grafica_desde: str,
     grafica_hasta: str,
     fecha_inicio=None,
     fecha_fin=None,
 ) -> list[Path]:
-    if max_plots <= 0:
+    if not trials:
         return []
     df_indicadores = df if df_indicadores is None else df_indicadores
-
-    html_dir = _base_resultados(run_dir) / "GRAFICA"
-    html_dir.mkdir(parents=True, exist_ok=True)
     # Sólo trials con replay materializado tienen trades para dibujar.
     candidatos = [t for t in trials if t.replay is not None]
-    mejores = sorted(candidatos, key=lambda t: t.score, reverse=True)[: min(max_plots, 5)]
+    if not candidatos:
+        return []
+    mejor = max(candidatos, key=lambda t: t.score)
     tv_script = obtener_script_libreria()
 
-    paths = []
-    for trial in mejores:
-        df_trial = _df_replay(trial, "df_tf", df)
-        df_indicadores_trial = _df_replay(trial, "df_tf", df_indicadores)
-        df_idx = df_trial.with_row_index("_i_")
-        path = _unique_path(
-            html_dir
-            / (
-                f"TRIAL {int(trial.numero)} - {_score_nombre(trial.score)}.html"
-            )
-        )
-        payload = _crear_payload(
-            df=df_trial,
-            df_idx=df_idx,
-            df_indicadores=df_indicadores_trial,
-            trial=trial,
-            estrategia=estrategia,
-            indicadores_precalculados=getattr(trial.replay, "indicadores", None),
-            grafica_rango=grafica_rango,
-            grafica_desde=grafica_desde,
-            grafica_hasta=grafica_hasta,
-            fecha_inicio=fecha_inicio,
-            fecha_fin=fecha_fin,
-        )
-        path.write_text(_render_html(payload, tv_script), encoding="utf-8")
-        paths.append(path)
-
-    verificar_htmls(paths)
-    return paths
+    df_trial = _df_replay(mejor, "df_tf", df)
+    df_indicadores_trial = _df_replay(mejor, "df_tf", df_indicadores)
+    df_idx = df_trial.with_row_index("_i_")
+    path = Path(run_dir) / "grafico_operativa.html"
+    payload = _crear_payload(
+        df=df_trial,
+        df_idx=df_idx,
+        df_indicadores=df_indicadores_trial,
+        trial=mejor,
+        estrategia=estrategia,
+        indicadores_precalculados=getattr(mejor.replay, "indicadores", None),
+        grafica_rango=grafica_rango,
+        grafica_desde=grafica_desde,
+        grafica_hasta=grafica_hasta,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+    )
+    path.write_text(_render_html(payload, tv_script), encoding="utf-8")
+    verificar_htmls([path])
+    return [path]
 
 
 def _df_replay(trial, atributo: str, fallback: pl.DataFrame) -> pl.DataFrame:
@@ -492,30 +481,6 @@ def _json_safe(valor):
     if hasattr(valor, "item"):
         return _json_safe(valor.item())
     return str(valor)
-
-
-def _base_resultados(run_dir: Path) -> Path:
-    run_dir = Path(run_dir)
-    if run_dir.parent.name.upper() == "DATOS":
-        return run_dir.parent.parent
-    return run_dir
-
-
-def _score_nombre(score: float) -> str:
-    valor = f"{abs(float(score)):.6f}".rstrip("0").rstrip(".")
-    return f"NEG {valor}" if float(score) < 0 else valor
-
-
-def _unique_path(path: Path) -> Path:
-    if not path.exists():
-        return path
-    stem = path.stem
-    suffix = path.suffix
-    for idx in range(2, 10_000):
-        candidate = path.with_name(f"{stem}_{idx:02d}{suffix}")
-        if not candidate.exists():
-            return candidate
-    raise RuntimeError(f"[HTML] No se pudo crear nombre unico para {path}.")
 
 
 def _render_html(payload: dict, tv_script: str) -> str:

@@ -43,16 +43,26 @@ from NUCLEO.proyeccion import proyectar_senales_a_base
 from NUCLEO.registro import cargar_estrategias, obtener_estrategia
 from OPTIMIZACION.metricas import calcular_metricas
 from OPTIMIZACION.puntuacion import calcular_score
+from OPTIMIZACION.robustez_objetivo import (
+    DIRECCIONES_PARETO,
+    penalizacion_complejidad,
+    penalizacion_turnover,
+    seleccionar_meseta,
+    vector_pareto,
+)
 from OPTIMIZACION.samplers import crear_sampler
-from REPORTES.excel import MAX_DETALLES_EXCEL, generar_excel
+from ROBUSTEZ import nula as robustez_nula
+from ROBUSTEZ import regimen as robustez_regimen
+from REPORTES.excel import generar_excel
 from REPORTES.html import generar_htmls
 from REPORTES.informe import generar_informe
-from REPORTES.reporte_pdf import generar_reporte_pdf
 from REPORTES.persistencia import (
-    guardar_optimizacion,
     preparar_resultados_combinacion,
     ruta_base_combinacion,
 )
+from REPORTES.informe_institucional import generar_informe_institucional
+from VALIDACION.integracion import ejecutar_validacion_completa
+from VALIDACION.metricas_subconjunto import metricas_en_indices, retornos_por_trade
 from REPORTES.rich import (
     MonitorOptimizacion,
     mostrar_aviso_perturbaciones,
@@ -112,6 +122,7 @@ class TrialResultado:
     conteo_salidas: dict[int, int] | None = None
     perturbacion_seed: int | None = None
     replay: Optional[ReplayTrial] = None
+    en_pareto: bool = False  # en el frente de Pareto (modo multiobjetivo)
 
 
 @dataclass
@@ -315,7 +326,6 @@ def _procesar_timeframe(
                     preparado=preparado,
                     ctx=ctx,
                     timeframe=timeframe,
-                    huella_tf=huella_tf,
                     estrategia=estrategia,
                     salida=salida,
                     n_jobs=n_jobs,
@@ -349,7 +359,6 @@ def _ejecutar_combinacion(
     preparado: ActivoPreparado,
     ctx: ContextoCombinacion,
     timeframe: str,
-    huella_tf: object,
     estrategia,
     salida: ExitConfig,
     n_jobs: int,
@@ -389,38 +398,26 @@ def _ejecutar_combinacion(
         contexto = f"{activo}/{timeframe}/{estrategia.NOMBRE}/{salida.tipo}"
         raise RuntimeError(f"[RUN] Fallo en {contexto}: {exc}") from exc
 
-    mejor = max(trials, key=lambda t: t.score)
+    mejor = _seleccionar_mejor(trials)
     if mejor.replay is None:
         raise RuntimeError("[RUN] El mejor trial no tiene replay materializado.")
-    # Optimizacion correcta: ahora si se borran los resultados previos de esta
-    # combinacion (borrado-tras-exito, no antes).
-    preparar_resultados_combinacion(
+
+    # Borrado-tras-exito: la carpeta final de la combinacion se reemplaza por
+    # completo (estrategia/timeframe/salida/activo). Relanzar la misma
+    # combinacion sustituye el resultado anterior.
+    run_dir = preparar_resultados_combinacion(
         carpeta_resultados=cfg.CARPETA_RESULTADOS,
         activo=activo,
         timeframe=timeframe,
         estrategia_nombre=estrategia.NOMBRE,
         exit_type=salida.tipo,
     )
-    run_dir = guardar_optimizacion(
-        carpeta_resultados=cfg.CARPETA_RESULTADOS,
-        activo=activo,
-        timeframe=timeframe,
-        estrategia_id=estrategia.ID,
-        estrategia_nombre=estrategia.NOMBRE,
-        salida=salida,
-        trials=trials,
-        mejor=mejor,
-        huella_base=preparado.huella_base,
-        huella_timeframe=huella_tf,
-        conteo_senales_mejor=mejor.conteo_senales,
-        conteo_salidas_mejor=mejor.conteo_salidas,
-        max_archivos=cfg.MAX_ARCHIVOS,
-    )
 
     # Fase 0: registrar TODOS los trials en la base de experimentos. Esto
     # alimenta el conteo real de `N` para el Deflated Sharpe (Fase 3): el `N`
     # correcto no son los trials de este run, sino todos los probados en el
-    # activo a lo largo de la investigación.
+    # activo a lo largo de la investigación. La traza completa (huella,
+    # metadatos, trials) vive en la BD, no en ficheros sueltos en la carpeta.
     _registrar_experimento(
         preparado=preparado,
         timeframe=timeframe,
@@ -429,6 +426,8 @@ def _ejecutar_combinacion(
         trials=trials,
     )
 
+    # Carpeta final: exactamente cuatro ficheros (Excel + 2 HTML + informe
+    # avanzado), todos del mejor trial / de la optimización.
     excel_path = (
         generar_excel(run_dir, trials, mejor, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
         if cfg.USAR_EXCEL else None
@@ -439,7 +438,6 @@ def _ejecutar_combinacion(
         df_indicadores=ctx.df_tf,
         trials=trials,
         estrategia=estrategia,
-        max_plots=cfg.MAX_PLOTS,
         grafica_rango=cfg.GRAFICA_RANGO,
         grafica_desde=cfg.GRAFICA_DESDE,
         grafica_hasta=cfg.GRAFICA_HASTA,
@@ -454,14 +452,18 @@ def _ejecutar_combinacion(
         timeframe=timeframe,
         salida_tipo=salida.tipo,
     )
-    pdf_path = generar_reporte_pdf(
-        run_dir=run_dir,
-        trial=mejor,
-        estrategia=estrategia,
-        activo=activo,
+
+    # Validación fuera de muestra (CPCV/WFA/DSR/robustez) + veredicto e informe
+    # avanzado. Se ejecuta tras registrar el run, para que el N del DSR ya
+    # incluya los trials de esta combinación.
+    _validar_y_reportar_oos(
+        preparado=preparado,
+        ctx=ctx,
         timeframe=timeframe,
-        fecha_inicio=fecha_inicio,
-        fecha_fin=fecha_fin,
+        estrategia=estrategia,
+        salida=salida,
+        mejor=mejor,
+        run_dir=run_dir,
     )
 
     mostrar_resumen_run(
@@ -471,9 +473,9 @@ def _ejecutar_combinacion(
         excel_path=excel_path,
         html_paths=html_paths,
         informe_path=informe_path,
-        dashboard_path=pdf_path,
+        dashboard_path=None,
     )
-    del trials, mejor, run_dir, excel_path, html_paths, informe_path, pdf_path
+    del trials, mejor, run_dir, excel_path, html_paths, informe_path
     gc.collect()
 
 
@@ -520,6 +522,299 @@ def _registrar_experimento(
         )
 
 
+# ---------------------------------------------------------------------------
+# Validación fuera de muestra (Fases 2-7): adaptador del motor + orquestación
+# ---------------------------------------------------------------------------
+
+def _params_estrategia(parametros: dict) -> dict:
+    """Filtra los parámetros de estrategia (excluye los de salida/riesgo)."""
+    return {
+        k: v for k, v in parametros.items()
+        if not k.startswith("exit_") and not k.startswith("risk_")
+    }
+
+
+def _aplicar_penalizaciones_robustez(score: float, n_trades: int, n_parametros: int) -> float:
+    """Aplica las penalizaciones de turnover y complejidad (Fase 4).
+
+    Con los factores a 0 (por defecto) devuelve el score intacto, así que el
+    comportamiento no cambia salvo que se activen explícitamente en config.
+    """
+    score = penalizacion_turnover(
+        score,
+        n_trades,
+        trades_objetivo=int(getattr(cfg, "TURNOVER_OBJETIVO", 100)),
+        factor=float(getattr(cfg, "PENALIZACION_TURNOVER_FACTOR", 0.0)),
+    )
+    score = penalizacion_complejidad(
+        score,
+        n_parametros,
+        factor=float(getattr(cfg, "PENALIZACION_COMPLEJIDAD_FACTOR", 0.0)),
+    )
+    return score
+
+
+def _simular_con_senales(*, ctx, salida_trial, senales_tf, salidas_custom=None) -> dict:
+    """Simula sobre la serie COMPLETA dadas unas señales ya construidas.
+
+    Reaprovecha la misma maquinaria que el replay (proyectar → simular_full), de
+    modo que el realismo de ejecución coincide con el del backtest principal.
+    Devuelve los trades (idx_entrada, pnl).
+    """
+    arrays_exec, senales_exec, salidas_exec = _preparar_ejecucion(
+        ctx=ctx, salida=salida_trial, senales_tf=senales_tf, salidas_custom=salidas_custom
+    )
+    sim_result = simular_full(
+        arrays_exec,
+        senales_exec,
+        sim_cfg=_sim_config(salida_trial, ctx=ctx),
+        salidas_custom=salidas_exec,
+    )
+    trades = sim_result.take_trades()
+    return {"idx_entrada": trades["idx_entrada"], "pnl": trades["pnl"]}
+
+
+def _simular_trades_para_validacion(*, ctx, estrategia, salida_trial, params_estrategia) -> dict:
+    """Genera las señales de la estrategia y simula (delega en `_simular_con_senales`)."""
+    senales_tf = estrategia.generar_senales(ctx.df_tf, params_estrategia)
+    salidas_custom = (
+        estrategia.generar_salidas(ctx.df_tf, params_estrategia)
+        if salida_trial.tipo == "CUSTOM"
+        else None
+    )
+    return _simular_con_senales(
+        ctx=ctx, salida_trial=salida_trial, senales_tf=senales_tf, salidas_custom=salidas_custom
+    )
+
+
+def _breakdown_regimen(ctx, trades: dict, saldo_por_trade: float) -> dict:
+    """Rendimiento del mejor trial separado por régimen de mercado (MACD)."""
+    idx = np.asarray(trades.get("idx_entrada", []), dtype=np.int64)
+    pnl = np.asarray(trades.get("pnl", []), dtype=np.float64)
+    if idx.size == 0:
+        return {}
+    etiquetas = robustez_regimen.etiquetas_macd(ctx.arrays_base.closes)
+    orden = np.argsort(idx, kind="stable")
+    retornos = pnl[orden] / (float(saldo_por_trade) or 1.0)
+    labels = etiquetas[idx[orden]]
+    res = robustez_regimen.rendimiento_por_regimen(retornos, labels)
+    return {
+        k: {"sharpe": v.sharpe, "n_trades": v.n_trades, "retorno_total": v.retorno_total}
+        for k, v in res.items()
+    }
+
+
+def _contraste_nula(*, ctx, salida, mejor, sharpe_real: float) -> str | None:
+    """Control de laboratorio: ¿bate el mejor trial a entradas aleatorias?
+
+    Corre `VALIDACION_NULA_ITER` estrategias de entradas aleatorias por la MISMA
+    maquinaria (mismos costes y salida), con una frecuencia de señales parecida a
+    la real, y contrasta el Sharpe real contra esa distribución nula.
+    """
+    n_iter = int(getattr(cfg, "VALIDACION_NULA_ITER", 0) or 0)
+    if n_iter <= 0 or salida.tipo == "CUSTOM" or not np.isfinite(sharpe_real):
+        return None
+
+    n_bars = int(ctx.df_tf.height)
+    conteo = mejor.conteo_senales or {}
+    n_senales = int(conteo.get(1, 0)) + int(conteo.get(-1, 0))
+    p = min(max(n_senales / n_bars, 1e-4), 0.5) if n_bars else 0.0
+    if p <= 0.0:
+        return None
+    saldo_por_trade = float(cfg.SALDO_USADO_POR_TRADE)
+
+    def generador(rng: np.random.Generator) -> float:
+        senales = _senales_aleatorias(rng, n_bars, p)
+        trades = _simular_con_senales(ctx=ctx, salida_trial=salida, senales_tf=senales)
+        r = retornos_por_trade(trades, saldo_por_trade=saldo_por_trade)
+        if r.size < 2:
+            return 0.0
+        sd = float(r.std(ddof=1))
+        return float(r.mean() / sd) if sd > 0.0 else 0.0
+
+    dist = robustez_nula.distribucion_nula(n_iter, generador, seed=_optuna_seed())
+    return robustez_nula.contrastar(float(sharpe_real), dist).resumen()
+
+
+def _senales_aleatorias(rng: np.random.Generator, n: int, p: float) -> np.ndarray:
+    """Vector de señales aleatorias int8 en {-1,0,1} con prob. `p` de entrada."""
+    senales = np.zeros(n, dtype=np.int8)
+    mask = rng.random(n) < p
+    signos = rng.choice(np.array([-1, 1], dtype=np.int8), size=int(mask.sum()))
+    senales[mask] = signos
+    return senales
+
+
+def _construir_callbacks_validacion(*, ctx, estrategia, salida_base: ExitConfig):
+    """Crea los callbacks `optimizar(indices)` y `evaluar(config, indices)`.
+
+    - `optimizar` lanza una optimización de Optuna RESTRINGIDA a los índices de
+      train del fold (puntúa solo con los trades que entran en esa ventana) y
+      devuelve la mejor configuración (params + salida) sin tocar el test.
+    - `evaluar` mide esa configuración sobre cualquier conjunto de índices SIN
+      reoptimizar. Es la garantía OOS de la Fase 2.
+    """
+    saldo_inicial = float(cfg.SALDO_INICIAL)
+    saldo_por_trade = float(cfg.SALDO_USADO_POR_TRADE)
+    min_trades = max(1, int(getattr(cfg, "MIN_TRADES_SCORE", 0) or 0))
+    funcion = str(getattr(cfg, "FUNCION_SCORE", "PSR")).upper()
+    clave = {"PSR": "psr", "SHARPE": "sharpe_ratio", "ROI": "roi_total"}.get(funcion, "psr")
+
+    def _puntuar(metricas: dict) -> float:
+        if int(metricas.get("total_trades", 0)) < min_trades:
+            return -1e9  # un fold sin muestra suficiente no puede ganar
+        valor = metricas.get(clave, 0.0)
+        try:
+            f = float(valor)
+        except (TypeError, ValueError):
+            return -1e9
+        return f if np.isfinite(f) else -1e9
+
+    def optimizar(indices_train: np.ndarray):
+        sampler = crear_sampler(cfg.OPTUNA_SAMPLER, _optuna_seed(), int(cfg.VALIDACION_N_TRIALS))
+        study = optuna.create_study(direction="maximize", sampler=sampler)
+        mejor = {"score": float("-inf"), "config": None}
+
+        def objetivo(trial: optuna.Trial) -> float:
+            params_est = estrategia.espacio_busqueda(trial)
+            salida_trial, _ = _salida_para_trial(salida_base, trial)
+            trades = _simular_trades_para_validacion(
+                ctx=ctx, estrategia=estrategia, salida_trial=salida_trial,
+                params_estrategia=params_est,
+            )
+            m = metricas_en_indices(
+                trades, indices_train, saldo_inicial=saldo_inicial, saldo_por_trade=saldo_por_trade
+            )
+            s = _puntuar(m)
+            if s > -1e9:
+                s = _aplicar_penalizaciones_robustez(
+                    s, int(m.get("total_trades", 0)), len(params_est)
+                )
+            if s > mejor["score"]:
+                mejor["score"] = s
+                mejor["config"] = (dict(params_est), salida_trial)
+            return s
+
+        study.optimize(objetivo, n_trials=int(cfg.VALIDACION_N_TRIALS), n_jobs=1)
+        if mejor["config"] is None:
+            raise RuntimeError("[VALIDACION] La optimización del fold no produjo configuración.")
+        return mejor["config"]
+
+    def evaluar(config, indices: np.ndarray) -> dict:
+        params_est, salida_trial = config
+        trades = _simular_trades_para_validacion(
+            ctx=ctx, estrategia=estrategia, salida_trial=salida_trial, params_estrategia=params_est
+        )
+        return metricas_en_indices(
+            trades, indices, saldo_inicial=saldo_inicial, saldo_por_trade=saldo_por_trade
+        )
+
+    return optimizar, evaluar
+
+
+def _stats_registro_para_dsr(activo: str, estrategia_id: int) -> tuple[int, float]:
+    """N real (configuraciones probadas) y varianza de sus Sharpes, desde la BD."""
+    try:
+        with RegistroExperimentos(cfg.BD_EXPERIMENTOS) as registro:
+            n = registro.contar_configuraciones(activo)
+            sharpes = registro.sharpes_configuraciones(activo)
+    except Exception:
+        return 1, 0.0
+    n = max(1, int(n))
+    arr = np.asarray(sharpes, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    var = float(arr.var(ddof=1)) if arr.size >= 2 else 0.0
+    return n, var
+
+
+def _validar_y_reportar_oos(*, preparado, ctx, timeframe, estrategia, salida, mejor, run_dir) -> None:
+    """Ejecuta la validación OOS completa, emite el veredicto y el informe.
+
+    Defensiva: un fallo aquí informa y continúa, sin perder los resultados ya
+    guardados ni abortar la campaña. No es compatible con perturbaciones.
+    """
+    if not getattr(cfg, "VALIDACION_ACTIVA", False):
+        return
+    if preparado.perturbaciones.activa:
+        print("[VALIDACION] Omitida: no es compatible con perturbaciones activas.")
+        return
+
+    contexto = f"{preparado.activo}/{timeframe}/{estrategia.NOMBRE}/{salida.tipo}"
+    try:
+        n_obs = len(ctx.arrays_base)
+        optimizar, evaluar = _construir_callbacks_validacion(
+            ctx=ctx, estrategia=estrategia, salida_base=salida
+        )
+
+        trades_mejor = _simular_trades_para_validacion(
+            ctx=ctx, estrategia=estrategia, salida_trial=mejor.salida,
+            params_estrategia=_params_estrategia(mejor.parametros),
+        )
+        retornos_mejor = retornos_por_trade(trades_mejor, saldo_por_trade=cfg.SALDO_USADO_POR_TRADE)
+
+        # Fase 5: rendimiento por régimen (MACD) y control vs. estrategia nula.
+        regimen = _breakdown_regimen(ctx, trades_mejor, float(cfg.SALDO_USADO_POR_TRADE))
+        nula_resumen = _contraste_nula(
+            ctx=ctx, salida=mejor.salida, mejor=mejor,
+            sharpe_real=float(mejor.metricas.get("sharpe_ratio", 0.0)),
+        )
+
+        n_cfg, var_sharpes = _stats_registro_para_dsr(preparado.activo, int(estrategia.ID))
+        equity_valores = (
+            mejor.replay.equity_curve.tolist()
+            if mejor.replay is not None and mejor.replay.equity_curve is not None
+            else None
+        )
+        huella = preparado.huella_repro.digest[:12] if preparado.huella_repro else None
+
+        resultado = ejecutar_validacion_completa(
+            n_obs=n_obs,
+            optimizar=optimizar,
+            evaluar=evaluar,
+            cpcv_grupos=int(cfg.VALIDACION_N_GRUPOS),
+            cpcv_k=int(cfg.VALIDACION_K),
+            embargo=float(cfg.VALIDACION_EMBARGO),
+            duracion_trade=int(cfg.VALIDACION_DURACION_TRADE),
+            wfa_activa=bool(cfg.VALIDACION_WFA_ACTIVA),
+            wfa_ventanas=int(cfg.VALIDACION_WFA_VENTANAS),
+            wfa_fraccion=float(cfg.VALIDACION_WFA_FRACCION),
+            wfa_anchored=bool(cfg.VALIDACION_WFA_ANCHORED),
+            sharpe_hat=float(mejor.metricas.get("sharpe_ratio", 0.0)),
+            n_trades=int(mejor.metricas.get("total_trades", 0)),
+            n_configuraciones=n_cfg,
+            varianza_sharpe_trials=var_sharpes,
+            sharpe_anual_objetivo=float(cfg.VALIDACION_SHARPE_ANUAL_OBJETIVO),
+            retornos_mejor=retornos_mejor,
+            capital_inicial=float(cfg.SALDO_INICIAL),
+            bootstrap_iter=int(cfg.VALIDACION_BOOTSTRAP_ITER),
+            bootstrap_bloque=int(cfg.VALIDACION_BOOTSTRAP_BLOQUE),
+            bootstrap_seed=_optuna_seed(),
+            regimen=regimen,
+            nula_resumen=nula_resumen,
+            cabecera={
+                "estrategia": estrategia.NOMBRE,
+                "activo": preparado.activo,
+                "timeframe": timeframe,
+                "salida": salida.tipo,
+                "modo": getattr(cfg, "MODO", "investigacion"),
+                "huella": huella,
+            },
+            is_extra={
+                "mejor_score": float(mejor.score),
+                "sharpe_is": float(mejor.metricas.get("sharpe_ratio", 0.0)),
+                "total_trades_is": int(mejor.metricas.get("total_trades", 0)),
+            },
+            equity_valores=equity_valores,
+            indice_holdout=None,
+        )
+
+        ruta = (run_dir / "informe_avanzado.html") if run_dir is not None else None
+        generar_informe_institucional(resultado.datos_informe, ruta_salida=ruta)
+        print(f"[VALIDACION] {contexto}: {resultado.veredicto.resumen()}")
+    except Exception as exc:  # noqa: BLE001 - se informa y se continúa
+        print(f"[VALIDACION] AVISO: validación OOS no completada ({contexto}): {exc}")
+
+
 def _optimizar_combinacion(
     *,
     activo: str,
@@ -535,8 +830,14 @@ def _optimizar_combinacion(
     resultados_base: Any,
 ) -> list[TrialResultado]:
     seed_activa = _seed_activa()
-    sampler = crear_sampler(cfg.OPTUNA_SAMPLER, _optuna_seed(), cfg.N_TRIALS)
-    study = optuna.create_study(direction="maximize", sampler=sampler)
+    multiobjetivo = bool(getattr(cfg, "OPTUNA_MULTIOBJETIVO", False))
+    if multiobjetivo:
+        # Única búsqueda, pero multiobjetivo: NSGA-II saca el frente de Pareto.
+        sampler = optuna.samplers.NSGAIISampler(seed=_optuna_seed())
+        study = optuna.create_study(directions=list(DIRECCIONES_PARETO), sampler=sampler)
+    else:
+        sampler = crear_sampler(cfg.OPTUNA_SAMPLER, _optuna_seed(), cfg.N_TRIALS)
+        study = optuna.create_study(direction="maximize", sampler=sampler)
     resultados: list[TrialResultado] = []
     lock = Lock()
 
@@ -600,6 +901,9 @@ def _optimizar_combinacion(
             )
             metricas = calcular_metricas(metricas_obj, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
             score = calcular_score(metricas)
+            score = _aplicar_penalizaciones_robustez(
+                score, int(metricas.get("total_trades", 0)), len(params_estrategia)
+            )
             trial.set_user_attr("metricas", metricas)
             trial.set_user_attr("conteo_senales", conteo)
             trial.set_user_attr("conteo_salidas", conteo_salidas)
@@ -628,6 +932,8 @@ def _optimizar_combinacion(
                 metricas=metricas,
                 params=_params_para_monitor(parametros, salida_trial),
             )
+            if multiobjetivo:
+                return vector_pareto(metricas)
             return float(score)
         finally:
             if perturbaciones.activa:
@@ -654,12 +960,16 @@ def _optimizar_combinacion(
             f"[OPTUNA] Trials conservados incorrectos: {len(resultados)} != {cfg.N_TRIALS}."
         )
 
-    _verificar_mejor_de_study(study, resultados)
+    if multiobjetivo:
+        _marcar_pareto(study, resultados)
+    else:
+        _verificar_mejor_de_study(study, resultados)
 
-    # Replay determinista de los top-N para alimentar reportes (CSV / Excel / HTML).
-    # El resto de trials sigue sin trades en memoria.
-    n_replay = max(MAX_DETALLES_EXCEL, int(cfg.MAX_PLOTS), 1)
-    top = sorted(resultados, key=lambda t: t.score, reverse=True)[:n_replay]
+    # Replay determinista SOLO de la configuración elegida (la que alimenta los
+    # reportes): el mejor por score en modo escalar, o la meseta del frente de
+    # Pareto en multiobjetivo. `_seleccionar_mejor` es determinista, así que el
+    # mismo trial se reusa luego en `_ejecutar_combinacion`.
+    top = [_seleccionar_mejor(resultados)]
     for trial_res in top:
         _replay_trial(
             trial_res=trial_res,
@@ -1187,6 +1497,41 @@ def _verificar_mejor_de_study(study: optuna.Study, resultados: list[TrialResulta
     mejor_local = max(resultados, key=lambda t: t.score)
     if int(study.best_trial.number) != int(mejor_local.numero):
         raise ValueError("[OPTUNA] El mejor trial de Optuna no coincide con el conservado.")
+
+
+def _marcar_pareto(study: optuna.Study, resultados: list[TrialResultado]) -> None:
+    """Marca con `en_pareto=True` los trials del frente de Pareto (multiobjetivo)."""
+    numeros = {int(t.number) for t in study.best_trials}
+    if not numeros:
+        raise ValueError("[OPTUNA] El frente de Pareto está vacío.")
+    por_numero = {int(r.numero): r for r in resultados}
+    marcados = 0
+    for n in numeros:
+        r = por_numero.get(n)
+        if r is not None:
+            r.en_pareto = True
+            marcados += 1
+    if marcados == 0:
+        raise ValueError("[OPTUNA] Ningún trial del frente de Pareto está en los resultados.")
+
+
+def _seleccionar_mejor(trials: list[TrialResultado]) -> TrialResultado:
+    """Selecciona la configuración final.
+
+    - Escalar (por defecto): el trial de mayor score.
+    - Multiobjetivo: la MESETA del frente de Pareto (región de parámetros más
+      estable por PSR), no el pico de score.
+    """
+    if bool(getattr(cfg, "OPTUNA_MULTIOBJETIVO", False)):
+        candidatos = [t for t in trials if t.en_pareto] or list(trials)
+        return seleccionar_meseta(
+            candidatos,
+            trials,
+            valor=lambda t: float(t.metricas.get("psr", t.score)),
+            parametros=lambda t: t.parametros,
+            k=int(getattr(cfg, "MESETA_VECINOS", 7)),
+        )
+    return max(trials, key=lambda t: t.score)
 
 
 def _normalizar_jobs(valor: int) -> int:

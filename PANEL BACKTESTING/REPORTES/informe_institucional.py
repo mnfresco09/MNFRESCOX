@@ -4,20 +4,20 @@ Un único HTML interactivo por estrategia que cuenta la historia en el ORDEN
 CORRECTO: la narrativa importa porque un informe que abre con KPIs in-sample te
 entrena a mirar el número equivocado. El orden es deliberado:
 
-  1. Pre-registro          — la hipótesis económica escrita ANTES de empezar.
-  2. Resultados OOS         — TITULAR: distribución de Sharpe (CPCV), WFA eff.
-  3. Veredicto anti-sobreajuste — DSR (deflactado), PBO, MinBTL.
+  0. Resumen ejecutivo      — veredicto + titulares (DSR, PBO, Sharpe OOS).
+  1. Pre-registro           — la hipótesis económica escrita ANTES de empezar.
+  2. Resultados OOS         — TITULAR: distribución de Sharpe (CPCV) + WFA.
+  3. Veredicto anti-sobreajuste — DSR (deflactado), PBO, MinBTL + criterios.
   4. Batería de robustez    — bootstrap, régimen, estrategia nula.
   5. Optimización IS        — al final, como CONTEXTO, no como conclusión.
   6. Curva de equity        — con el tramo OOS/holdout claramente marcado.
 
-El número in-sample es contexto, no protagonista. (La "sensibilidad a costes" del
-documento no se incluye: depende del modelo de costes de ejecución, fuera de
+El número in-sample es contexto, no protagonista. (La "sensibilidad a costes"
+del documento no se incluye: depende del modelo de costes de ejecución, fuera de
 alcance.)
 
-Generación de HTML pura (stdlib): no depende de Polars ni del motor, por lo que
-es verificable comprobando el contenido y el orden de las secciones. Los gráficos
-usan Plotly desde CDN (mejor medio que el PDF para una herramienta de research).
+Generación de HTML pura (stdlib): verificable comprobando contenido y orden de
+secciones. Los gráficos usan Plotly desde CDN.
 """
 
 from __future__ import annotations
@@ -40,15 +40,25 @@ ORDEN_SECCIONES = (
     "equity",
 )
 
+# Umbrales de referencia (Parte IV del protocolo) para la leyenda del informe.
+_LEYENDA_UMBRALES = (
+    ("DSR (deflactado)", "> 0.95", "0.90 – 0.95", "< 0.90"),
+    ("PBO", "< 0.20", "0.20 – 0.50", "> 0.50"),
+    ("Sharpe OOS / IS", "≥ 0.70", "0.50 – 0.70", "< 0.50"),
+    ("Distribución Sharpe OOS", "p25 > 0", "mediana > 0", "mediana ≤ 0"),
+    ("Nº de trades", "≥ 100", "30 – 100", "< 30"),
+    ("WFA efficiency", "> 0.60", "0.50 – 0.60", "< 0.50"),
+)
+
 
 def generar_informe_institucional(datos: dict, *, ruta_salida=None) -> str:
     """Construye el HTML del informe y, opcionalmente, lo escribe en disco.
 
     `datos` es un dict con claves opcionales (cada sección se renderiza solo si
     está presente): ``cabecera``, ``preregistro``, ``oos``, ``veredicto``,
-    ``robustez``, ``is``, ``equity``. El esquema está documentado en los helpers
-    de cada sección. Devuelve el HTML como string.
+    ``robustez``, ``is``, ``equity``. Devuelve el HTML como string.
     """
+    resumen = _resumen_ejecutivo(datos.get("veredicto"), datos.get("oos"), datos.get("is"))
     secciones = [
         _seccion_pre_registro(datos.get("preregistro")),
         _seccion_oos(datos.get("oos")),
@@ -57,7 +67,7 @@ def generar_informe_institucional(datos: dict, *, ruta_salida=None) -> str:
         _seccion_optimizacion_is(datos.get("is")),
         _seccion_equity(datos.get("equity")),
     ]
-    cuerpo = "\n".join(s for s in secciones if s)
+    cuerpo = resumen + "\n" + "\n".join(s for s in secciones if s)
     htmls = _documento(datos.get("cabecera", {}), cuerpo)
 
     if ruta_salida is not None:
@@ -65,6 +75,34 @@ def generar_informe_institucional(datos: dict, *, ruta_salida=None) -> str:
         ruta.parent.mkdir(parents=True, exist_ok=True)
         ruta.write_text(htmls, encoding="utf-8")
     return htmls
+
+
+# ---------------------------------------------------------------------------
+# Resumen ejecutivo (cabecera)
+# ---------------------------------------------------------------------------
+
+def _resumen_ejecutivo(ver: dict | None, oos: dict | None, is_: dict | None) -> str:
+    color = str((ver or {}).get("color", "ambar"))
+    c = _COLORES.get(color, "#888")
+    dist = (oos or {}).get("distribucion", {})
+    titulares = [
+        ("Veredicto", f"{_EMOJI.get(color, '')} {color.upper()}", c),
+        ("DSR", _fmt((ver or {}).get("dsr")), None),
+        ("PBO", _fmt((ver or {}).get("pbo")), None),
+        ("Sharpe OOS (mediana)", _fmt(dist.get("mediana")), None),
+        ("Sharpe OOS / IS", _fmt((oos or {}).get("ratio_oos_is")), None),
+        ("WFA efficiency", _fmt((oos or {}).get("wfa_efficiency")), None),
+    ]
+    tarjetas = "".join(
+        f"<div class='kpi'><div class='kpi-v' style='{('color:' + col) if col else ''}'>{v}</div>"
+        f"<div class='kpi-k'>{html.escape(k)}</div></div>"
+        for k, v, col in titulares
+    )
+    return (
+        f"<section id='resumen' class='resumen' style='border-left:6px solid {c}'>"
+        f"<div class='resumen-h'>Resumen ejecutivo</div>"
+        f"<div class='kpis'>{tarjetas}</div></section>"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -106,11 +144,12 @@ def _seccion_oos(oos: dict | None) -> str:
         f"<div class='card'><div class='card-v'>{v}</div><div class='card-k'>{html.escape(k)}</div></div>"
         for k, v in items
     )
+    histograma = _histograma_oos(oos.get("valores"))
     return _bloque(
         "resultados-oos",
         "2 · Resultados fuera de muestra (TITULAR)",
         "Lo primero que ves: la distribución OOS de CPCV, no un número in-sample.",
-        f"<div class='cards'>{tarjetas}</div>",
+        f"<div class='cards'>{tarjetas}</div>{histograma}",
     )
 
 
@@ -148,7 +187,7 @@ def _seccion_veredicto(ver: dict | None) -> str:
         "veredicto",
         "3 · Veredicto anti-sobreajuste",
         "La pregunta «¿esto es real?» respondida con números fijados a priori.",
-        titular + f"<div class='cards'>{tarjetas}</div>" + tabla,
+        titular + f"<div class='cards'>{tarjetas}</div>" + tabla + _leyenda_umbrales(),
     )
 
 
@@ -158,10 +197,26 @@ def _seccion_robustez(rob: dict | None) -> str:
     partes = []
     boot = rob.get("bootstrap")
     if boot:
+        etiquetas = {
+            "iteraciones": "Iteraciones",
+            "p5_equity_final": "Equity final p5",
+            "p25_equity_final": "Equity final p25",
+            "mediana_equity_final": "Equity final mediana",
+            "p95_equity_final": "Equity final p95",
+            "mediana_max_drawdown": "Max DD mediana",
+            "p95_max_drawdown": "Max DD p95",
+            "mediana_sharpe": "Sharpe mediana",
+        }
         items = "".join(
-            f"<tr><th>{html.escape(str(k))}</th><td>{_fmt(v)}</td></tr>" for k, v in boot.items()
+            f"<tr><th>{html.escape(etiquetas.get(k, str(k)))}</th><td>{_fmt(v)}</td></tr>"
+            for k, v in boot.items()
         )
-        partes.append(f"<h3>Bootstrap de trades</h3><table class='kv'>{items}</table>")
+        partes.append(
+            "<h3>Bootstrap de trades</h3>"
+            "<p class='nota'>Distribución del resultado remuestreando la secuencia de trades: "
+            "¿cuánto fue habilidad y cuánto el orden afortunado?</p>"
+            f"<table class='kv'>{items}</table>"
+        )
     reg = rob.get("regimen")
     if reg:
         filas = "".join(
@@ -188,13 +243,19 @@ def _seccion_robustez(rob: dict | None) -> str:
 def _seccion_optimizacion_is(is_: dict | None) -> str:
     if not is_:
         return ""
+    etiquetas = {
+        "mejor_score": "Mejor score (IS)",
+        "sharpe_is": "Sharpe IS",
+        "total_trades_is": "Nº trades (IS)",
+    }
     items = "".join(
-        f"<tr><th>{html.escape(str(k))}</th><td>{_fmt(v)}</td></tr>" for k, v in is_.items()
+        f"<tr><th>{html.escape(etiquetas.get(k, str(k)))}</th><td>{_fmt(v)}</td></tr>"
+        for k, v in is_.items()
     )
     return _bloque(
         "optimizacion-is",
         "5 · Optimización in-sample (contexto)",
-        "Al final y como contexto, NO como conclusión: meseta de parámetros.",
+        "Al final y como contexto, NO como conclusión.",
         f"<table class='kv'>{items}</table>",
     )
 
@@ -215,7 +276,8 @@ def _seccion_equity(equity: dict | None) -> str:
         "x1:x.length-1,y0:0,y1:1,fillcolor:'rgba(215,48,39,0.10)',line:{width:0}});}"
         "if(window.Plotly){Plotly.newPlot('equity-plot',trazas,{margin:{t:10},"
         "shapes:shapes,annotations:d.holdout!=null?[{x:d.holdout,y:1,yref:'paper',"
-        "text:'HOLDOUT BLOQUEADO',showarrow:false,font:{color:'#d73027'}}]:[]});}})();</script>"
+        "text:'HOLDOUT BLOQUEADO',showarrow:false,font:{color:'#d73027'}}]:[]},"
+        "{displayModeBar:false,responsive:true});}})();</script>"
     )
     nota = (
         "<p class='nota'>El tramo sombreado es el <strong>holdout bloqueado</strong>: "
@@ -230,8 +292,41 @@ def _seccion_equity(equity: dict | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Plantilla y helpers
+# Gráficos y bloques auxiliares
 # ---------------------------------------------------------------------------
+
+def _histograma_oos(valores) -> str:
+    if not valores:
+        return ""
+    datos_js = json.dumps([float(v) for v in valores])
+    return (
+        "<div id='oos-hist' style='height:300px'></div>"
+        "<script>(function(){var v=" + datos_js + ";"
+        "if(window.Plotly){Plotly.newPlot('oos-hist',"
+        "[{x:v,type:'histogram',marker:{color:'#1a9850'},nbinsx:12}],"
+        "{margin:{t:10},xaxis:{title:'Sharpe OOS'},yaxis:{title:'Trayectorias'},"
+        "shapes:[{type:'line',x0:0,x1:0,yref:'paper',y0:0,y1:1,"
+        "line:{color:'#d73027',width:1,dash:'dot'}}]},"
+        "{displayModeBar:false,responsive:true});}})();</script>"
+        "<p class='nota'>Distribución de Sharpe OOS de las trayectorias CPCV "
+        "(la línea roja marca el cero).</p>"
+    )
+
+
+def _leyenda_umbrales() -> str:
+    filas = "".join(
+        f"<tr><td>{html.escape(m)}</td>"
+        f"<td style='color:{_COLORES['verde']}'>{html.escape(v)}</td>"
+        f"<td style='color:{_COLORES['ambar']}'>{html.escape(a)}</td>"
+        f"<td style='color:{_COLORES['rojo']}'>{html.escape(r)}</td></tr>"
+        for (m, v, a, r) in _LEYENDA_UMBRALES
+    )
+    return (
+        "<details class='leyenda'><summary>Umbrales de referencia (fijados a priori)</summary>"
+        "<table class='grid'><thead><tr><th>Métrica</th><th>🟢 Verde</th>"
+        f"<th>🟡 Ámbar</th><th>🔴 Rojo</th></tr></thead><tbody>{filas}</tbody></table></details>"
+    )
+
 
 def _bloque(anchor: str, titulo: str, subtitulo: str, contenido: str) -> str:
     return (
@@ -263,23 +358,33 @@ def _documento(cabecera: dict, cuerpo: str) -> str:
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <style>
 :root{{color-scheme:light dark}}
-body{{font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:1000px;margin:0 auto;padding:24px;line-height:1.5;color:#1a1a1a;background:#fafafa}}
+*{{box-sizing:border-box}}
+body{{font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:1040px;margin:0 auto;padding:24px;line-height:1.5;color:#1a1a1a;background:#fafafa}}
 h1{{margin:0 0 4px;font-size:22px}}
-.meta{{color:#555;font-size:13px;margin-bottom:24px}}
+.meta{{color:#555;font-size:13px;margin-bottom:20px}}
 section{{background:#fff;border:1px solid #e3e3e3;border-radius:10px;padding:20px;margin-bottom:18px}}
+.resumen{{background:#0f172a;color:#fff;border:none}}
+.resumen-h{{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8;margin-bottom:12px}}
+.kpis{{display:flex;flex-wrap:wrap;gap:14px}}
+.kpi{{flex:1 1 130px;text-align:center}}
+.kpi-v{{font-size:22px;font-weight:800}}
+.kpi-k{{font-size:11px;color:#cbd5e1;text-transform:uppercase;letter-spacing:.04em;margin-top:2px}}
 h2{{margin:0 0 2px;font-size:17px}}
 .sub{{margin:0 0 14px;color:#666;font-size:13px}}
-h3{{font-size:14px;margin:16px 0 6px}}
+h3{{font-size:14px;margin:18px 0 6px}}
 .cards{{display:flex;flex-wrap:wrap;gap:10px}}
-.card{{flex:1 1 120px;background:#f4f7fb;border-radius:8px;padding:12px;text-align:center}}
-.card-v{{font-size:20px;font-weight:700}}
+.card{{flex:1 1 110px;background:#f4f7fb;border-radius:8px;padding:12px;text-align:center}}
+.card-v{{font-size:19px;font-weight:700}}
 .card-k{{font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.04em}}
-table{{border-collapse:collapse;width:100%;font-size:13px;margin-top:6px}}
-.kv th{{text-align:left;width:40%;color:#555;font-weight:600;padding:6px 8px;border-bottom:1px solid #eee}}
+table{{border-collapse:collapse;width:100%;font-size:13px;margin-top:8px}}
+.kv th{{text-align:left;width:42%;color:#555;font-weight:600;padding:6px 8px;border-bottom:1px solid #eee}}
 .kv td{{padding:6px 8px;border-bottom:1px solid #eee}}
 .grid th,.grid td{{padding:6px 8px;border-bottom:1px solid #eee;text-align:left}}
+.grid th{{color:#555;font-weight:600}}
 .veredicto{{border:2px solid #888;border-radius:8px;padding:14px;text-align:center;margin-bottom:12px}}
 .vbig{{font-size:24px;font-weight:800}}
+.leyenda{{margin-top:14px;font-size:12px}}
+.leyenda summary{{cursor:pointer;color:#555;font-weight:600}}
 .nota{{font-size:12px;color:#777;margin-top:8px}}
 </style></head>
 <body>

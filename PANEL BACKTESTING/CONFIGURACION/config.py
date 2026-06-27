@@ -99,7 +99,7 @@ EXIT_TYPE = "BARS"
 # OPTIMIZACIÓN (OPTUNA)
 # ---------------------------------------------------------------------------
 # Potencias de 2 recomendadas para QMC: 64, 128, 256, 512
-N_TRIALS = 300
+N_TRIALS = 3000
 
 # "QMC"    → Exploración uniforme (Sobol). Recomendado para campañas grandes.
 # "TPE"    → Guiado por resultados anteriores; su coste crece con el histórico.
@@ -123,12 +123,65 @@ FUNCION_SCORE = "PSR"
 # muestra pequeña, pero este filtro duro añade una garantía explícita.
 MIN_TRADES_SCORE = 30
 
+# Penalizaciones de robustez sobre el score (Fase 4). Con factor 0 no tienen
+# efecto (comportamiento por defecto idéntico al actual). Súbelos para empujar
+# la optimización hacia menos turnover y menos parámetros libres.
+#   score_penalizado = score
+#       - TURNOVER_FACTOR · max(0, n_trades - TURNOVER_OBJETIVO) / TURNOVER_OBJETIVO
+#       - COMPLEJIDAD_FACTOR · n_parametros_libres
+TURNOVER_OBJETIVO              = 100
+PENALIZACION_TURNOVER_FACTOR   = 0.0
+PENALIZACION_COMPLEJIDAD_FACTOR = 0.0
+
+# Optimización multiobjetivo (Fase 4). Con False, una única búsqueda escalar
+# (maximiza FUNCION_SCORE) y el "mejor" es el de mayor score. Con True, la única
+# búsqueda usa NSGA-II y saca un FRENTE DE PARETO de (PSR ↑, max drawdown ↓,
+# turnover ↓); entonces NO se elige el de score máximo, sino la configuración de
+# MESETA: la que vive en la región más estable del espacio de parámetros (la más
+# robusta), no el pico estrecho.
+OPTUNA_MULTIOBJETIVO = True
+# Nº de vecinos en el espacio de parámetros para medir la meseta al elegir del
+# frente de Pareto (solo aplica con OPTUNA_MULTIOBJETIVO=True).
+MESETA_VECINOS = 7
+
 # True  = usa las semillas configuradas y permite reproducibilidad.
 # False = ignora las semillas y cada ejecución explora caminos aleatorios.
 USAR_SEED = False
 
 # Entero obligatorio cuando USAR_SEED = True.
 OPTUNA_SEED = 42
+
+# ---------------------------------------------------------------------------
+# VALIDACIÓN FUERA DE MUESTRA  (Fases 2-7: CPCV, WFA, DSR, robustez, informe)
+# ---------------------------------------------------------------------------
+# Tras la optimización in-sample de cada combinación, el sistema valida la mejor
+# configuración fuera de muestra y emite un veredicto 🟢/🟡/🔴 con los umbrales
+# fijados a priori, además del informe institucional unificado.
+#
+# Coste: CPCV reoptimiza por cada fold. Con VALIDACION_N_GRUPOS=6 y K=2 son 15
+# folds; cada uno lanza VALIDACION_N_TRIALS optimizaciones. Mantén N_TRIALS de
+# validación moderado. La validación NO es compatible con perturbaciones activas
+# (se omite con aviso si PERTURBACIONES_ACTIVAS=True).
+VALIDACION_ACTIVA       = True
+
+VALIDACION_N_TRIALS     = 100      # trials de Optuna por fold (< N_TRIALS global)
+VALIDACION_N_GRUPOS     = 6        # N grupos temporales de CPCV
+VALIDACION_K            = 2        # k grupos como test → C(N,k) combinaciones
+VALIDACION_EMBARGO      = 0.01     # fracción de velas de embargo tras cada test
+VALIDACION_DURACION_TRADE = 1      # nº máx. de velas que abarca un trade (purge)
+
+VALIDACION_WFA_ACTIVA   = True     # Walk-Forward como complemento de CPCV
+VALIDACION_WFA_VENTANAS = 5
+VALIDACION_WFA_FRACCION = 0.15     # tamaño de cada tramo de test (fracción)
+#   Restricción: (VALIDACION_WFA_VENTANAS + 1) · VALIDACION_WFA_FRACCION <= 1.
+VALIDACION_WFA_ANCHORED = False    # False=rolling, True=anchored
+
+VALIDACION_BOOTSTRAP_ITER   = 10_000   # remuestreos del bootstrap de trades
+VALIDACION_BOOTSTRAP_BLOQUE = 1        # 1=i.i.d.; >1=block bootstrap
+VALIDACION_SHARPE_ANUAL_OBJETIVO = 1.0 # objetivo para el chequeo MinBTL
+
+VALIDACION_NULA_ITER = 50   # nº de estrategias nulas (entradas aleatorias) para
+#                             el control de laboratorio; 0 lo desactiva.
 
 # ---------------------------------------------------------------------------
 # PERTURBACIONES
@@ -163,8 +216,11 @@ PERTURBACIONES_MAX_JOBS = 4
 # RESULTADOS Y REPORTING
 # ---------------------------------------------------------------------------
 USAR_EXCEL  = True
-MAX_PLOTS   = 5         # HTMLs a generar (los mejores N por score)
-MAX_ARCHIVOS = 20       # Máximo de archivos por carpeta antes de rotar los más viejos
+
+# La carpeta final de cada combinación (ESTRATEGIA/TIMEFRAME/SALIDA/ACTIVO)
+# contiene exactamente los ficheros del último run y se reemplaza al relanzar la
+# misma combinación; no hay histórico ni rotación. La traza completa vive en la
+# base de datos de experimentos (REGISTRO_EXPERIMENTOS/).
 
 # "all"    → muestra todo el período del trial en el gráfico HTML
 # "3m"     → muestra los últimos 3 meses

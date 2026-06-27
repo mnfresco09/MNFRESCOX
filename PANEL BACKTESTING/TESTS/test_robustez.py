@@ -70,6 +70,13 @@ class TestRegimen(unittest.TestCase):
         with self.assertRaises(ValueError):
             regimen.rendimiento_por_regimen([1, 2, 3], ["a", "b"])
 
+    def test_etiquetas_macd(self):
+        # Tendencia alcista clara → predomina 'alcista'; longitud preservada.
+        close = np.linspace(100, 200, 300)
+        etq = regimen.etiquetas_macd(close)
+        self.assertEqual(etq.shape[0], close.shape[0])
+        self.assertIn("alcista", set(etq.tolist()))
+
 
 class TestNula(unittest.TestCase):
     def test_barajar_conserva_multiset(self):
@@ -102,13 +109,43 @@ class TestSensibilidad(unittest.TestCase):
 
 
 class TestObjetivoRobusto(unittest.TestCase):
-    def test_score_meseta(self):
-        self.assertAlmostEqual(robustez_objetivo.score_meseta([1, 2, 3]), 2.0)  # mediana
-        self.assertAlmostEqual(robustez_objetivo.score_meseta([1, 2, 3, 100], estadistico="min"), 1.0)
+    def test_vector_pareto(self):
+        v = robustez_objetivo.vector_pareto(
+            {"psr": 0.9, "max_drawdown": -0.12, "trades_por_dia": 3.0}
+        )
+        self.assertEqual(v, (0.9, 0.12, 3.0))  # drawdown en valor absoluto
+        self.assertEqual(len(robustez_objetivo.DIRECCIONES_PARETO), 3)
 
-    def test_limite_inferior_oos(self):
-        self.assertAlmostEqual(
-            robustez_objetivo.limite_inferior_oos([0, 1, 2, 3, 4], percentil=25), 1.0
+    def test_seleccionar_meseta_prefiere_region_estable(self):
+        from types import SimpleNamespace
+
+        def t(p, psr):
+            return SimpleNamespace(parametros={"x": p}, metricas={"psr": psr}, score=psr)
+
+        # Pico FRÁGIL en x=100 (psr altísimo pero rodeado de configuraciones
+        # malas) vs MESETA estable en x≈10 (vecindario uniformemente bueno).
+        universo = [
+            t(100, 0.99), t(98, 0.40), t(102, 0.41),     # pico solitario y frágil
+            t(9, 0.84), t(10, 0.85), t(11, 0.86), t(12, 0.85),  # meseta estable
+        ]
+        candidatos = [universo[0], universo[4]]  # pico (x=100) vs meseta (x=10)
+        elegido = robustez_objetivo.seleccionar_meseta(
+            candidatos, universo,
+            valor=lambda x: x.metricas["psr"],
+            parametros=lambda x: x.parametros,
+            k=3,
+        )
+        self.assertEqual(elegido.parametros["x"], 10)  # gana la meseta, no el pico
+
+    def test_seleccionar_meseta_un_candidato(self):
+        from types import SimpleNamespace
+
+        c = SimpleNamespace(parametros={"x": 1}, metricas={"psr": 0.5}, score=0.5)
+        self.assertIs(
+            robustez_objetivo.seleccionar_meseta(
+                [c], [c], valor=lambda x: 0.5, parametros=lambda x: x.parametros
+            ),
+            c,
         )
 
     def test_penalizaciones(self):
@@ -116,14 +153,6 @@ class TestObjetivoRobusto(unittest.TestCase):
         self.assertAlmostEqual(s, 1.0 - 0.5 * (100 / 100))
         self.assertEqual(robustez_objetivo.penalizacion_turnover(1.0, 50, factor=0.0), 1.0)
         self.assertAlmostEqual(robustez_objetivo.penalizacion_complejidad(1.0, 4, factor=0.1), 0.6)
-
-    def test_multiobjetivo(self):
-        self.assertEqual(len(robustez_objetivo.direcciones_multiobjetivo()), 3)
-        v = robustez_objetivo.vector_multiobjetivo(
-            {"sharpe_anualizado": 2.0, "max_drawdown": 0.1, "trades_por_dia": 3.0}
-        )
-        self.assertEqual(v, (2.0, 0.1, 3.0))
-
 
 if __name__ == "__main__":
     unittest.main()
